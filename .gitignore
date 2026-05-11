@@ -1,0 +1,13 @@
+node_modules/
+dist/
+artifacts/
+.claude/
+*.log
+vite-dev.*.log
+.DS_Store
+Thumbs.db
+.env
+.env.local
+.env.*.local
+.vscode/
+.idea/
