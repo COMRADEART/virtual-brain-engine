@@ -52,12 +52,17 @@ export class SignalSimulation {
 
   readonly pulses: SignalPulse[] = [];
   readonly regionIntensity: Float32Array;
+  // Secondary intensity channel used for transient "flash" effects (e.g. when
+  // the AI explicitly picks an action). Decays separately from regionIntensity
+  // so the visual feels like a momentary burst on top of steady-state activity.
+  readonly regionFlashIntensity: Float32Array;
   readonly pathwayIntensity: Float32Array;
 
   constructor(graph: NeuralGraph, actionId: BrainActionId) {
     this.graph = graph;
     this.actionId = actionId;
     this.regionIntensity = new Float32Array(graph.regionOrder.length);
+    this.regionFlashIntensity = new Float32Array(graph.regionOrder.length);
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
     this.rebuildEligiblePathways();
   }
@@ -69,6 +74,20 @@ export class SignalSimulation {
     this.nextPulseId = 1;
     this.pathwayIntensity.fill(0);
     this.rebuildEligiblePathways();
+  }
+
+  // Stamp a momentary boost onto the flash channel for each named region.
+  // max-merges with the current flash so successive picks don't dim each other.
+  flashRegions(regionIds: BrainRegionId[], magnitude = 0.85): void {
+    for (const regionId of regionIds) {
+      const index = this.graph.regionOrder.indexOf(regionId);
+      if (index < 0) {
+        continue;
+      }
+      if (this.regionFlashIntensity[index] < magnitude) {
+        this.regionFlashIntensity[index] = magnitude;
+      }
+    }
   }
 
   setAction(actionId: BrainActionId): void {
@@ -94,8 +113,10 @@ export class SignalSimulation {
 
   step(deltaSeconds: number, elapsedSeconds: number): void {
     const decay = Math.pow(0.05, deltaSeconds);
+    const flashDecay = Math.pow(0.18, deltaSeconds);
     for (let index = 0; index < this.regionIntensity.length; index += 1) {
       this.regionIntensity[index] *= decay;
+      this.regionFlashIntensity[index] *= flashDecay;
     }
 
     for (let index = 0; index < this.pathwayIntensity.length; index += 1) {
@@ -204,6 +225,7 @@ export class SignalSimulation {
       intensity: 0.62 + this.random() * 0.38,
       colorRegionId: fromRegionId,
       colorRegionIndex: fromRegionIndex,
+      reverse,
     });
 
     this.nextPulseId += 1;

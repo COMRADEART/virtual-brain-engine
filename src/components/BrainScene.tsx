@@ -1,8 +1,15 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { createBrainShell, setBrainShellOpacity } from "./BrainShell";
 import { NeuralGraphRenderer } from "./NeuralGraph";
+import type { AiPickEvent } from "./AiPickOverlay";
+import { ACTION_BY_ID } from "../engine/brainRegions";
+import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
 import { generateNeuralGraph } from "../engine/neuralGraphGenerator";
 import { SignalSimulation } from "../engine/signalSimulation";
 import type {
@@ -13,17 +20,28 @@ import type {
   RegionVisibility,
 } from "../engine/types";
 
+export interface AnatomyLoadProgress {
+  loaded: number;
+  total: number;
+  done: boolean;
+}
+
 interface BrainSceneProps {
   simulationRunning: boolean;
   selectedActionId: BrainActionId;
   signalSpeed: number;
   neuronDensity: number;
   shellOpacity: number;
+  anatomyVisible: boolean;
+  anatomyOpacity: number;
   regionVisibility: RegionVisibility;
   selectedRegionId: BrainRegionId | null;
   cameraPreset: CameraPresetRequest;
+  aiPick: AiPickEvent | null;
+  audioEnabled: boolean;
   onRegionSelect: (regionId: BrainRegionId) => void;
   onMetricsChange: (metrics: BrainMetrics) => void;
+  onAnatomyLoadProgress?: (progress: AnatomyLoadProgress) => void;
 }
 
 interface CameraTransition {
@@ -35,17 +53,111 @@ interface CameraTransition {
   endTarget: THREE.Vector3;
 }
 
+// Shared soft-circular sprite used by the anatomy point cloud. Built once and
+// reused across remounts (HMR-friendly).
+let pointSpriteTexture: THREE.Texture | null = null;
+function getPointSpriteTexture(): THREE.Texture {
+  if (pointSpriteTexture) {
+    return pointSpriteTexture;
+  }
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    pointSpriteTexture = new THREE.Texture();
+    return pointSpriteTexture;
+  }
+  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.4, "rgba(255,255,255,0.65)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  pointSpriteTexture = texture;
+  return texture;
+}
+
+// Walk a loaded GLB and pull every position (and color, when available) into
+// flat Float32Arrays in world space. Handles both Mesh and Points children so
+// we don't care what the GLB was authored as.
+function mergePointData(root: THREE.Object3D): {
+  positions: Float32Array;
+  colors: Float32Array | null;
+} {
+  root.updateMatrixWorld(true);
+  const sources: Array<{
+    posAttr: THREE.BufferAttribute;
+    colorAttr: THREE.BufferAttribute | null;
+    matrix: THREE.Matrix4;
+  }> = [];
+  let anyColor = false;
+
+  root.traverse((child) => {
+    const obj = child as THREE.Object3D & { isMesh?: boolean; isPoints?: boolean; geometry?: THREE.BufferGeometry };
+    if ((obj.isMesh || obj.isPoints) && obj.geometry?.attributes.position) {
+      const colorAttr = (obj.geometry.attributes.color as THREE.BufferAttribute | undefined) ?? null;
+      if (colorAttr) {
+        anyColor = true;
+      }
+      sources.push({
+        posAttr: obj.geometry.attributes.position as THREE.BufferAttribute,
+        colorAttr,
+        matrix: obj.matrixWorld,
+      });
+    }
+  });
+
+  const total = sources.reduce((sum, source) => sum + source.posAttr.count, 0);
+  const positions = new Float32Array(total * 3);
+  const colors = anyColor ? new Float32Array(total * 3) : null;
+  const tmp = new THREE.Vector3();
+  let cursor = 0;
+
+  for (const { posAttr, colorAttr, matrix } of sources) {
+    for (let i = 0; i < posAttr.count; i += 1) {
+      tmp.fromBufferAttribute(posAttr, i);
+      tmp.applyMatrix4(matrix);
+      positions[cursor * 3] = tmp.x;
+      positions[cursor * 3 + 1] = tmp.y;
+      positions[cursor * 3 + 2] = tmp.z;
+      if (colors) {
+        if (colorAttr) {
+          colors[cursor * 3] = colorAttr.getX(i);
+          colors[cursor * 3 + 1] = colorAttr.getY(i);
+          colors[cursor * 3 + 2] = colorAttr.getZ(i);
+        } else {
+          colors[cursor * 3] = 1;
+          colors[cursor * 3 + 1] = 1;
+          colors[cursor * 3 + 2] = 1;
+        }
+      }
+      cursor += 1;
+    }
+  }
+
+  return { positions, colors };
+}
+
 export function BrainScene({
   simulationRunning,
   selectedActionId,
   signalSpeed,
   neuronDensity,
   shellOpacity,
+  anatomyVisible,
+  anatomyOpacity,
   regionVisibility,
   selectedRegionId,
   cameraPreset,
+  aiPick,
+  audioEnabled,
   onRegionSelect,
   onMetricsChange,
+  onAnatomyLoadProgress,
 }: BrainSceneProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -56,10 +168,26 @@ export function BrainScene({
   const graphRendererRef = useRef<NeuralGraphRenderer | null>(null);
   const simulationRef = useRef<SignalSimulation | null>(null);
   const transitionRef = useRef<CameraTransition | null>(null);
+  const pointCloudRef = useRef<THREE.Group | null>(null);
+  const pointCloudMaterialRef = useRef<THREE.PointsMaterial | null>(null);
+  const ambientBusRef = useRef<AmbientBus | null>(null);
   const raycasterRef = useRef(new THREE.Raycaster());
   const pointerRef = useRef(new THREE.Vector2());
   const selectedRegionRef = useRef(selectedRegionId);
   const visibilityRef = useRef(regionVisibility);
+  // Stash initial values for one-shot use inside the mount-once effect. Subsequent
+  // changes flow through the small reactive effects below so we don't rebuild the
+  // renderer on every slider tick.
+  const initialShellOpacityRef = useRef(shellOpacity);
+  const initialAnatomyVisibleRef = useRef(anatomyVisible);
+  const initialAnatomyOpacityRef = useRef(anatomyOpacity);
+  const initialAudioEnabledRef = useRef(audioEnabled);
+  // The load-progress callback is read via a ref so the main scene effect
+  // doesn't tear down when the parent's callback identity changes.
+  const onAnatomyLoadProgressRef = useRef(onAnatomyLoadProgress);
+  useEffect(() => {
+    onAnatomyLoadProgressRef.current = onAnatomyLoadProgress;
+  }, [onAnatomyLoadProgress]);
 
   useEffect(() => {
     selectedRegionRef.current = selectedRegionId;
@@ -82,11 +210,43 @@ export function BrainScene({
     simulationRef.current?.setSpeed(signalSpeed);
   }, [signalSpeed]);
 
+  // When the AI picks an action, stamp a transient "flash" onto the regions in
+  // that action's network. The sequence field bumps on every pick so we re-flash
+  // even if the same action is picked twice in a row.
+  useEffect(() => {
+    if (!aiPick) {
+      return;
+    }
+    const action = ACTION_BY_ID[aiPick.action];
+    if (!action) {
+      return;
+    }
+    simulationRef.current?.flashRegions(action.activeRegions);
+  }, [aiPick]);
+
+  useEffect(() => {
+    ambientBusRef.current?.setEnabled(audioEnabled);
+  }, [audioEnabled]);
+
   useEffect(() => {
     if (shellRef.current) {
       setBrainShellOpacity(shellRef.current, shellOpacity);
     }
   }, [shellOpacity]);
+
+  useEffect(() => {
+    if (pointCloudRef.current) {
+      pointCloudRef.current.visible = anatomyVisible;
+    }
+  }, [anatomyVisible]);
+
+  useEffect(() => {
+    const material = pointCloudMaterialRef.current;
+    if (material) {
+      material.opacity = anatomyOpacity;
+      material.needsUpdate = true;
+    }
+  }, [anatomyOpacity]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -115,6 +275,22 @@ export function BrainScene({
     rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
 
+    // Cinematic glow on bright pixels (pulses + lit regions). The threshold
+    // keeps the dark background sharp; only pixels well above neutral bloom.
+    const composer = new EffectComposer(renderer);
+    composer.setSize(container.clientWidth, container.clientHeight);
+    composer.addPass(new RenderPass(scene, camera));
+    // Tuned conservatively so the bloom enhances pulses and lit regions without
+    // swallowing the neuron / pathway structure underneath. Raise strength /
+    // lower threshold if more cinematic glow is wanted.
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(container.clientWidth, container.clientHeight),
+      0.45, // strength
+      0.35, // radius
+      0.55, // threshold — only pixels already pretty bright will bloom
+    );
+    composer.addPass(bloomPass);
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.055;
@@ -129,12 +305,102 @@ export function BrainScene({
     keyLight.position.set(1.8, 2.1, 2.4);
     scene.add(keyLight);
 
-    const shell = createBrainShell({ opacity: shellOpacity });
+    const ambientBus = createAmbientBus();
+    ambientBusRef.current = ambientBus;
+    if (initialAudioEnabledRef.current) {
+      ambientBus.setEnabled(true);
+    }
+
+    const shell = createBrainShell({ opacity: initialShellOpacityRef.current });
     shellRef.current = shell;
     scene.add(shell);
 
+    const pointCloudGroup = new THREE.Group();
+    pointCloudGroup.name = "BrainPointCloudGroup";
+    pointCloudGroup.visible = initialAnatomyVisibleRef.current;
+    pointCloudRef.current = pointCloudGroup;
+    scene.add(pointCloudGroup);
+
+    let cancelled = false;
+    const loader = new GLTFLoader();
+    loader.load(
+      "/brain_point_cloud.glb",
+      (gltf) => {
+        if (cancelled) {
+          return;
+        }
+
+        onAnatomyLoadProgressRef.current?.({ loaded: 1, total: 1, done: true });
+
+        const { positions, colors } = mergePointData(gltf.scene);
+        if (positions.length < 3) {
+          return;
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        if (colors) {
+          geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+        }
+        geometry.computeBoundingBox();
+        const bbox = geometry.boundingBox;
+        if (bbox) {
+          // Auto-fit: center the cloud at the origin, then uniformly scale so its
+          // largest extent matches the synthetic shell's overall span. This is
+          // baked into the buffer so PointsMaterial.size stays in final world units.
+          const center = bbox.getCenter(new THREE.Vector3());
+          const size = bbox.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z) || 1;
+          const targetSize = 2.55;
+          const fitScale = targetSize / maxDim;
+          geometry.translate(-center.x, -center.y, -center.z);
+          geometry.scale(fitScale, fitScale, fitScale);
+        }
+        geometry.computeBoundingSphere();
+
+        const material = new THREE.PointsMaterial({
+          map: getPointSpriteTexture(),
+          alphaTest: 0.01,
+          color: "#9be5ff",
+          size: 0.014,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: initialAnatomyOpacityRef.current,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          vertexColors: colors !== null,
+        });
+        pointCloudMaterialRef.current = material;
+
+        const points = new THREE.Points(geometry, material);
+        points.name = "Anatomical point cloud";
+        // Anatomy reference sits behind every other element so neurons and pulses
+        // remain crisp over it.
+        points.renderOrder = 0;
+        // Small downward nudge so the cloud's anatomical "down" aligns with the
+        // synthetic shell's brainstem position.
+        points.position.y = -0.05;
+        pointCloudGroup.add(points);
+      },
+      (event) => {
+        if (cancelled) {
+          return;
+        }
+        // GLTFLoader forwards XHR ProgressEvent. `total` is 0 when the server
+        // doesn't send Content-Length; treat that as indeterminate.
+        const total = event.total ?? 0;
+        const loaded = event.loaded ?? 0;
+        onAnatomyLoadProgressRef.current?.({ loaded, total, done: false });
+      },
+      (error) => {
+        console.warn("Could not load brain_point_cloud.glb:", error);
+        onAnatomyLoadProgressRef.current?.({ loaded: 0, total: 0, done: true });
+      },
+    );
+
     const clock = new THREE.Clock();
     let animationFrame = 0;
+    let audioFrameCounter = 0;
 
     const renderFrame = () => {
       animationFrame = window.requestAnimationFrame(renderFrame);
@@ -153,10 +419,26 @@ export function BrainScene({
           selectedRegionRef.current,
           elapsed,
         );
+
+        // Feed average region intensity to the ambient bus every ~6 frames
+        // (~10 Hz at 60 fps) so audio tracks activity without polling per tick.
+        audioFrameCounter += 1;
+        if (audioFrameCounter >= 6) {
+          audioFrameCounter = 0;
+          const intensities = simulation.regionIntensity;
+          let sum = 0;
+          for (let index = 0; index < intensities.length; index += 1) {
+            sum += intensities[index];
+          }
+          // Scale up: average intensity rarely exceeds ~0.4, so multiply to
+          // map a busy brain into the 0..1 activity range for the bus.
+          const level = Math.min(1, (sum / Math.max(1, intensities.length)) * 2.5);
+          ambientBusRef.current?.setActivity(level);
+        }
       }
 
       controls.update();
-      renderer.render(scene, camera);
+      composer.render();
     };
 
     const resizeObserver = new ResizeObserver(() => {
@@ -165,6 +447,7 @@ export function BrainScene({
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
+      composer.setSize(width, height);
     });
     resizeObserver.observe(container);
 
@@ -190,6 +473,7 @@ export function BrainScene({
     renderFrame();
 
     return () => {
+      cancelled = true;
       window.cancelAnimationFrame(animationFrame);
       renderer.domElement.removeEventListener("click", handlePointerClick);
       resizeObserver.disconnect();
@@ -197,10 +481,20 @@ export function BrainScene({
       graphRendererRef.current?.dispose();
       scene.remove(shell);
       disposeObject(shell);
+      const pointCloud = pointCloudRef.current;
+      if (pointCloud) {
+        scene.remove(pointCloud);
+        disposeObject(pointCloud);
+      }
+      pointCloudMaterialRef.current = null;
+      ambientBus.dispose();
+      ambientBusRef.current = null;
+      bloomPass.dispose();
+      composer.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [onRegionSelect, shellOpacity]);
+  }, [onRegionSelect]);
 
   useEffect(() => {
     const scene = sceneRef.current;
@@ -219,7 +513,7 @@ export function BrainScene({
       seed: Math.round(neuronDensity * 1000) + 19,
     });
     const graphRenderer = new NeuralGraphRenderer(graph);
-    graphRenderer.applyRegionVisibility(regionVisibility);
+    graphRenderer.applyRegionVisibility(visibilityRef.current);
     graphRendererRef.current = graphRenderer;
     scene.add(graphRenderer.group);
 
@@ -233,14 +527,12 @@ export function BrainScene({
       pathways: graph.pathways.length,
       regions: graph.regionOrder.length,
     });
-  }, [
-    neuronDensity,
-    onMetricsChange,
-    regionVisibility,
-    selectedActionId,
-    signalSpeed,
-    simulationRunning,
-  ]);
+    // Intentionally only depend on neuronDensity (and the stable metrics setter):
+    // action/speed/running/visibility changes are handled by the small effects
+    // above so we don't rebuild the whole graph on every slider tick. Latest
+    // values are picked up via closure capture when density does change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [neuronDensity, onMetricsChange]);
 
   useEffect(() => {
     const camera = cameraRef.current;
@@ -288,7 +580,7 @@ function getCameraPreset(mode: CameraPresetRequest["mode"]): {
 }
 
 function updateCameraTransition(
-  elapsedSeconds: number,
+  _elapsedSeconds: number,
   camera: THREE.PerspectiveCamera,
   controls: OrbitControls,
   transitionRef: React.MutableRefObject<CameraTransition | null>,
@@ -324,3 +616,4 @@ function disposeObject(object: THREE.Object3D): void {
     }
   });
 }
+

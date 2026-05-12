@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { REGION_BY_ID } from "../engine/brainRegions";
+import { PATHWAY_SEGMENTS, samplePathway } from "../engine/neuralGraphGenerator";
 import type {
   BrainRegionId,
   NeuralGraph,
@@ -10,6 +11,7 @@ import type { SignalSimulation } from "../engine/signalSimulation";
 
 const INVISIBLE_SCALE = new THREE.Vector3(0, 0, 0);
 const IDENTITY_QUATERNION = new THREE.Quaternion();
+const FLOATS_PER_PATHWAY = PATHWAY_SEGMENTS * 2 * 3; // segments × (start + end) × xyz
 
 export class NeuralGraphRenderer {
   readonly group = new THREE.Group();
@@ -26,7 +28,8 @@ export class NeuralGraphRenderer {
   private readonly color = new THREE.Color();
   private readonly pulseScale = new THREE.Vector3();
   private readonly regionMaterials = new Map<BrainRegionId, THREE.MeshBasicMaterial>();
-  private readonly nodeVisibility = new Uint8Array(0);
+  private readonly pulseSamplePosition = new THREE.Vector3();
+  private readonly pulseScratch: [number, number, number] = [0, 0, 0];
 
   constructor(graph: NeuralGraph) {
     this.graph = graph;
@@ -66,8 +69,14 @@ export class NeuralGraphRenderer {
     selectedRegionId: BrainRegionId | null,
     elapsedSeconds: number,
   ): void {
-    this.updateRegionVolumes(simulation.regionIntensity, visibility, selectedRegionId, elapsedSeconds);
-    this.updateNeuronColors(simulation.regionIntensity, visibility);
+    this.updateRegionVolumes(
+      simulation.regionIntensity,
+      simulation.regionFlashIntensity,
+      visibility,
+      selectedRegionId,
+      elapsedSeconds,
+    );
+    this.updateNeuronColors(simulation.regionIntensity, simulation.regionFlashIntensity, visibility);
     this.updatePathwayColors(simulation.pathwayIntensity, visibility);
     this.updatePulses(simulation.pulses, visibility);
   }
@@ -121,24 +130,38 @@ export class NeuralGraphRenderer {
   }
 
   private createPathwayLines(): THREE.LineSegments {
-    const positions = new Float32Array(this.graph.pathways.length * 6);
-    const colors = new Float32Array(this.graph.pathways.length * 6);
+    const pathwayCount = this.graph.pathways.length;
+    const positions = new Float32Array(pathwayCount * FLOATS_PER_PATHWAY);
+    const colors = new Float32Array(pathwayCount * FLOATS_PER_PATHWAY);
 
-    for (let index = 0; index < this.graph.pathways.length; index += 1) {
+    for (let index = 0; index < pathwayCount; index += 1) {
       const pathway = this.graph.pathways[index];
-      const source = this.graph.nodes[pathway.source].position;
-      const target = this.graph.nodes[pathway.target].position;
-      positions.set(source, index * 6);
-      positions.set(target, index * 6 + 3);
-
+      const samples = pathway.samples;
+      const baseOffset = index * FLOATS_PER_PATHWAY;
       const sourceColor = this.baseRegionColors[pathway.sourceRegionIndex];
       const targetColor = this.baseRegionColors[pathway.targetRegionIndex];
-      colors[index * 6] = sourceColor.r * 0.24;
-      colors[index * 6 + 1] = sourceColor.g * 0.24;
-      colors[index * 6 + 2] = sourceColor.b * 0.24;
-      colors[index * 6 + 3] = targetColor.r * 0.24;
-      colors[index * 6 + 4] = targetColor.g * 0.24;
-      colors[index * 6 + 5] = targetColor.b * 0.24;
+
+      for (let segment = 0; segment < PATHWAY_SEGMENTS; segment += 1) {
+        const segOffset = baseOffset + segment * 6;
+        const sampleStart = segment * 3;
+        const sampleEnd = (segment + 1) * 3;
+        positions[segOffset] = samples[sampleStart];
+        positions[segOffset + 1] = samples[sampleStart + 1];
+        positions[segOffset + 2] = samples[sampleStart + 2];
+        positions[segOffset + 3] = samples[sampleEnd];
+        positions[segOffset + 4] = samples[sampleEnd + 1];
+        positions[segOffset + 5] = samples[sampleEnd + 2];
+
+        // Interpolate per-vertex color along the curve.
+        const tStart = segment / PATHWAY_SEGMENTS;
+        const tEnd = (segment + 1) / PATHWAY_SEGMENTS;
+        colors[segOffset] = lerp(sourceColor.r, targetColor.r, tStart) * 0.24;
+        colors[segOffset + 1] = lerp(sourceColor.g, targetColor.g, tStart) * 0.24;
+        colors[segOffset + 2] = lerp(sourceColor.b, targetColor.b, tStart) * 0.24;
+        colors[segOffset + 3] = lerp(sourceColor.r, targetColor.r, tEnd) * 0.24;
+        colors[segOffset + 4] = lerp(sourceColor.g, targetColor.g, tEnd) * 0.24;
+        colors[segOffset + 5] = lerp(sourceColor.b, targetColor.b, tEnd) * 0.24;
+      }
     }
 
     const geometry = new THREE.BufferGeometry();
@@ -226,6 +249,7 @@ export class NeuralGraphRenderer {
 
   private updateRegionVolumes(
     regionIntensity: Float32Array,
+    regionFlashIntensity: Float32Array,
     visibility: RegionVisibility,
     selectedRegionId: BrainRegionId | null,
     elapsedSeconds: number,
@@ -234,7 +258,9 @@ export class NeuralGraphRenderer {
       const regionId = regionMesh.userData.regionId as BrainRegionId;
       const region = REGION_BY_ID[regionId];
       const regionIndex = this.graph.regionOrder.indexOf(regionId);
-      const intensity = regionIntensity[regionIndex] ?? 0;
+      const baseIntensity = regionIntensity[regionIndex] ?? 0;
+      const flash = regionFlashIntensity[regionIndex] ?? 0;
+      const intensity = Math.min(1, baseIntensity + flash * 1.1);
       const selected = selectedRegionId === regionId;
       const material = this.regionMaterials.get(regionId);
 
@@ -243,19 +269,24 @@ export class NeuralGraphRenderer {
       }
 
       regionMesh.visible = visibility[regionId];
-      material.opacity = selected ? 0.28 : 0.08 + intensity * 0.17;
+      material.opacity = selected ? 0.28 : 0.08 + intensity * 0.17 + flash * 0.12;
       material.color.set(region.color).lerp(new THREE.Color("#ffffff"), Math.min(0.6, intensity * 0.45));
 
       const pulse = selected ? Math.sin(elapsedSeconds * 4) * 0.025 : 0;
+      const flashScale = 1 + flash * 0.08;
       regionMesh.scale.set(
-        region.radius[0] * (1 + pulse + intensity * 0.06),
-        region.radius[1] * (1 + pulse + intensity * 0.06),
-        region.radius[2] * (1 + pulse + intensity * 0.06),
+        region.radius[0] * (1 + pulse + intensity * 0.06) * flashScale,
+        region.radius[1] * (1 + pulse + intensity * 0.06) * flashScale,
+        region.radius[2] * (1 + pulse + intensity * 0.06) * flashScale,
       );
     }
   }
 
-  private updateNeuronColors(regionIntensity: Float32Array, visibility: RegionVisibility): void {
+  private updateNeuronColors(
+    regionIntensity: Float32Array,
+    regionFlashIntensity: Float32Array,
+    visibility: RegionVisibility,
+  ): void {
     for (let index = 0; index < this.graph.nodes.length; index += 1) {
       const node = this.graph.nodes[index];
       if (!visibility[node.regionId]) {
@@ -263,7 +294,9 @@ export class NeuralGraphRenderer {
         continue;
       }
 
-      const intensity = Math.min(1, regionIntensity[node.regionIndex]);
+      const baseIntensity = regionIntensity[node.regionIndex] ?? 0;
+      const flash = regionFlashIntensity[node.regionIndex] ?? 0;
+      const intensity = Math.min(1, baseIntensity + flash * 1.1);
       this.color.copy(this.baseRegionColors[node.regionIndex]).lerp(this.signalRegionColors[node.regionIndex], intensity);
       this.neuronMesh.setColorAt(index, this.color);
     }
@@ -277,10 +310,10 @@ export class NeuralGraphRenderer {
     for (let index = 0; index < this.graph.pathways.length; index += 1) {
       const pathway = this.graph.pathways[index];
       const visible = visibility[pathway.sourceRegionId] && visibility[pathway.targetRegionId];
-      const baseOffset = index * 6;
+      const baseOffset = index * FLOATS_PER_PATHWAY;
 
       if (!visible) {
-        this.lineColors.fill(0, baseOffset, baseOffset + 6);
+        this.lineColors.fill(0, baseOffset, baseOffset + FLOATS_PER_PATHWAY);
         continue;
       }
 
@@ -290,27 +323,37 @@ export class NeuralGraphRenderer {
       const sourceStrength = 0.14 + activity * 0.46;
       const targetStrength = 0.18 + activity * 1.1;
 
-      this.lineColors[baseOffset] = sourceColor.r * sourceStrength;
-      this.lineColors[baseOffset + 1] = sourceColor.g * sourceStrength;
-      this.lineColors[baseOffset + 2] = sourceColor.b * sourceStrength;
-      this.lineColors[baseOffset + 3] = targetColor.r * targetStrength;
-      this.lineColors[baseOffset + 4] = targetColor.g * targetStrength;
-      this.lineColors[baseOffset + 5] = targetColor.b * targetStrength;
+      // Write per-segment colors that fade from source-tinted to target-tinted along the curve.
+      for (let segment = 0; segment < PATHWAY_SEGMENTS; segment += 1) {
+        const tStart = segment / PATHWAY_SEGMENTS;
+        const tEnd = (segment + 1) / PATHWAY_SEGMENTS;
+        const segOffset = baseOffset + segment * 6;
+
+        const rStart = lerp(sourceColor.r * sourceStrength, targetColor.r * targetStrength, tStart);
+        const gStart = lerp(sourceColor.g * sourceStrength, targetColor.g * targetStrength, tStart);
+        const bStart = lerp(sourceColor.b * sourceStrength, targetColor.b * targetStrength, tStart);
+        const rEnd = lerp(sourceColor.r * sourceStrength, targetColor.r * targetStrength, tEnd);
+        const gEnd = lerp(sourceColor.g * sourceStrength, targetColor.g * targetStrength, tEnd);
+        const bEnd = lerp(sourceColor.b * sourceStrength, targetColor.b * targetStrength, tEnd);
+
+        this.lineColors[segOffset] = rStart;
+        this.lineColors[segOffset + 1] = gStart;
+        this.lineColors[segOffset + 2] = bStart;
+        this.lineColors[segOffset + 3] = rEnd;
+        this.lineColors[segOffset + 4] = gEnd;
+        this.lineColors[segOffset + 5] = bEnd;
+      }
     }
 
     this.pathwayLines.geometry.getAttribute("color").needsUpdate = true;
   }
 
   private updatePulses(pulses: SignalPulse[], visibility: RegionVisibility): void {
-    const position = new THREE.Vector3();
-    const from = new THREE.Vector3();
-    const to = new THREE.Vector3();
-
     for (let index = 0; index < 260; index += 1) {
       const pulse = pulses[index];
 
       if (!pulse) {
-        this.matrix.compose(position.set(0, 0, 0), IDENTITY_QUATERNION, INVISIBLE_SCALE);
+        this.matrix.compose(this.pulseSamplePosition.set(0, 0, 0), IDENTITY_QUATERNION, INVISIBLE_SCALE);
         this.pulseMesh.setMatrixAt(index, this.matrix);
         continue;
       }
@@ -318,18 +361,19 @@ export class NeuralGraphRenderer {
       const fromNode = this.graph.nodes[pulse.fromNode];
       const toNode = this.graph.nodes[pulse.toNode];
       if (!visibility[fromNode.regionId] || !visibility[toNode.regionId]) {
-        this.matrix.compose(position.set(0, 0, 0), IDENTITY_QUATERNION, INVISIBLE_SCALE);
+        this.matrix.compose(this.pulseSamplePosition.set(0, 0, 0), IDENTITY_QUATERNION, INVISIBLE_SCALE);
         this.pulseMesh.setMatrixAt(index, this.matrix);
         continue;
       }
 
-      from.set(fromNode.position[0], fromNode.position[1], fromNode.position[2]);
-      to.set(toNode.position[0], toNode.position[1], toNode.position[2]);
-      position.lerpVectors(from, to, pulse.progress);
+      const pathway = this.graph.pathways[pulse.pathwayIndex];
+      const t = pulse.reverse ? 1 - pulse.progress : pulse.progress;
+      samplePathway(pathway, t, this.pulseScratch);
+      this.pulseSamplePosition.set(this.pulseScratch[0], this.pulseScratch[1], this.pulseScratch[2]);
 
       const pulseSize = 0.024 + pulse.intensity * 0.038;
       this.pulseScale.set(pulseSize, pulseSize, pulseSize);
-      this.matrix.compose(position, IDENTITY_QUATERNION, this.pulseScale);
+      this.matrix.compose(this.pulseSamplePosition, IDENTITY_QUATERNION, this.pulseScale);
       this.pulseMesh.setMatrixAt(index, this.matrix);
       this.pulseMesh.setColorAt(index, this.signalRegionColors[pulse.colorRegionIndex]);
     }
@@ -339,4 +383,8 @@ export class NeuralGraphRenderer {
       this.pulseMesh.instanceColor.needsUpdate = true;
     }
   }
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }

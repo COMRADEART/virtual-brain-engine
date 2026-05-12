@@ -8,8 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run build` — runs `tsc` (type-check only, `noEmit`) then `vite build`. A type error fails the build.
 - `npm run preview` — preview the production build at `127.0.0.1`.
 - `npm run verify:canvas` — headless smoke test (see below). **Requires the dev server to already be running**; it does not start one.
+- `npm run test:actions` — per-action assertion suite (`scripts/smoke-actions.mjs`). Clicks each of the 7 action buttons, asserts the active-region route matches `regionDefinitions.ts`, screenshots each state into `artifacts/actions/`, and exercises a region click + the density slider. Same dev-server prerequisite.
+- `npm test` — runs `verify:canvas` then `test:actions`. The closest thing this project has to a test suite.
 
-There is no test runner, linter, or formatter wired up. `tsc` (via `npm run build`) is the only static check.
+There is no traditional test runner, linter, or formatter wired up. `tsc` (via `npm run build`) is the only static check; the two scripts above are the runtime checks.
 
 ### verify:canvas
 

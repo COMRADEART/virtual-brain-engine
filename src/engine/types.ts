@@ -1,12 +1,41 @@
 export type Vector3Tuple = [number, number, number];
 
+export type Hemisphere = "left" | "right" | "midline";
+
+export type BrainLobe =
+  | "frontal"
+  | "parietal"
+  | "temporal"
+  | "occipital"
+  | "subcortical"
+  | "cerebellum"
+  | "brainstem";
+
 export type BrainRegionId =
-  | "prefrontal"
-  | "motor"
-  | "visual"
-  | "auditory"
-  | "hippocampus"
-  | "amygdala"
+  | "prefrontal-l"
+  | "prefrontal-r"
+  | "frontal-l"
+  | "frontal-r"
+  | "motor-l"
+  | "motor-r"
+  | "somatosensory-l"
+  | "somatosensory-r"
+  | "parietal-l"
+  | "parietal-r"
+  | "temporal-l"
+  | "temporal-r"
+  | "auditory-l"
+  | "auditory-r"
+  | "occipital-l"
+  | "occipital-r"
+  | "hippocampus-l"
+  | "hippocampus-r"
+  | "amygdala-l"
+  | "amygdala-r"
+  | "thalamus-l"
+  | "thalamus-r"
+  | "basal-ganglia-l"
+  | "basal-ganglia-r"
   | "cerebellum"
   | "brainstem";
 
@@ -15,7 +44,9 @@ export type BrainActionId =
   | "see-object"
   | "hear-sound"
   | "remember-event"
-  | "fear-response";
+  | "fear-response"
+  | "speak"
+  | "read-text";
 
 export interface BrainRegionDefinition {
   id: BrainRegionId;
@@ -26,6 +57,8 @@ export interface BrainRegionDefinition {
   center: Vector3Tuple;
   radius: Vector3Tuple;
   baseNeuronCount: number;
+  hemisphere: Hemisphere;
+  lobe: BrainLobe;
 }
 
 export interface BrainActionDefinition {
@@ -54,6 +87,8 @@ export interface SynapticPathway {
   targetRegionIndex: number;
   strength: number;
   length: number;
+  controlPoint: Vector3Tuple;
+  samples: Float32Array;
 }
 
 export interface RegionNodeRange {
@@ -81,6 +116,7 @@ export interface SignalPulse {
   intensity: number;
   colorRegionId: BrainRegionId;
   colorRegionIndex: number;
+  reverse: boolean;
 }
 
 export interface BrainMetrics {

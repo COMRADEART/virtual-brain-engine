@@ -7,7 +7,9 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "verify:canvas": "node scripts/verify-canvas.mjs"
+    "verify:canvas": "node scripts/verify-canvas.mjs",
+    "test:actions": "node scripts/smoke-actions.mjs",
+    "test": "npm run verify:canvas && npm run test:actions"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

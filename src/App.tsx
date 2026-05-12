@@ -1,8 +1,16 @@
-import { useCallback, useMemo, useState } from "react";
-import { BrainScene } from "./components/BrainScene";
+import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
+import { AiPickOverlay, type AiPickEvent } from "./components/AiPickOverlay";
+import { BrainScene, type AnatomyLoadProgress } from "./components/BrainScene";
 import { InfoPanel } from "./components/InfoPanel";
 import { RegionControls } from "./components/RegionControls";
 import { REGION_DEFINITIONS } from "./data/regionDefinitions";
+
+// Lazy-load the AI panel so its chunk (plus the Ollama client and Web Speech
+// wrapper) stay out of the initial bundle. The panel is non-critical and
+// renders nothing until its module arrives.
+const AiCompanion = lazy(() =>
+  import("./components/AiCompanion").then((module) => ({ default: module.AiCompanion })),
+);
 import type {
   BrainActionId,
   BrainMetrics,
@@ -24,7 +32,10 @@ function App(): JSX.Element {
   const [signalSpeed, setSignalSpeed] = useState(1.3);
   const [neuronDensity, setNeuronDensity] = useState(1);
   const [regionVisibility, setRegionVisibility] = useState<RegionVisibility>(DEFAULT_VISIBILITY);
-  const [selectedRegionId, setSelectedRegionId] = useState<BrainRegionId | null>("motor");
+  const [selectedRegionId, setSelectedRegionId] = useState<BrainRegionId | null>("motor-l");
+  const [anatomyVisible, setAnatomyVisible] = useState(true);
+  const [anatomyOpacity, setAnatomyOpacity] = useState(0.32);
+  const [audioEnabled, setAudioEnabled] = useState(false);
   const [metrics, setMetrics] = useState<BrainMetrics>({
     neurons: 0,
     pathways: 0,
@@ -34,8 +45,31 @@ function App(): JSX.Element {
     mode: "overview",
     sequence: 0,
   });
+  const [aiPick, setAiPick] = useState<AiPickEvent | null>(null);
+  const aiPickSequence = useRef(0);
+  const [anatomyProgress, setAnatomyProgress] = useState<AnatomyLoadProgress>({
+    loaded: 0,
+    total: 0,
+    done: false,
+  });
 
-  const shellOpacity = shellTransparent ? 0.13 : 0.42;
+  const shellOpacity = shellTransparent ? 0.02 : 0.08;
+
+  const handleAiPick = useCallback((action: BrainActionId, why?: string) => {
+    setSelectedActionId(action);
+    aiPickSequence.current += 1;
+    setAiPick({ action, why, sequence: aiPickSequence.current });
+  }, []);
+
+  const anatomyPercent = useMemo(() => {
+    if (anatomyProgress.done) {
+      return 100;
+    }
+    if (anatomyProgress.total > 0) {
+      return Math.min(99, Math.round((anatomyProgress.loaded / anatomyProgress.total) * 100));
+    }
+    return null; // indeterminate — server didn't send content-length
+  }, [anatomyProgress]);
 
   const handleRegionVisibilityChange = useCallback(
     (regionId: BrainRegionId, visible: boolean) => {
@@ -59,8 +93,13 @@ function App(): JSX.Element {
   return (
     <main className="app-shell">
       <BrainScene
+        aiPick={aiPick}
+        anatomyOpacity={anatomyOpacity}
+        anatomyVisible={anatomyVisible}
+        audioEnabled={audioEnabled}
         cameraPreset={cameraPreset}
         neuronDensity={neuronDensity}
+        onAnatomyLoadProgress={setAnatomyProgress}
         onMetricsChange={setMetrics}
         onRegionSelect={setSelectedRegionId}
         regionVisibility={sceneVisibility}
@@ -70,10 +109,24 @@ function App(): JSX.Element {
         signalSpeed={signalSpeed}
         simulationRunning={running}
       />
+      {!anatomyProgress.done ? (
+        <div className="anatomy-loading-pill" role="status" aria-live="polite">
+          <span className="anatomy-loading-dot" aria-hidden="true" />
+          <span>
+            Loading anatomy{anatomyPercent !== null ? ` ${anatomyPercent}%` : "…"}
+          </span>
+        </div>
+      ) : null}
       <div className="scan-grid" aria-hidden="true" />
       <RegionControls
+        anatomyOpacity={anatomyOpacity}
+        anatomyVisible={anatomyVisible}
+        audioEnabled={audioEnabled}
         neuronDensity={neuronDensity}
         onActionChange={setSelectedActionId}
+        onAnatomyOpacityChange={setAnatomyOpacity}
+        onAnatomyVisibleChange={setAnatomyVisible}
+        onAudioEnabledChange={setAudioEnabled}
         onCameraPreset={handleCameraPreset}
         onNeuronDensityChange={setNeuronDensity}
         onRegionSelect={setSelectedRegionId}
@@ -93,6 +146,10 @@ function App(): JSX.Element {
         selectedActionId={selectedActionId}
         selectedRegionId={selectedRegionId}
       />
+      <AiPickOverlay pick={aiPick} />
+      <Suspense fallback={null}>
+        <AiCompanion onActionPick={handleAiPick} />
+      </Suspense>
     </main>
   );
 }
