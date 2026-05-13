@@ -1,9 +1,12 @@
-import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AiPickOverlay, type AiPickEvent } from "./components/AiPickOverlay";
+import { BrainOSPanel } from "./components/BrainOSPanel";
 import { BrainScene, type AnatomyLoadProgress } from "./components/BrainScene";
 import { InfoPanel } from "./components/InfoPanel";
+import { LogicalRegionIndicator } from "./components/LogicalRegionIndicator";
+import { PipelineOverlay } from "./components/PipelineOverlay";
 import { RegionControls } from "./components/RegionControls";
-import { REGION_DEFINITIONS } from "./data/regionDefinitions";
+import { REGION_DEFINITIONS, BRAIN_ACTIONS } from "./data/regionDefinitions";
 
 // Lazy-load the AI panel so its chunk (plus the Ollama client and Web Speech
 // wrapper) stay out of the initial bundle. The panel is non-critical and
@@ -54,6 +57,55 @@ function App(): JSX.Element {
   });
 
   const shellOpacity = shellTransparent ? 0.02 : 0.08;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      switch (event.key) {
+        case " ":
+          event.preventDefault();
+          setRunning((r) => !r);
+          break;
+        case "1":
+        case "2":
+        case "3":
+        case "4":
+        case "5":
+        case "6":
+        case "7": {
+          const index = parseInt(event.key, 10) - 1;
+          if (index < BRAIN_ACTIONS.length) {
+            setSelectedActionId(BRAIN_ACTIONS[index].id);
+          }
+          break;
+        }
+        case "o":
+        case "O":
+          setCameraPreset((p) => ({ mode: "overview", sequence: p.sequence + 1 }));
+          break;
+        case "i":
+        case "I":
+          setCameraPreset((p) => ({ mode: "inside", sequence: p.sequence + 1 }));
+          break;
+        case "r":
+        case "R":
+          setCameraPreset((p) => ({ mode: "reset", sequence: p.sequence + 1 }));
+          break;
+        case "x":
+        case "X":
+          setShellTransparent((t) => !t);
+          break;
+        case "a":
+        case "A":
+          setAnatomyVisible((v) => !v);
+          break;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const handleAiPick = useCallback((action: BrainActionId, why?: string) => {
     setSelectedActionId(action);
@@ -147,6 +199,9 @@ function App(): JSX.Element {
         selectedRegionId={selectedRegionId}
       />
       <AiPickOverlay pick={aiPick} />
+      <PipelineOverlay />
+      <LogicalRegionIndicator />
+      <BrainOSPanel />
       <Suspense fallback={null}>
         <AiCompanion onActionPick={handleAiPick} />
       </Suspense>

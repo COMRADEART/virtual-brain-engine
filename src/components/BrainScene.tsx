@@ -12,6 +12,8 @@ import { ACTION_BY_ID } from "../engine/brainRegions";
 import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
 import { generateNeuralGraph } from "../engine/neuralGraphGenerator";
 import { SignalSimulation } from "../engine/signalSimulation";
+import { subscribeBrainBus } from "../engine/brainBus";
+import { LOGICAL_REGION_IDS } from "../../shared/pipeline";
 import type {
   BrainActionId,
   BrainMetrics,
@@ -223,6 +225,55 @@ export function BrainScene({
     }
     simulationRef.current?.flashRegions(action.activeRegions);
   }, [aiPick]);
+
+  // Server pipeline events flash logical cortices on the brain. Status === "start"
+  // is the leading edge so flashes happen at the same moment the UI shows a step
+  // beginning, not when it finishes.
+  //
+  // We also track the most recent pipeline activity timestamp so the idle
+  // "breathing" loop below pauses while a real run is happening — otherwise
+  // the two animations stack and the brain reads as twitchy.
+  const lastPipelineActivityRef = useRef(0);
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      if (message.type !== "pipeline") {
+        return;
+      }
+      lastPipelineActivityRef.current = Date.now();
+      if (message.status !== "start") {
+        return;
+      }
+      const sim = simulationRef.current;
+      if (!sim) {
+        return;
+      }
+      for (const region of message.logicalRegions) {
+        sim.flashLogicalRegion(region);
+      }
+    });
+  }, []);
+
+  // Idle breathing: when nothing else is happening, drift slow low-magnitude
+  // flashes across the 8 logical cortices. Magnitude is well under the active
+  // flash level (~0.85) so a real pipeline event still visibly outshines this.
+  useEffect(() => {
+    let cursor = 0;
+    const id = window.setInterval(() => {
+      const sim = simulationRef.current;
+      if (!sim) {
+        return;
+      }
+      // Skip if a pipeline step happened in the last 4s — the user is in the
+      // middle of an interaction and we shouldn't add noise.
+      if (Date.now() - lastPipelineActivityRef.current < 4000) {
+        return;
+      }
+      const region = LOGICAL_REGION_IDS[cursor % LOGICAL_REGION_IDS.length];
+      cursor += 1;
+      sim.flashLogicalRegion(region, 0.18);
+    }, 1800);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     ambientBusRef.current?.setEnabled(audioEnabled);

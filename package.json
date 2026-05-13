@@ -5,23 +5,36 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "dev:server": "npm --prefix server run dev",
+    "dev:all": "concurrently --names \"vite,server\" --prefix-colors \"cyan,magenta\" \"npm run dev\" \"npm run dev:server\"",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
+    "scan": "node scripts/scan.mjs",
     "verify:canvas": "node scripts/verify-canvas.mjs",
     "test:actions": "node scripts/smoke-actions.mjs",
-    "test": "npm run verify:canvas && npm run test:actions"
+    "test:all": "node scripts/test-all.mjs",
+    "test": "npm run verify:canvas && npm run test:actions",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:debug": "tauri build --debug",
+    "dev:desktop": "concurrently --names \"vite,tauri\" --prefix-colors \"cyan,magenta\" \"npm run dev\" \"npm run tauri:dev\""
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.3.0",
+    "@tauri-apps/plugin-shell": "^2.2.0",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.171.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.171.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.0.1",
     "typescript": "^5.6.3",
     "vite": "^6.0.3"
   }

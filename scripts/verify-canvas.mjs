@@ -21,7 +21,37 @@ if (!chromePath) {
   throw new Error("Chrome or Edge executable was not found for canvas verification.");
 }
 
+// Refuse to launch Chrome against a dead URL. The script used to navigate
+// anyway, land on Chrome's `ERR_CONNECTION_REFUSED` page, and report
+// `missing canvas` — accurate but unhelpful. Probe first and fail loud.
+async function precheckDevServer(url) {
+  try {
+    const probeUrl = new URL(url);
+    const res = await fetch(probeUrl, { method: "GET" });
+    if (!res.ok) {
+      throw new Error(`dev server returned HTTP ${res.status}`);
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(
+      [
+        `verify:canvas could not reach ${url}: ${reason}`,
+        "",
+        "This script does NOT start a dev server. Start one in another terminal:",
+        "    npm run dev",
+        "or run the orchestrated script that boots Vite for you:",
+        "    npm run test:all",
+        "",
+        "Override the target URL with VERIFY_URL=... if the server is on a different port.",
+      ].join("\n"),
+    );
+    process.exit(2);
+  }
+}
+
 async function main() {
+  await precheckDevServer(TARGET_URL);
+
   const userDataDir = path.join(os.tmpdir(), `virtual-brain-engine-chrome-${process.pid}`);
   await mkdir(userDataDir, { recursive: true });
 

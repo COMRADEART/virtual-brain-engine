@@ -1,4 +1,6 @@
 import { ACTION_BY_ID } from "./brainRegions";
+import { LOGICAL_REGION_MAP } from "./logicalRegions";
+import type { LogicalRegionId } from "../../shared/pipeline";
 import type {
   BrainActionId,
   BrainRegionId,
@@ -87,6 +89,15 @@ export class SignalSimulation {
       if (this.regionFlashIntensity[index] < magnitude) {
         this.regionFlashIntensity[index] = magnitude;
       }
+    }
+  }
+
+  // Pipeline events name a logical cortex (e.g. "memory-core"); fan it out to
+  // the anatomical regions that cortex covers.
+  flashLogicalRegion(id: LogicalRegionId, magnitude = 0.85): void {
+    const regions = LOGICAL_REGION_MAP[id];
+    if (regions) {
+      this.flashRegions(regions, magnitude);
     }
   }
 

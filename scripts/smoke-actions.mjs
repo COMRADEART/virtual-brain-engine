@@ -79,7 +79,31 @@ const chromeCandidates = [
 const chromePath = chromeCandidates.find((c) => existsSync(c));
 if (!chromePath) throw new Error("Chrome/Edge not found.");
 
+async function precheckDevServer(url) {
+  try {
+    const res = await fetch(new URL(url));
+    if (!res.ok) {
+      throw new Error(`dev server returned HTTP ${res.status}`);
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(
+      [
+        `test:actions could not reach ${url}: ${reason}`,
+        "",
+        "Start the dev server first:",
+        "    npm run dev",
+        "or use the orchestrated test runner:",
+        "    npm run test:all",
+      ].join("\n"),
+    );
+    process.exit(2);
+  }
+}
+
 async function main() {
+  await precheckDevServer(TARGET_URL);
+
   const userDataDir = path.join(os.tmpdir(), `vbe-actions-${process.pid}`);
   await mkdir(userDataDir, { recursive: true });
 
@@ -118,7 +142,10 @@ async function main() {
         const isFaviconMiss =
           /favicon/i.test(url) ||
           (text.includes("404") && /favicon\.ico$/i.test(url));
-        if (!isFaviconMiss) issues.push(text);
+        // Ignore expected WebSocket errors for the optional backend server on port 8787.
+        const isExpectedWsError =
+          /WebSocket.*8787/.test(text) || /ws:\/\/127\.0\.0\.1:8787/.test(text);
+        if (!isFaviconMiss && !isExpectedWsError) issues.push(text);
       }
     });
 

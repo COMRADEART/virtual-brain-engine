@@ -1,0 +1,170 @@
+# Plan — Make the virtual brain look and behave like a real human brain
+
+## Context
+
+The current scene is a single softly-folded ellipsoid with 8 monolithic regions, straight-line synapses, and a faint bilateral hint. To pass as a *human* brain, the visualization needs four things it currently lacks:
+
+1. **Anatomy** — two clearly separated cerebral hemispheres, a cerebellum behind/below them, and a brainstem extending downward. The "brain shell" is doing all of this work as one warped sphere today.
+2. **Regions in the right places, on both sides** — frontal/parietal/temporal/occipital lobes per hemisphere, with subcortical structures (hippocampus, amygdala, thalamus, basal ganglia) sitting inside the temporal/medial volume. Most current regions live near `x ≈ 0` and aren't bilateral.
+3. **White-matter–style connectivity** — pulses travelling along *curved* tracts (corpus callosum arching across the midline, optic radiations sweeping from thalamus to occipital, arcuate fasciculus, etc.), not straight chords through ventricles.
+4. **Plausible functional networks** — actions that activate the correct relay chain (e.g. "see object" runs retina → LGN/thalamus → V1 → V2/V4 → prefrontal), and bilateral co-activation where it belongs.
+
+The architectural seams the project enforces (mutable simulation state outside React; `BrainScene` rebuilds graph+renderer on `neuronDensity` change; everything keyed by `BrainRegionId`) are preserved. Region IDs remain a string-literal union; we expand the union, the data file, and the connection list together.
+
+## Shape of the change
+
+```mermaid
+flowchart TD
+    A["types.ts<br/>expand BrainRegionId union<br/>add hemisphere + lobe fields"] --> B["regionDefinitions.ts<br/>~22 bilateral regions<br/>+ thalamus/basal ganglia<br/>+ rewritten BRAIN_ACTIONS"]
+    A --> C["brainRegions.ts<br/>REGION_CONNECTIONS:<br/>callosal, thalamocortical,<br/>limbic, cerebellar loops"]
+    B --> D["neuralGraphGenerator.ts<br/>per-region ellipsoid sampling<br/>+ bezier control point per pathway<br/>+ sample N points along curve"]
+    C --> D
+    D --> E["NeuralGraph.tsx<br/>line segments built from<br/>curve samples (N-1 per pathway)<br/>pulses lerp along curve points"]
+    B --> F["BrainShell.tsx<br/>two hemisphere meshes w/ fissure<br/>+ cerebellum mesh<br/>+ brainstem capsule<br/>3D-noise gyri displacement"]
+    E --> G["npm run build<br/>npm run dev + verify:canvas"]
+    F --> G
+```
+
+The data layer (types → definitions → connections) is the single source of truth; the generator consumes it; the renderer consumes the generator's output. Shell changes are independent and can land in parallel.
+
+## Phase 1 — Anatomy in the data layer
+
+### `src/engine/types.ts`
+
+- Expand `BrainRegionId` to a bilateral, anatomically grounded set. Suggested ~22 IDs (use `-l` / `-r` suffix for paired structures, no suffix for midline/unpaired):
+  - Cortical (bilateral): `frontal-l/r`, `prefrontal-l/r`, `motor-l/r`, `somatosensory-l/r`, `parietal-l/r`, `temporal-l/r`, `auditory-l/r`, `occipital-l/r`
+  - Subcortical (bilateral): `hippocampus-l/r`, `amygdala-l/r`, `thalamus-l/r`, `basal-ganglia-l/r`
+  - Midline / unpaired: `cerebellum`, `brainstem`
+- Add to `BrainRegionDefinition`:
+  ```ts
+  hemisphere: "left" | "right" | "midline";
+  lobe: "frontal" | "parietal" | "temporal" | "occipital" | "subcortical" | "cerebellum" | "brainstem";
+  ```
+  These let the generator/renderer treat callosal and intra-lobe pathways differently without hard-coding ID strings.
+- Extend `BrainActionId` to: `lift-hand`, `see-object`, `hear-sound`, `remember-event`, `fear-response`, `speak`, `read-text` (the last two showcase laterality — Broca's/Wernicke's live in the left hemisphere by default).
+
+### `src/data/regionDefinitions.ts`
+
+- For every bilateral region, emit *two* entries with `center[0] = ±X` (left = negative x, right = positive x). Place them anatomically:
+  - **Frontal lobe** (prefrontal + frontal): `z ≈ +0.8…+1.1`, `y ≈ +0.2…+0.5`, `|x| ≈ 0.55`.
+  - **Motor strip (precentral)**: thin band, `z ≈ +0.05`, `y ≈ +0.55…+0.75`, `|x| ≈ 0.7`.
+  - **Somatosensory (postcentral)**: just posterior to motor, `z ≈ -0.05`, mirror y/x.
+  - **Parietal**: `z ≈ -0.35`, `y ≈ +0.5`, `|x| ≈ 0.7`.
+  - **Temporal**: `y ≈ -0.25`, `z ≈ +0.1…-0.4`, `|x| ≈ 0.95` (lateral).
+  - **Auditory (superior temporal)**: nested inside temporal, `|x| ≈ 0.85`, `y ≈ +0.05`.
+  - **Occipital**: `z ≈ -1.05`, `y ≈ +0.05`, `|x| ≈ 0.45`.
+  - **Hippocampus**: medial temporal, `y ≈ -0.35`, `z ≈ -0.2`, `|x| ≈ 0.35`, small radius.
+  - **Amygdala**: anterior to hippocampus, `y ≈ -0.32`, `z ≈ +0.15`, `|x| ≈ 0.3`.
+  - **Thalamus**: deep midline-adjacent, `y ≈ -0.05`, `z ≈ -0.05`, `|x| ≈ 0.18`, small.
+  - **Basal ganglia**: lateral to thalamus, `y ≈ +0.0`, `z ≈ +0.05`, `|x| ≈ 0.32`.
+  - **Cerebellum**: `center = [0, -0.8, -0.85]`, `radius ≈ [1.05, 0.4, 0.5]` (already roughly correct, widen slightly).
+  - **Brainstem**: `center = [0, -1.05, -0.2]`, `radius ≈ [0.22, 0.52, 0.22]`.
+- Halve `baseNeuronCount` on each paired region (so total neuron budget at `density=1` stays similar to today's ~1150; doubling region count without scaling would double GPU load).
+- Pick colors so paired hemispheres share a hue (left/right thalamus both yellow, etc.) — the hemisphere field carries the laterality, color carries the function.
+
+### `src/engine/brainRegions.ts`
+
+Replace `REGION_CONNECTIONS` with anatomically motivated tracts. Keep the existing tuple format `[fromId, toId, count]`. Generate the list programmatically inside the file (one source-of-truth function over the new IDs) rather than typing out 60+ pairs by hand:
+
+- **Corpus callosum** — for each bilateral pair *of the same lobe*, add a left↔right edge with high count (≈40 for frontal pairs, ≈30 elsewhere). This is the largest white-matter tract; it should dominate visually.
+- **Thalamo-cortical fan** — `thalamus-l/r` connects to *every* cortical region in the same hemisphere (count ≈ 18 each). This makes thalamus the lit-up hub it actually is.
+- **Limbic loop** — `hippocampus ↔ amygdala`, `amygdala ↔ prefrontal` (uncinate fasciculus), `hippocampus ↔ prefrontal` (fornix-ish), `amygdala ↔ brainstem`, per hemisphere.
+- **Cortico-cortical** within hemisphere — `prefrontal ↔ motor`, `motor ↔ somatosensory`, `somatosensory ↔ parietal`, `parietal ↔ occipital`, `temporal ↔ auditory`, `auditory ↔ parietal`, `temporal ↔ occipital`, `prefrontal ↔ temporal` (arcuate).
+- **Motor pathway** — `motor-l/r → brainstem` (count ≈ 18), `brainstem ↔ cerebellum` (count ≈ 28), `cerebellum ↔ motor-l/r` (count ≈ 20). Models pyramidal + cerebellar feedback.
+- **Basal ganglia loop** — `basal-ganglia-l/r ↔ thalamus-l/r`, `basal-ganglia-l/r ↔ motor-l/r`, `basal-ganglia-l/r ↔ prefrontal-l/r`.
+
+### `BRAIN_ACTIONS` rewrite (same file)
+
+Each action now lists *all* the regions in its functional network (bilateral where appropriate):
+
+| Action | activeRegions |
+|---|---|
+| `lift-hand` | `prefrontal-l`, `motor-l`, `somatosensory-l`, `basal-ganglia-l`, `cerebellum`, `brainstem` (contralateral side; one-handed) |
+| `see-object` | `occipital-l`, `occipital-r`, `thalamus-l`, `thalamus-r`, `parietal-l`, `parietal-r`, `prefrontal-l` |
+| `hear-sound` | `auditory-l`, `auditory-r`, `thalamus-l`, `thalamus-r`, `temporal-l`, `hippocampus-l`, `hippocampus-r` |
+| `remember-event` | `hippocampus-l`, `hippocampus-r`, `prefrontal-l`, `prefrontal-r`, `temporal-l`, `temporal-r` |
+| `fear-response` | `amygdala-l`, `amygdala-r`, `hippocampus-l`, `hippocampus-r`, `brainstem`, `prefrontal-r` |
+| `speak` | `prefrontal-l` (Broca's), `motor-l`, `auditory-l`, `temporal-l` (Wernicke's), `cerebellum` |
+| `read-text` | `occipital-l`, `occipital-r`, `temporal-l`, `parietal-l`, `prefrontal-l` |
+
+This is what gives the lit-up pattern its diagnostic feel — "see object" lights up the *back* of both hemispheres and routes forward; "fear response" lights the medial temporal lobes; "speak" is strongly left-lateralized.
+
+## Phase 2 — Curved white-matter pathways
+
+### `src/engine/neuralGraphGenerator.ts`
+
+The straight-line pathways are the most "non-biological" element. Replace with sampled bezier curves; this is contained to the generator and the renderer.
+
+1. Add to `SynapticPathway`:
+   ```ts
+   controlPoint: Vector3Tuple;   // mid-curve bend
+   samples: Float32Array;        // (SEGMENTS+1)*3 points along the curve
+   ```
+   Constant: `const PATHWAY_SEGMENTS = 8` (renderer cost = pathways × 8 segments × 2 vertices, ≈ same order as today's count). Keep it adjustable.
+2. After computing `source`/`target`, compute a control point biased *outward* from the brain's centroid so the curve bulges away from the ventricles:
+   - `mid = (source + target) / 2`
+   - `outward = normalize(mid)`  (centroid is origin)
+   - `bend = max(0.15, distance(source,target) * 0.35)` — longer tracts arch more
+   - `controlPoint = mid + outward * bend + small_seeded_jitter`
+3. **Corpus callosum special case**: if pathway crosses x=0 (sign change between source.x and target.x) *and* both endpoints are cortical, force the control point high (`y += 0.4`) so callosal fibers arch up over the longitudinal fissure instead of plowing through it. Detect via the new `hemisphere` field, not by coordinate sign.
+4. **Brainstem/cerebellum special case**: when one endpoint is in brainstem or cerebellum, bias the control point *downward* so the curve dips into the posterior fossa rather than arching over the cortex.
+5. Sample the quadratic bezier at `PATHWAY_SEGMENTS + 1` points and store in `samples`. Also expose a helper `samplePathway(pathway, t): [number, number, number]` for the simulation/renderer to interpolate without recomputing the bezier each frame.
+6. Leave `length` as the *curved* arc length (sum of segment lengths) — that's what pulse velocity should track, otherwise long arched tracts feel fast.
+
+Locality and density logic stay as today (the sliding-window heuristic that CLAUDE.md asks us to preserve).
+
+### `src/components/NeuralGraph.tsx`
+
+- In `createPathwayLines`, build the `positions` buffer with `pathways.length * PATHWAY_SEGMENTS * 2` entries: emit one line segment per (sample[i], sample[i+1]) pair. Colors array sizes scale by the same factor; per-vertex color interpolates between `sourceColor` and `targetColor` along the curve.
+- In `updatePathwayColors`, loop over segments per pathway (or vectorize): each pathway still has a single activity value, but write it to all its segments.
+- In `updatePulses`, replace the `lerpVectors(from, to, pulse.progress)` line with a call to `samplePathway(pathway, pulse.progress)` (passed in via the simulation/graph reference the renderer already holds). The travelling-wave shape comes for free: the pulse rides the curve.
+
+No other renderer surface changes — `regionMeshes`, `neuronMesh`, `applyRegionVisibility` keep their shape.
+
+## Phase 3 — Anatomical shell
+
+### `src/components/BrainShell.tsx`
+
+Rewrite `createBrainShell` to compose three distinct meshes (one group, like today, so `BrainScene` can keep treating it as a single `Object3D`):
+
+1. **Two cerebral hemispheres** — `SphereGeometry(1, 96, 48)`, displaced per-vertex with 3D simplex-ish noise (combine 2–3 octaves of `Math.sin/cos` of `(x*k, y*k, z*k)`; today's fold pass is already similar, just shallower). Place each hemisphere offset by `±0.08` on x and scale `~1.0 × 0.85 × 1.25` (longer front-to-back, narrower L-R per hemisphere). Result: visible longitudinal fissure down the middle.
+2. **Cerebellum** — separate `SphereGeometry(1, 64, 32)` scaled `0.85 × 0.34 × 0.5`, positioned at `(0, -0.78, -0.78)`. Apply a tighter fold noise (higher frequency, smaller amplitude) so it reads as the densely-foliated cerebellar surface.
+3. **Brainstem** — `CapsuleGeometry(0.16, 0.5, 8, 16)` (or a cylinder if pinning Three.js can't reach capsule), at `(0, -1.0, -0.2)`, no displacement. Smooth, paler material.
+
+Material: keep the existing `MeshPhysicalMaterial` parameters but drop `transmission` to ≈0.45 — a more milky/tissue look beats the glassy x-ray feel for "human brain". Continue using additive blending so it stays readable when neurons are visible underneath. Preserve `setBrainShellOpacity` API (BrainScene drives it on the `shellTransparent` toggle).
+
+Re-tune `createFoldLines` so gyri lines wrap each hemisphere separately (loop twice with `xCenter = ±0.45`), and stretch the midline line into a clearer interhemispheric seam.
+
+## Phase 4 — Wiring + verification
+
+### `src/components/BrainScene.tsx`
+
+No structural change. The new IDs flow through unchanged because `RegionVisibility` is `Record<BrainRegionId, boolean>` and `App.tsx` builds `DEFAULT_VISIBILITY` from `REGION_DEFINITIONS`. Confirm `RegionControls` and `InfoPanel` render the new region list legibly — if the panel becomes too tall, group by lobe (label rows by `lobe`). That's a small follow-up in `RegionControls.tsx` but not required for the anatomical change to land.
+
+### Verification
+
+End-to-end:
+1. `npm run build` — must compile clean (strict TS will catch any missed ID).
+2. `npm run dev`, then `npm run verify:canvas`. The 96×60 luma check still passes as long as *anything* renders; the screenshot at `artifacts/virtual-brain-engine.png` is the qualitative check — open it and confirm: two hemispheres, fissure visible, cerebellum behind/below, brainstem stub.
+3. Manual smoke in the browser at `http://127.0.0.1:5173/`:
+   - Toggle each of the 7 actions. Expected lit pattern: `see-object` → both occipital lobes + thalami + forward arc to prefrontal; `speak` → strongly left-lateralized; `fear-response` → bilateral medial temporal + brainstem.
+   - Click each region — the new bilateral regions should be individually selectable. Confirm the raycasts hit the new ellipsoids (they're smaller per side, but still volumetric).
+   - Drag `neuronDensity` slider end-to-end — graph rebuilds without exceptions and pulses still travel along curves.
+
+## Critical files to modify
+
+- `src/engine/types.ts` — IDs, hemisphere/lobe fields, pathway sample buffer.
+- `src/data/regionDefinitions.ts` — full anatomical layout + new actions.
+- `src/engine/brainRegions.ts` — connection list as a programmatic builder.
+- `src/engine/neuralGraphGenerator.ts` — bezier control points + sampled pathways.
+- `src/components/NeuralGraph.tsx` — multi-segment line buffer; pulse-on-curve.
+- `src/components/BrainShell.tsx` — hemispheres + cerebellum + brainstem composition.
+- Light touch-up only: `src/App.tsx` (defaults), `src/components/RegionControls.tsx` (lobe grouping if list gets long).
+
+## Things to reuse, not reinvent
+
+- `mulberry32` in both `neuralGraphGenerator.ts:17` and `signalSimulation.ts:33` — keep the deterministic seeding pattern; reuse for new bezier jitter.
+- `randomInEllipsoid` (`neuralGraphGenerator.ts:26`) — already produces region-shaped point clouds; new bilateral regions just call it with different centers.
+- `REGION_BY_ID` / `ACTION_BY_ID` lookup tables in `brainRegions.ts:14` — keep the same accessor pattern after the expansion.
+- `SignalSimulation.rebuildEligiblePathways` (`signalSimulation.ts:157`) — already iterates over active region sets; the rewritten actions plug in with no engine change.
+- `NeuralGraphRenderer.update` orchestration (`NeuralGraph.tsx:63`) — only the body of `updatePathwayColors` and `updatePulses` changes; the call sites and visibility plumbing stay.
