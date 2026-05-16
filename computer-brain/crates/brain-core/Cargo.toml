@@ -1,0 +1,35 @@
+[package]
+name = "brain-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+agent-runtime.workspace = true
+anyhow.workspace = true
+capability-system.workspace = true
+chrono.workspace = true
+cognitive-state.workspace = true
+context-engine.workspace = true
+dirs.workspace = true
+execution-graph.workspace = true
+knowledge-graph.workspace = true
+memory-cortex.workspace = true
+nervous-system.workspace = true
+observability.workspace = true
+parking_lot.workspace = true
+personality-engine.workspace = true
+planner-engine.workspace = true
+safety-layer.workspace = true
+semantic-memory.workspace = true
+sensory-system.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shared-types.workspace = true
+temporal-engine.workspace = true
+tokio.workspace = true
+tool-cortex.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+workflow-engine.workspace = true

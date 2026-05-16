@@ -1,0 +1,26 @@
+[package]
+name = "computer-brain-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "computer_brain_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+brain-core.workspace = true
+desktop-bridge.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shared-types.workspace = true
+tauri.workspace = true
+tauri-plugin-log.workspace = true
+tauri-plugin-shell.workspace = true
+tokio.workspace = true

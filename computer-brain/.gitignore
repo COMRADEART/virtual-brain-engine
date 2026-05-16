@@ -1,0 +1,7 @@
+/target/
+/apps/desktop-pet/dist/
+/apps/desktop-pet/node_modules/
+/apps/desktop-pet/src-tauri/gen/
+/data/*.sqlite
+/data/*.db
+*.log

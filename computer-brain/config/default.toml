@@ -1,0 +1,26 @@
+[brain]
+name = "Computer Brain"
+data_dir = "data"
+local_first = true
+cloud_uploads_require_confirmation = true
+
+[memory]
+sqlite_path = "data/computer-brain.sqlite"
+embedding_dimensions = 384
+semantic_min_score = 0.18
+
+[ollama]
+enabled = true
+base_url = "http://127.0.0.1:11434"
+chat_model = "llama3.1"
+embedding_model = "nomic-embed-text"
+
+[safety]
+audit_log_retention_days = 365
+dangerous_command_confirmation = true
+allow_shell = true
+allow_python_plugins = false
+
+[ui]
+pet_always_on_top = true
+pet_transparent = true
