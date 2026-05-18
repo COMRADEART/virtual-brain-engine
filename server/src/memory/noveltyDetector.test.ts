@@ -1,0 +1,47 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import BetterSqlite3 from "better-sqlite3";
+import { applyRedundancyPenalty } from "./noveltyDetector.js";
+
+// memory_points copied verbatim from db/schema.sql.
+function makeDb(): BetterSqlite3.Database {
+  const db = new BetterSqlite3(":memory:");
+  db.exec(`CREATE TABLE memory_points (
+    id              TEXT PRIMARY KEY,
+    source_type     TEXT NOT NULL CHECK (source_type IN ('chunk','conversation','manual')),
+    file_path       TEXT,
+    project_name    TEXT,
+    title           TEXT,
+    content         TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    embedding_id    INTEGER UNIQUE,
+    importance      REAL NOT NULL DEFAULT 0.5,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    metadata        TEXT,
+    summary_id      TEXT REFERENCES memory_points(id) ON DELETE SET NULL
+  );`);
+  return db;
+}
+
+test("applyRedundancyPenalty lowers importance even for a single redundant memory", () => {
+  const db = makeDb();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO memory_points
+       (id, source_type, content, content_hash, importance, created_at, updated_at)
+     VALUES (?, 'conversation', ?, ?, ?, ?, ?)`,
+  ).run("m1", "body", "h1", 0.5, now, now);
+
+  applyRedundancyPenalty(["m1"], db);
+
+  const row = db
+    .prepare("SELECT importance FROM memory_points WHERE id = ?")
+    .get("m1") as { importance: number };
+
+  // penalty is 0.06 -> ~0.44; assert a real decrease without float-equality
+  assert.ok(
+    row.importance < 0.5 && row.importance > 0.4,
+    `expected importance reduced into (0.4, 0.5), got ${row.importance}`,
+  );
+});
