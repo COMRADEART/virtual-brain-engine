@@ -119,6 +119,17 @@ export interface SignalPulse {
   reverse: boolean;
 }
 
+// Structural contract that the NeuralGraph renderer reads from. Both
+// SignalSimulation (scripted pulses) and SpikingEngine (LIF) satisfy this
+// — the renderer doesn't care which engine is driving the values.
+export interface BrainSimulation {
+  readonly regionIntensity: Float32Array;
+  readonly regionFlashIntensity: Float32Array;
+  readonly pathwayIntensity: Float32Array;
+  readonly pulses: readonly SignalPulse[];
+  readonly memoryIntensity: number;
+}
+
 export interface BrainMetrics {
   neurons: number;
   pathways: number;

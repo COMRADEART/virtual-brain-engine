@@ -3,11 +3,11 @@ import { REGION_BY_ID, REGION_INDEX } from "../engine/brainRegions";
 import { PATHWAY_SEGMENTS, samplePathway } from "../engine/neuralGraphGenerator";
 import type {
   BrainRegionId,
+  BrainSimulation,
   NeuralGraph,
   RegionVisibility,
   SignalPulse,
 } from "../engine/types";
-import type { SignalSimulation } from "../engine/signalSimulation";
 
 const INVISIBLE_SCALE = new THREE.Vector3(0, 0, 0);
 const IDENTITY_QUATERNION = new THREE.Quaternion();
@@ -64,7 +64,7 @@ export class NeuralGraphRenderer {
   }
 
   update(
-    simulation: SignalSimulation,
+    simulation: BrainSimulation,
     visibility: RegionVisibility,
     selectedRegionId: BrainRegionId | null,
     elapsedSeconds: number,
@@ -249,7 +249,7 @@ export class NeuralGraphRenderer {
   }
 
   private updateRegionVolumes(
-    simulation: SignalSimulation,
+    simulation: BrainSimulation,
     regionIntensity: Float32Array,
     regionFlashIntensity: Float32Array,
     visibility: RegionVisibility,
@@ -352,7 +352,7 @@ export class NeuralGraphRenderer {
     this.pathwayLines.geometry.getAttribute("color").needsUpdate = true;
   }
 
-  private updatePulses(pulses: SignalPulse[], visibility: RegionVisibility): void {
+  private updatePulses(pulses: readonly SignalPulse[], visibility: RegionVisibility): void {
     for (let index = 0; index < 260; index += 1) {
       const pulse = pulses[index];
 

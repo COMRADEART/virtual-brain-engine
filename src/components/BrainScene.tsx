@@ -12,6 +12,16 @@ import { ACTION_BY_ID } from "../engine/brainRegions";
 import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
 import { generateNeuralGraph } from "../engine/neuralGraphGenerator";
 import { SignalSimulation } from "../engine/signalSimulation";
+import { SpikingEngine } from "../engine/SpikingEngine";
+
+// ─── Engine toggle ────────────────────────────────────────────────────────
+// Flip to true to drive the brain with the biologically-realistic LIF
+// SpikingEngine (Leaky Integrate-and-Fire neurons with trace-based STDP,
+// dopamine/ACh neuromodulation, and theta/gamma oscillations) instead of
+// the lightweight scripted-pulse SignalSimulation. Both expose the same
+// public surface so this is the only line you need to flip.
+const USE_SPIKING_ENGINE = false;
+type SimulationLike = SignalSimulation | SpikingEngine;
 import { subscribeBrainBus } from "../engine/brainBus";
 import type { PerfPreset } from "../engine/performancePresets";
 import { LOGICAL_REGION_IDS } from "../../shared/pipeline";
@@ -182,7 +192,7 @@ export function BrainScene({
   const controlsRef = useRef<OrbitControls | null>(null);
   const shellRef = useRef<THREE.Group | null>(null);
   const graphRendererRef = useRef<NeuralGraphRenderer | null>(null);
-  const simulationRef = useRef<SignalSimulation | null>(null);
+  const simulationRef = useRef<SimulationLike | null>(null);
   const transitionRef = useRef<CameraTransition | null>(null);
   const pointCloudRef = useRef<THREE.Group | null>(null);
   const pointCloudMaterialRef = useRef<THREE.PointsMaterial | null>(null);
@@ -630,7 +640,9 @@ export function BrainScene({
     graphRendererRef.current = graphRenderer;
     scene.add(graphRenderer.group);
 
-    const simulation = new SignalSimulation(graph, selectedActionId);
+    const simulation: SimulationLike = USE_SPIKING_ENGINE
+      ? new SpikingEngine(graph, selectedActionId)
+      : new SignalSimulation(graph, selectedActionId);
     simulation.setRunning(simulationRunning);
     simulation.setSpeed(signalSpeed);
     simulation.setMaxPulses(perfPresetRef.current.maxPulses);
