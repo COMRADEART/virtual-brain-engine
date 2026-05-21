@@ -37,6 +37,48 @@ test("updateTemporalPattern records a temporal access row for an unseen memory",
   assert.equal(row.access_count, 1);
 });
 
+test("updateTemporalPattern takes the UPDATE branch on a same-hour repeat call", () => {
+  const db = makeTemporalDb();
+
+  // Two calls in immediate succession land in the same wall-clock hour, so
+  // the second must hit the UPDATE branch — anything else (a second INSERT,
+  // a swallowed exception, a no-op) is the silent defect we are guarding.
+  updateTemporalPattern("m1", db);
+  updateTemporalPattern("m1", db);
+
+  const rows = db
+    .prepare(
+      "SELECT access_count FROM memory_temporal_patterns WHERE memory_id = ?",
+    )
+    .all("m1") as Array<{ access_count: number }>;
+
+  assert.equal(rows.length, 1, "expected the UPDATE branch (one row), not a second INSERT");
+  assert.equal(rows[0].access_count, 2);
+});
+
+test("updateTemporalPattern advances last_access on the UPDATE branch", () => {
+  const db = makeTemporalDb();
+
+  updateTemporalPattern("m1", db);
+  const before = (db
+    .prepare(
+      "SELECT last_access FROM memory_temporal_patterns WHERE memory_id = ?",
+    )
+    .get("m1") as { last_access: string }).last_access;
+
+  const start = Date.now();
+  while (Date.now() === start) { /* spin until the wall clock advances */ }
+
+  updateTemporalPattern("m1", db);
+  const after = (db
+    .prepare(
+      "SELECT last_access FROM memory_temporal_patterns WHERE memory_id = ?",
+    )
+    .get("m1") as { last_access: string }).last_access;
+
+  assert.ok(after > before, `expected last_access to advance (before=${before}, after=${after})`);
+});
+
 // memory_sequence_patterns copied verbatim from db/schema.sql.
 function makeSequenceDb(): BetterSqlite3.Database {
   const db = new BetterSqlite3(":memory:");

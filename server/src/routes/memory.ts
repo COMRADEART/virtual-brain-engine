@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import {
+  deleteMemoryPoint,
+  getMemoryCount,
   getMemoryPoint,
   getRelationsFor,
   keywordSearch,
@@ -8,6 +10,10 @@ import {
   vectorSearch,
 } from "../db/repositories/memory.js";
 import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import {
+  getConsolidationStats,
+  runConsolidationCycle,
+} from "../memory/consolidationEngine.js";
 
 export const memoryRouter = Router();
 
@@ -65,13 +71,14 @@ memoryRouter.get("/memory/search", async (req, res) => {
 
 memoryRouter.get("/memory/recent", (req, res) => {
   const limit = Math.min(100, Math.max(1, Number(req.query.limit ?? 20)));
+  const offset = Math.max(0, Number(req.query.offset ?? 0));
   const kindParam = typeof req.query.kind === "string" ? req.query.kind : undefined;
   const kind =
     kindParam === "chunk" || kindParam === "conversation" || kindParam === "manual"
       ? kindParam
       : undefined;
-  const memories = listRecentMemories(limit, kind);
-  res.json({ memories });
+  const memories = listRecentMemories(limit, kind, offset);
+  res.json({ memories, offset, limit });
 });
 
 memoryRouter.get("/memory/:id", (req, res) => {
@@ -83,4 +90,25 @@ memoryRouter.get("/memory/:id", (req, res) => {
   }
   const relations = getRelationsFor(id);
   res.json({ memory, relations });
+});
+
+memoryRouter.delete("/memory/:id", (req, res) => {
+  const id = req.params.id;
+  const deleted = deleteMemoryPoint(id);
+  if (!deleted) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+memoryRouter.post("/memory/consolidate", async (req, res) => {
+  const result = await runConsolidationCycle();
+  res.json(result);
+});
+
+memoryRouter.get("/memory/lifecycle/stats", (_req, res) => {
+  const stats = getConsolidationStats();
+  const totalMemories = getMemoryCount();
+  res.json({ ...stats, totalMemories });
 });

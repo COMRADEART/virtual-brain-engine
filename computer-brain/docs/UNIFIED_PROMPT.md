@@ -199,6 +199,122 @@ The brain must maintain cognitive states:
 
 These states affect agent behavior, memory prioritization, pet mood, notifications, and execution flow.
 
+## Cognitive Architecture Layer
+
+Computer Brain must evolve beyond a tool-routing agent system into a true cognitive architecture.
+
+The brain continuously performs:
+
+1. Perception
+2. Understanding
+3. Planning
+4. Execution
+5. Reflection
+6. Learning
+7. Adaptation
+
+This is the main intelligence loop:
+
+```text
+Perceive
+    |
+Understand
+    |
+Plan
+    |
+Execute
+    |
+Reflect
+    |
+Learn
+    |
+Adapt
+    |
+Repeat
+```
+
+Perception gathers filesystem activity, active applications, terminal output, browser activity, Git repositories, user requests, running workflows, agent events, system resources, and memory activity, then converts raw activity into structured observations.
+
+Understanding loads context, retrieves relevant memories, detects intent, analyzes project state, identifies relationships, detects recurring patterns, and estimates confidence.
+
+Planning generates explicit inspectable plans, chooses tools, assigns agents, estimates risk, prioritizes tasks, creates execution graphs, and evaluates permissions.
+
+Execution performs actions through agents, tools, terminal access, APIs, workflows, and local models while logging outputs, retries, rollback awareness, and pause/resume state.
+
+Reflection analyzes what succeeded, what failed, what was inefficient, what patterns appeared, and what can be learned.
+
+Learning creates or improves skills, detects habits, optimizes execution, builds reusable abstractions, and improves planning quality.
+
+Adaptation changes behavior dynamically by reducing notifications during focus mode, preferring local models when offline, switching workflows by project type, prioritizing frequently used tools, and changing execution strategy based on failure history.
+
+New required crates:
+
+- `perception-engine`
+- `understanding-engine`
+- `planning-engine`
+- `reflection-engine`
+- `learning-engine`
+- `adaptation-engine`
+
+## Consciousness Loop
+
+The Computer Brain must include a persistent Consciousness Loop.
+
+Every cycle should:
+
+1. Observe current world state
+2. Recall relevant memories
+3. Detect user goals
+4. Identify available tools and skills
+5. Estimate risks
+6. Create or update plans
+7. Execute safe actions through agents
+8. Reflect on results
+9. Store new memories
+10. Improve skills over time
+
+The Consciousness Loop must be bounded by permissions, safety rules, user intent, current context, risk scoring, and audit logs.
+
+Supported modes:
+
+1. Passive: observe, store memory, and create summaries.
+2. Assisted: propose plans and ask before acting.
+3. Active: execute approved safe actions.
+4. Autonomous: run trusted workflows only.
+
+The brain must always know its current operating mode, and the user can switch modes at any time.
+
+## Goal Stack
+
+The brain maintains a goal stack.
+
+Each goal includes:
+
+- priority
+- status
+- owner agent
+- required tools
+- risk level
+- memory links
+- optional deadline
+
+Example:
+
+```text
+Current Goal:
+Fix Rust build
+
+Subgoals:
+1. Inspect project
+2. Run cargo check
+3. Analyze errors
+4. Apply safe fix
+5. Run tests
+6. Summarize result
+```
+
+Goals and subgoals must be inspectable and persisted locally.
+
 ## Event-Driven Nervous System
 
 Everything must be event-driven.
@@ -337,6 +453,113 @@ Repeated workflows such as `cargo check`, `cargo test`, and `cargo run` can beco
 
 The brain should detect recurring workflows, abstract reusable skills, store automation patterns, and improve over time.
 
+## OpenClaw + Hermes-Style Behavior
+
+Computer Brain should combine two advanced agent patterns:
+
+1. OpenClaw-style action system
+2. Hermes-style self-learning memory and skill system
+
+OpenClaw-inspired behavior:
+
+- act across real computer tools
+- use terminal access
+- use browser automation
+- use files and folders
+- use APIs
+- run scheduled tasks
+- operate through chat, desktop pet, and command interface
+- behave like an AI that can actually do things, not just answer questions
+
+Hermes-inspired behavior:
+
+- learn from repeated actions
+- create reusable skills from experience
+- improve skills over time
+- persist knowledge across sessions
+- build a long-term model of the user
+- remember projects, preferences, tools, and workflows
+- become more capable the longer it runs
+
+Computer Brain should not copy these systems directly. It should implement the same class of capability in a Rust-based local-first architecture.
+
+## Self-Improving Skill Loop
+
+The brain must include a skill learning loop:
+
+1. Observe action
+2. Store result
+3. Detect repeated workflow
+4. Abstract workflow into a skill
+5. Test skill safely
+6. Store skill in Skill Memory
+7. Reuse skill later
+8. Improve skill from future results
+
+Repeated actions such as opening a Rust project, running `cargo check`, inspecting compiler errors, fixing code, running `cargo test`, and summarizing results can become a reusable `Rust Project Repair Workflow`.
+
+The skill stores trigger conditions, required tools, required permissions, execution graph, failure handling, memory references, and confidence score.
+
+## Full-Time Agent Loop
+
+The system should support a heartbeat loop like a persistent agent.
+
+Heartbeat cycle:
+
+1. Check current world state
+2. Check scheduled tasks
+3. Check active projects
+4. Check pending workflows
+5. Check memory updates
+6. Decide whether action is needed
+7. Ask permission when required
+8. Execute through agents
+9. Store result in memory
+
+The agent should run continuously but safely.
+
+It should never perform risky actions silently.
+
+## Multi-Channel Control
+
+The user should be able to control the brain from:
+
+- desktop pet
+- main dashboard
+- terminal command
+- local web UI
+- optional Telegram/Discord/Slack bridge
+- optional mobile chat bridge
+
+All external channels must pass through the same safety layer.
+
+## Action Capabilities
+
+The brain should support terminal commands, project builds, test execution, file reading/writing with permission, Git inspection, browser automation, email/calendar integration later, API calls, local scripts, AI model calls, and scheduled tasks.
+
+All actions must be planned, permission checked, logged, reversible where possible, and summarized into memory.
+
+## Skill Memory Database
+
+Add database tables for:
+
+- `learned_skills`
+- `skill_versions`
+- `skill_runs`
+- `skill_failures`
+- `skill_permissions`
+- `skill_triggers`
+- `skill_confidence`
+- `skill_improvements`
+
+Each skill should evolve over time.
+
+OpenClaw-style action gives the brain hands.
+
+Hermes-style learning gives the brain growth.
+
+Computer Brain must combine action, memory, skill evolution, safety, and desktop presence.
+
 ## Personality Engine
 
 The desktop pet should evolve personality.
@@ -422,6 +645,16 @@ Create SQLite schema for:
 - context snapshots
 - command logs
 - audit logs
+- reflections
+- lessons
+- execution outcomes
+- skill evolution
+- adaptation history
+- workflow efficiency
+- planning quality
+- operating mode state
+- goal stack
+- consciousness cycles
 
 ## Implementation Requirements
 

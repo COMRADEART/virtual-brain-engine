@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [lib]
-name = "computer_brain_desktop"
+name = "computer_brain_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -15,6 +15,7 @@ tauri-build.workspace = true
 [dependencies]
 anyhow.workspace = true
 brain-core.workspace = true
+cognitive-state.workspace = true
 desktop-bridge.workspace = true
 dirs.workspace = true
 serde.workspace = true

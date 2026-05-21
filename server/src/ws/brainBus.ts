@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "node:http";
 import type { BrainBusMessage } from "../../../shared/pipeline.js";
+import { getMemoryCount } from "../db/repositories/memory.js";
 
 let wss: WebSocketServer | null = null;
 const clients = new Set<WebSocket>();
@@ -11,9 +12,9 @@ export function attachBrainBus(server: Server): void {
     clients.add(socket);
     socket.on("close", () => clients.delete(socket));
     socket.on("error", () => clients.delete(socket));
-    // Hello so the frontend knows the connection is live.
     try {
       socket.send(JSON.stringify({ type: "connector", connectorId: "ws", state: "ok" }));
+      socket.send(JSON.stringify({ type: "memory-count", count: getMemoryCount() }));
     } catch {
       // ignore
     }

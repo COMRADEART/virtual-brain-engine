@@ -84,6 +84,25 @@ impl SafetyLayer {
         }
     }
 
+    /// Gate for recursive self-modification (promoting an evolved cognitive
+    /// genome into production). Self-modification can never be unconditionally
+    /// `Allow`ed: an irreversible change is `Deny`ed outright, and a reversible
+    /// one still requires `Confirm` so promotion always sits behind an
+    /// approval/audit surface above raw policy.
+    pub fn check_self_modification(&self, summary: &str, reversible: bool) -> SafetyDecision {
+        if !reversible {
+            return deny(format!(
+                "self-modification `{summary}` denied: no rollback path (irreversible)"
+            ));
+        }
+        SafetyDecision {
+            decision: SafetyDecisionKind::Confirm,
+            reason: format!(
+                "self-modification `{summary}` is reversible; requires recorded approval before it replaces production cognition"
+            ),
+        }
+    }
+
     pub fn audit_metadata(&self, value: Value) -> Result<Value> {
         Ok(value)
     }

@@ -90,10 +90,12 @@ async function main() {
         params.exceptionDetails?.exception?.description ??
         params.exceptionDetails?.text ??
         "Runtime exception";
+      console.error("[Browser Runtime Exception]", message);
       issues.push(message);
       blockingIssues.push(message);
     });
     client.on("Log.entryAdded", (params) => {
+      console.log(`[Browser Log ${params.entry?.level}]`, params.entry?.text);
       if (params.entry?.level === "error") {
         issues.push(params.entry.text);
       }
@@ -106,6 +108,12 @@ async function main() {
     const loadEvent = client.waitForEvent("Page.loadEventFired", 8000);
     await client.send("Page.navigate", { url: TARGET_URL });
     await loadEvent;
+    await client.send("Runtime.evaluate", {
+      expression: `localStorage.setItem("brain-layout", JSON.stringify("full"))`,
+    });
+    const reloadEvent = client.waitForEvent("Page.loadEventFired", 8000);
+    await client.send("Page.reload", { ignoreCache: true });
+    await reloadEvent;
     await delay(2600);
 
     const result = await client.send("Runtime.evaluate", {
@@ -114,7 +122,12 @@ async function main() {
       expression: `
         new Promise((resolve) => {
           setTimeout(() => {
-            const canvas = document.querySelector("canvas");
+            const canvases = [...document.querySelectorAll("canvas")];
+            const canvas = canvases
+              .map((candidate) => ({ candidate, bounds: candidate.getBoundingClientRect() }))
+              .filter(({ bounds }) => bounds.width > 0 && bounds.height > 0)
+              .sort((a, b) => (b.bounds.width * b.bounds.height) - (a.bounds.width * a.bounds.height))[0]?.candidate
+              ?? canvases[0];
             const appTitle = document.querySelector("h1")?.textContent ?? "";
             const actionButtons = [...document.querySelectorAll("button")].map((button) => button.textContent?.trim()).filter(Boolean);
 

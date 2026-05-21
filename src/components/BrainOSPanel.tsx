@@ -1,12 +1,16 @@
 import { useState } from "react";
-import { Activity, Brain, Cpu, Database, MessageCircleQuestion, Search, X } from "lucide-react";
+import { Activity, Brain, Cpu, Database, HeartPulse, MessageCircleQuestion, Network, Search, Sparkles, X, Zap } from "lucide-react";
 import { AskPanel } from "./AskPanel";
+import { EvolutionPanel } from "./EvolutionPanel";
+import { ImaginationPanel } from "./ImaginationPanel";
+import { OrganismPanel } from "./OrganismPanel";
 import { SearchPanel } from "./SearchPanel";
 import { MemoryDashboard } from "./MemoryDashboard";
 import { RuntimePicker } from "./RuntimePicker";
 import { SystemStatusPanel } from "./SystemStatusPanel";
+import { SwarmPanel } from "./SwarmPanel";
 
-type Tab = "ask" | "search" | "memory" | "runtime" | "status";
+type Tab = "ask" | "search" | "memory" | "runtime" | "status" | "swarm" | "imagine" | "evolve" | "organism";
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Brain }> = [
   { id: "ask", label: "Ask", icon: MessageCircleQuestion },
@@ -14,6 +18,10 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Brain }> = [
   { id: "memory", label: "Memory", icon: Database },
   { id: "runtime", label: "Runtime", icon: Cpu },
   { id: "status", label: "Status", icon: Activity },
+  { id: "swarm", label: "Swarm", icon: Network },
+  { id: "imagine", label: "Imagine", icon: Sparkles },
+  { id: "evolve", label: "Evolve", icon: Zap },
+  { id: "organism", label: "Organism", icon: HeartPulse },
 ];
 
 export function BrainOSPanel(): JSX.Element {
@@ -72,6 +80,10 @@ export function BrainOSPanel(): JSX.Element {
         {tab === "memory" ? <MemoryDashboard /> : null}
         {tab === "runtime" ? <RuntimePicker /> : null}
         {tab === "status" ? <SystemStatusPanel /> : null}
+        {tab === "swarm" ? <SwarmPanel /> : null}
+        {tab === "imagine" ? <ImaginationPanel /> : null}
+        {tab === "evolve" ? <EvolutionPanel /> : null}
+        {tab === "organism" ? <OrganismPanel /> : null}
       </div>
     </aside>
   );

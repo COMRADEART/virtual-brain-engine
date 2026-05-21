@@ -6,13 +6,21 @@ members = [
   "crates/agent-runtime",
   "crates/nervous-system",
   "crates/cognitive-state",
+  "crates/perception-engine",
+  "crates/understanding-engine",
   "crates/memory-cortex",
   "crates/semantic-memory",
   "crates/knowledge-graph",
   "crates/context-engine",
   "crates/planner-engine",
+  "crates/planning-engine",
   "crates/execution-graph",
   "crates/capability-system",
+  "crates/skill-learning",
+  "crates/reflection-engine",
+  "crates/learning-engine",
+  "crates/adaptation-engine",
+  "crates/evolution-engine",
   "crates/temporal-engine",
   "crates/workflow-engine",
   "crates/tool-cortex",
@@ -20,6 +28,8 @@ members = [
   "crates/personality-engine",
   "crates/safety-layer",
   "crates/observability",
+  "crates/web-cortex",
+  "crates/conscious-workspace",
   "crates/desktop-bridge",
   "apps/desktop-pet/src-tauri",
 ]
@@ -33,25 +43,35 @@ authors = ["Computer Brain"]
 
 [workspace.dependencies]
 agent-runtime = { path = "crates/agent-runtime" }
+adaptation-engine = { path = "crates/adaptation-engine" }
 brain-core = { path = "crates/brain-core" }
 capability-system = { path = "crates/capability-system" }
 cognitive-state = { path = "crates/cognitive-state" }
 context-engine = { path = "crates/context-engine" }
 desktop-bridge = { path = "crates/desktop-bridge" }
+evolution-engine = { path = "crates/evolution-engine" }
 execution-graph = { path = "crates/execution-graph" }
 knowledge-graph = { path = "crates/knowledge-graph" }
 memory-cortex = { path = "crates/memory-cortex" }
 nervous-system = { path = "crates/nervous-system" }
 observability = { path = "crates/observability" }
+perception-engine = { path = "crates/perception-engine" }
 personality-engine = { path = "crates/personality-engine" }
+planning-engine = { path = "crates/planning-engine" }
 planner-engine = { path = "crates/planner-engine" }
+reflection-engine = { path = "crates/reflection-engine" }
 safety-layer = { path = "crates/safety-layer" }
 semantic-memory = { path = "crates/semantic-memory" }
 sensory-system = { path = "crates/sensory-system" }
 shared-types = { path = "crates/shared-types" }
+skill-learning = { path = "crates/skill-learning" }
+learning-engine = { path = "crates/learning-engine" }
 temporal-engine = { path = "crates/temporal-engine" }
 tool-cortex = { path = "crates/tool-cortex" }
+understanding-engine = { path = "crates/understanding-engine" }
+web-cortex = { path = "crates/web-cortex" }
 workflow-engine = { path = "crates/workflow-engine" }
+conscious-workspace = { path = "crates/conscious-workspace" }
 
 anyhow = "1"
 base64 = "0.22"
@@ -60,6 +80,7 @@ dirs = "5"
 notify = "7"
 parking_lot = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

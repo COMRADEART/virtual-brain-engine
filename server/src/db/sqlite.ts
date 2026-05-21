@@ -48,8 +48,40 @@ export function openDb(): SqliteDatabase {
   const schema = readFileSync(schemaPath, "utf8");
   db.exec(schema);
 
+  runMigrations(db);
+
   dbSingleton = db;
   return db;
+}
+
+interface Migration {
+  id: number;
+  name: string;
+  sql: string;
+}
+
+const MIGRATIONS: Migration[] = [];
+
+function runMigrations(db: SqliteDatabase): void {
+  const applied = new Set<string>(
+    (db.prepare("SELECT name FROM schema_migrations").all() as Array<{ name: string }>).map(
+      (r) => r.name,
+    ),
+  );
+  for (const m of MIGRATIONS) {
+    if (applied.has(m.name)) continue;
+    try {
+      db.exec(m.sql);
+      db.prepare("INSERT INTO schema_migrations (id, name, applied_at) VALUES (?, ?, ?)").run(
+        m.id,
+        m.name,
+        new Date().toISOString(),
+      );
+      console.info(`[db] migration applied: ${m.name}`);
+    } catch (err) {
+      console.error(`[db] migration "${m.name}" failed:`, err);
+    }
+  }
 }
 
 export function isVectorAvailable(): boolean {

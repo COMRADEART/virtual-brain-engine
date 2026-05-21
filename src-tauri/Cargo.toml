@@ -16,7 +16,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
-tauri = { version = "2.11.1", features = ["tray-icon"] }
+# macos-private-api: required because tauri.conf.json enables macOSPrivateApi
+# for the transparent always-on-top "pet" window. Harmless on Windows/Linux
+# (transparency there needs no private API); only affects macOS builds.
+tauri = { version = "2.11.1", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 serde = { version = "1.0", features = ["derive"] }
@@ -49,6 +52,10 @@ git2 = "0.19"
 
 # Encoding/Decoding
 base64 = "0.22"
+png = "0.17"
+
+# Screen capture
+screenshots = "0.8"
 
 # Thread-safe shared state
 parking_lot = "0.12"
@@ -57,6 +64,15 @@ parking_lot = "0.12"
 # self-contained and avoids depending on the system OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 futures-util = "0.3"
+
+# Phase 2 cognitive systems
+brain-semantic-memory = { path = "../crates/semantic-memory" }
+brain-knowledge-graph = { path = "../crates/knowledge-graph" }
+brain-context-engine = { path = "../crates/context-engine" }
+brain-temporal-engine = { path = "../crates/temporal-engine" }
+brain-workflow-engine = { path = "../crates/workflow-engine" }
+brain-personality-engine = { path = "../crates/personality-engine" }
+brain-autonomous-runtime = { path = "../crates/autonomous-runtime" }
 
 [profile.release]
 strip = true

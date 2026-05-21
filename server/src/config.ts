@@ -30,6 +30,9 @@ export interface ServerConfig {
   // to point the server at a remote OpenAI-compatible endpoint; the UI then
   // surfaces a "Remote model in use" badge to make that explicit.
   localOnly: boolean;
+  // Enable the P2P Civilization subsystem. Binds port 8788; start/stop is
+  // tracked in the shutdown handler.
+  civilizationEnabled: boolean;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -75,6 +78,7 @@ export const CONFIG: ServerConfig = {
   maxFileBytes: num("MAX_FILE_BYTES", 2 * 1024 * 1024),
   allowedOrigin: str("ALLOWED_ORIGIN", "http://127.0.0.1:5173"),
   localOnly: bool("LOCAL_ONLY", true),
+  civilizationEnabled: bool("CIVILIZATION_ENABLED", false),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;

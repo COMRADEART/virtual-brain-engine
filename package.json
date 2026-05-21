@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:server": "npm --prefix server run dev",
+    "start:server": "npm --prefix server run start",
+    "server:smoke": "node scripts/server-smoke.mjs",
     "dev:all": "concurrently --names \"vite,server\" --prefix-colors \"cyan,magenta\" \"npm run dev\" \"npm run dev:server\"",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",

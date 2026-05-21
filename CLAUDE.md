@@ -4,13 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repo layout
 
-This is a multi-process project, not just a Vite app. Four cooperating pieces live in this repo:
+This is a multi-process project, not just a Vite app. The cooperating pieces:
 
 - `src/` — Vite + React + Three.js frontend (the brain visualizer + Brain OS UI).
-- `server/` — Express + TypeScript backend on `127.0.0.1:8787`. SQLite (via `better-sqlite3` + `sqlite-vec`), Ollama connector, 7-step reasoning pipeline, WS broadcast.
-- `shared/` — pure-TypeScript type definitions imported by both frontend and server (no runtime deps). `pipeline.ts`, `memory.ts`, `connector.ts`.
-- `src-tauri/` — Tauri 2 desktop shell (Rust). Wraps the Vite build and adds local file/system-monitor commands. Optional; the web app runs without it.
+- `server/` — Express + TypeScript backend on `127.0.0.1:8787`. SQLite (via `better-sqlite3` + `sqlite-vec`), Ollama connector, 7-step reasoning pipeline, WS broadcast. Now also hosts the memory ML layer, learned ranker, TS agentic layer, digital twin, and the Phase 2 organism/swarm/evolution/imagination subsystems.
+- `shared/` — pure-TypeScript type definitions imported by both frontend and server (no runtime deps). `pipeline.ts`, `memory.ts`, `connector.ts`, plus the Phase 2 contracts `twin.ts`, `swarm.ts`, `evolution.ts`, `imagination.ts`, `organism.ts`, `phase2.ts`.
+- `src-tauri/` — Tauri 2 desktop shell (Rust). Wraps the Vite build and adds local file/system-monitor commands. Optional; the web app runs without it. Consumes the root `crates/` as path dependencies (see below).
+- `crates/` — 7 Rust crates (`brain-autonomous-runtime`, `brain-context-engine`, `brain-knowledge-graph`, `brain-personality-engine`, `brain-semantic-memory`, `brain-temporal-engine`, `brain-workflow-engine`) implementing **Phase 2** per `docs/PHASE2_ARCHITECTURE.md`. **There is no root `Cargo.toml`** — these are not a standalone workspace; they are built only via the root `src-tauri/Cargo.toml` path deps. The Tauri-managed `Phase2System` lives in `src-tauri/src/phase2.rs`.
+- `computer-brain/` — a **separate, self-contained Cargo workspace** (28 crates + its own `apps/desktop-pet/src-tauri` Tauri app) implementing a more ambitious local-first cognitive nervous system. Architecture is documented in `computer-brain/docs/ARCHITECTURE.md`; build steps in `computer-brain/docs/BUILD.md`. It does not share code with the root project.
 - `worker/` — Python sidecar **placeholder** for Phase 3 (sentence-transformers, cross-encoder reranking). The MVP does not depend on it being up.
+
+> **Two Rust workspaces, overlapping crate names.** The root Phase 2 crates under `crates/` were renamed to `brain-*-engine` / `brain-*-memory` / `brain-autonomous-runtime` to avoid collisions with the same-named crates under `computer-brain/crates/`. Always check which workspace you're in before editing. Root crates serve the root Tauri shell; `computer-brain/` crates serve the `computer-brain/` desktop-pet app.
+
+The forward-looking design specs `PERSONAL_MEMORY_BRAIN_SPEC.md` and `DIGITAL_TWIN_SPEC.md` describe intended direction, not the current contract — read them for *why*, read the code for *what is*.
 
 The frontend and server communicate over HTTP (`/api/...`) and a single WebSocket at `/ws/brain`. Pipeline events also stream over SSE on `POST /api/ask`. Both the SSE stream and the WS broadcast carry the same `PipelineEvent` shape (defined in `shared/pipeline.ts`) so that any open tab sees activity even if it didn't initiate the request.
 
@@ -26,7 +32,11 @@ The frontend and server communicate over HTTP (`/api/...`) and a single WebSocke
 
 - `npm run dev:server` — `tsx watch` on `server/src/index.ts`. Listens on `127.0.0.1:8787` by default. Reads `.env` from the repo root. Creates `data/brain.sqlite` on first run.
 - `npm run dev:all` — runs Vite **and** the server concurrently. Use this when you're working on anything that crosses the boundary (AskPanel, BrainOS, pipeline overlay, memory dashboard).
-- Inside `server/`: `npm run typecheck` (just `tsc --noEmit`). There is no separate test runner in `server/`.
+- Inside `server/`: `npm run typecheck` (just `tsc --noEmit`). There is no unit-test runner in `server/`, but three self-check scripts act as the backend quality gates: `npm run ranker:selfcheck` (learned-ranker sanity over `scripts/ranker-selfcheck.ts`), `npm run agents:selfcheck` (TS agentic layer), `npm run twin:selfcheck` (digital-twin collectors/predictor). Run the relevant one after touching `reasoning/ranker*`, `agents/`, or `twin/`.
+
+### Computer Brain workspace (`computer-brain/`)
+
+Independent of the root build. From `computer-brain/`: `cargo check --workspace` for the Rust core. The desktop app has its own `package.json` under `computer-brain/apps/desktop-pet/` (`npm install`, then `npm run dev` / `npm run tauri:dev`). Do not run these from the repo root — they target the inner workspace.
 
 ### Desktop (Tauri)
 
@@ -70,6 +80,7 @@ The simulation state — `regionIntensity`, `pathwayIntensity`, and the `pulses`
 3. The render loop reads refs (`visibilityRef`, `selectedRegionRef`) rather than closing over props so the single long-lived `renderFrame` keeps seeing the latest values without re-subscribing.
 4. Region clicks come from raycasting against the invisible region volume meshes exposed as `graphRenderer.regionMeshes`; the hit's `userData.regionId` is sent back up via `onRegionSelect`.
 5. `BrainScene` also subscribes to `brainBus` (the WS singleton, see below). When a `pipeline` message arrives, it expands `event.logicalRegions` through `LOGICAL_REGION_MAP` and flashes the resulting anatomical IDs.
+6. **Brain OS layout modes.** `src/engine/useLayoutMode.ts` owns a `LayoutMode` (normal / `CompactLayout` / `FocusMode`); `App.tsx` reads it (`App.tsx:53`) and renders the matching shell from `src/components/brain-os/` (`CompactLayout`, `FocusMode`, `CommandPalette`). The `CommandPalette` (toggled via `useCommandPalette`) is the keyboard entry point for switching modes and opening the Phase 2 panels (`DigitalTwinPanel`, `SwarmPanel`, `EvolutionPanel`, `OrganismPanel`, `ImaginationPanel`, `Phase2CortexPanel`, `UnifiedPanel`). Auto-quality (`useAutoQuality`/`adaptiveQuality`/`performancePresets`) scales render cost to sustain 60 FPS; route quality changes through those, not ad-hoc renderer tweaks.
 
 ### Engine layer (`src/engine/`)
 
@@ -99,6 +110,16 @@ The simulation state — `regionIntensity`, `pathwayIntensity`, and the `pulses`
 - `routes/` — Express routers, all mounted under `/api`: `health`, `memory`, `scan`, `connectors`, `ask` (SSE), `conversations`.
 - `scanner/` — `walker` (recursive directory walk with ignore rules and budget caps), `chunker` (file → text chunks), `indexer` (chunk → `MemoryPoint` + embedding). The scan budget is `CONFIG.maxFilesPerScan` × `CONFIG.maxFileBytes` to keep an accidentally-pointed-at-`C:\` scan from spiralling.
 - `ws/brainBus.ts` — WS hub at `/ws/brain`. Exports `broadcast(message)` which the pipeline and scanner call to fan out `BrainBusMessage`s.
+
+### Server Phase 2 subsystems (memory ML, agents, twin, organism)
+
+These bolt onto the same Express process; they don't replace the 7-step pipeline, they run alongside it.
+
+- `memory/` — the **memory ML layer**: `importanceScorer`, `memoryStrength`, `memoryLifecycle`, `consolidationEngine`, `noveltyDetector`, `predictivePrefetch`, `semanticCluster`, `accessPatternTracker`, `thresholdController`. The integration seam is narrow and deliberate: the pipeline only imports `onConversationMessage` / `processNewMemory` from `consolidationEngine` and `updateMemoryImportance` from `memoryLifecycle` (see `reasoning/pipeline.ts`). `index.ts` calls `scheduleDecayTick()` (from `consolidationEngine`) at boot to run periodic decay/consolidation in the background. Treat the rest of `memory/` as a library these two seams pull from — don't add new pipeline call sites without a reason.
+- `reasoning/ranker.ts` + `rankerModel.ts` + `db/repositories/ranker.ts` — a small learned ranker that re-scores memory retrieval. `rankerModel.ts` holds the model/weights, `ranker.ts` the scoring entrypoint, the repository its persisted training signal. Validated by `npm run ranker:selfcheck`.
+- `agents/` — a TS agentic layer (`Agent.ts` base, `runtime.ts`, `observerAgent`, `summaryAgent`, `schedulerAgent`, `systemSensorAgent`, `brainCore.ts`). `index.ts` calls `startBrainCore()` at boot; the runtime isolates agent init so a misbehaving agent never blocks server startup. This is the Node-side analogue of the `computer-brain/` Rust agent system — they are not the same code.
+- `twin/` — the digital twin: `collectors` + `snapshotEngine` capture system state, `cpuMath`/`predictiveModel` forecast, `anomalyDetector` flags drift, `simulationEngine` runs what-ifs, `repository` persists. Surfaced at `/api/twin`. Validated by `npm run twin:selfcheck`.
+- `core/` — `eventBus` plus the four Phase 2 organism subsystems `evolution`, `imagination`, `organism`, `swarm`, and a `safety` gate. Each has a matching router mounted under `/api` in `index.ts` (`/api/twin`, `/api/swarm`, `/api/imagination`, `/api/evolution`, `/api/organism`) and a `shared/` type contract. These are experimental — keep new public surface behind these routers, not inside the pipeline.
 
 ### Tauri shell (`src-tauri/`)
 

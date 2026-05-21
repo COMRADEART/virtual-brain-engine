@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 brain-core.workspace = true
+cognitive-state.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 semantic-memory.workspace = true

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default permissions for Virtual Brain Engine",
-  "windows": ["main"],
+  "windows": ["main", "pet"],
   "permissions": [
     "core:default",
     "core:window:default",

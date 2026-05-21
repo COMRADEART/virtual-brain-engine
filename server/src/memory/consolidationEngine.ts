@@ -583,8 +583,8 @@ function runQuickDecay(): void {
   }
 }
 
-export function scheduleDecayTick(): void {
-  setInterval(
+export function scheduleDecayTick(): { spreadingActivation: NodeJS.Timeout; decayTick: NodeJS.Timeout } {
+  const spreadingActivation = setInterval(
     () => {
       try {
         applySpreadingActivation();
@@ -600,7 +600,7 @@ export function scheduleDecayTick(): void {
     30 * 60 * 1000,
   );
 
-  setInterval(
+  const decayTick = setInterval(
     () => {
       try {
         const db = openDb();
@@ -642,6 +642,8 @@ export function scheduleDecayTick(): void {
     },
     60 * 60 * 1000,
   );
+
+  return { spreadingActivation, decayTick };
 }
 
 export function getConsolidationStats(): {

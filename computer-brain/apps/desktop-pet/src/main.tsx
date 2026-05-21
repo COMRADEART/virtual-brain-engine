@@ -17,6 +17,7 @@ import {
   Send,
   Settings,
   Sparkles,
+  Target,
   Terminal,
   Workflow
 } from "lucide-react";
@@ -51,6 +52,7 @@ type PetState = {
 
 type WorldState = {
   cognitive_mode: string;
+  operating_mode: OperatingMode;
   active_project?: string | null;
   active_window?: string | null;
   running_apps: string[];
@@ -61,6 +63,22 @@ type WorldState = {
   available_tools: string[];
   current_context?: string | null;
   recent_memories: string[];
+  updated_at: string;
+};
+
+type OperatingMode = "passive" | "assisted" | "active" | "autonomous";
+
+type GoalRecord = {
+  id: string;
+  parent_id?: string | null;
+  title: string;
+  priority: number;
+  status: string;
+  owner_agent: string;
+  required_tools: string[];
+  risk_level: string;
+  memory_links: string[];
+  deadline?: string | null;
   updated_at: string;
 };
 
@@ -122,6 +140,8 @@ type Dashboard = {
   pet: PetState;
   events: Array<{ id: string; event: { kind: string; [key: string]: unknown }; occurred_at: string; source_agent?: string | null }>;
   cognitive_state: WorldState;
+  operating_mode: OperatingMode;
+  goals: GoalRecord[];
   body_map: BodyMap;
   capabilities: Capability[];
   recent_traces: ReasoningTrace[];
@@ -142,6 +162,8 @@ type BrowserState = {
   memories: MemoryRecord[];
   projects: Dashboard["recent_projects"];
   events: Dashboard["events"];
+  mode: OperatingMode;
+  goals: GoalRecord[];
 };
 
 type TauriWindow = Window & {
@@ -230,6 +252,18 @@ async function browserInvoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       writeBrowserState(state);
       return undefined as T;
     }
+    case "set_operating_mode": {
+      const input = args?.input as { mode?: OperatingMode } | undefined;
+      state.mode = input?.mode ?? "passive";
+      state.events.unshift({
+        id: newId("evt"),
+        event: { kind: "BrowserPreviewOperatingModeChanged", mode: state.mode },
+        occurred_at: now,
+        source_agent: "BrainCore"
+      });
+      writeBrowserState(state);
+      return browserDashboard(state).cognitive_state as T;
+    }
     default:
       throw new Error(`${cmd} requires the Tauri desktop shell.`);
   }
@@ -256,7 +290,9 @@ function browserDashboard(state: BrowserState): Dashboard {
       commandLogs: 0,
       bodyMaps: 1,
       worldStates: 1,
-      reasoningTraces: 1
+      reasoningTraces: 1,
+      goals: state.goals.length,
+      consciousnessCycles: state.events.filter((event) => event.event.kind.includes("Consciousness")).length
     },
     agents: agentNames.map((name) => ({
       name,
@@ -277,6 +313,7 @@ function browserDashboard(state: BrowserState): Dashboard {
     events: state.events,
     cognitive_state: {
       cognitive_mode: "planning",
+      operating_mode: state.mode,
       active_project: state.projects[0]?.id ?? null,
       active_window: null,
       running_apps: ["browser-preview"],
@@ -289,6 +326,8 @@ function browserDashboard(state: BrowserState): Dashboard {
       recent_memories: state.memories.map((memory) => memory.id),
       updated_at: now
     },
+    operating_mode: state.mode,
+    goals: state.goals,
     body_map: bodyMap,
     capabilities,
     recent_traces: [
@@ -402,14 +441,26 @@ function relatedMemories(query: string, memories: MemoryRecord[]): ChatOutput["r
 }
 
 function readBrowserState(): BrowserState {
+  const defaults = defaultBrowserState();
   const stored = window.localStorage.getItem("computer-brain-preview");
   if (stored) {
     try {
-      return JSON.parse(stored) as BrowserState;
+      const parsed = JSON.parse(stored) as Partial<BrowserState>;
+      return {
+        memories: parsed.memories?.length ? parsed.memories : defaults.memories,
+        projects: parsed.projects?.length ? parsed.projects : defaults.projects,
+        events: parsed.events?.length ? parsed.events : defaults.events,
+        mode: parsed.mode ?? defaults.mode,
+        goals: parsed.goals?.length ? parsed.goals : defaults.goals
+      };
     } catch {
       window.localStorage.removeItem("computer-brain-preview");
     }
   }
+  return defaults;
+}
+
+function defaultBrowserState(): BrowserState {
   const now = new Date().toISOString();
   return {
     memories: [
@@ -440,6 +491,22 @@ function readBrowserState(): BrowserState {
         occurred_at: now,
         source_agent: "DesktopBridge"
       }
+    ],
+    mode: "passive",
+    goals: [
+      {
+        id: "preview-goal",
+        parent_id: null,
+        title: "Preview the Computer Brain consciousness loop",
+        priority: 45,
+        status: "proposed",
+        owner_agent: "PlannerAgent",
+        required_tools: ["context.load", "memory.retrieve"],
+        risk_level: "low",
+        memory_links: ["preview-memory"],
+        deadline: null,
+        updated_at: now
+      }
     ]
   };
 }
@@ -450,7 +517,9 @@ function writeBrowserState(state: BrowserState): void {
     JSON.stringify({
       memories: state.memories.slice(0, 100),
       projects: state.projects.slice(0, 20),
-      events: state.events.slice(0, 100)
+      events: state.events.slice(0, 100),
+      mode: state.mode,
+      goals: state.goals.slice(0, 64)
     })
   );
 }
@@ -469,6 +538,7 @@ const agentNames = [
   "MemoryAgent",
   "SemanticMemoryAgent",
   "PlannerAgent",
+  "SkillAgent",
   "ProjectAgent",
   "ToolRouterAgent",
   "CommandAgent",
@@ -485,6 +555,7 @@ const agentCapabilities: Record<string, string[]> = {
   MemoryAgent: ["ReadMemory", "WriteMemory"],
   SemanticMemoryAgent: ["SemanticSearch", "ReadMemory"],
   PlannerAgent: ["PlanTasks", "BuildExecutionGraph"],
+  SkillAgent: ["LearnSkills", "WriteMemory"],
   ProjectAgent: ["UpdateProjectGraph"],
   ToolRouterAgent: ["RouteTools"],
   CommandAgent: ["ExecuteSafeCommands"],
@@ -566,6 +637,7 @@ function BrainShell(): JSX.Element {
   const [chat, setChat] = useState<ChatOutput | null>(null);
   const [memoryDraft, setMemoryDraft] = useState("");
   const [command, setCommand] = useState("git status --short");
+  const operatingMode = dashboard?.operating_mode ?? dashboard?.cognitive_state.operating_mode ?? "passive";
 
   const send = async () => {
     if (!message.trim()) return;
@@ -584,6 +656,11 @@ function BrainShell(): JSX.Element {
   const runCommand = async () => {
     if (!command.trim()) return;
     await invoke("run_safe_command", { input: { command, cwd: null } });
+    await refresh();
+  };
+
+  const setMode = async (mode: OperatingMode) => {
+    await invoke("set_operating_mode", { input: { mode } });
     await refresh();
   };
 
@@ -621,7 +698,10 @@ function BrainShell(): JSX.Element {
             <span className="eyebrow">local-first nervous system</span>
             <h1>{tabLabel(tab)}</h1>
           </div>
-          <button className="icon-button" onClick={() => void refresh()}>{busy ? <Sparkles /> : <RefreshCw />}</button>
+          <div className="topbar-actions">
+            <ModeControl mode={operatingMode} onChange={(mode) => void setMode(mode)} />
+            <button className="icon-button" onClick={() => void refresh()}>{busy ? <Sparkles /> : <RefreshCw />}</button>
+          </div>
         </header>
         {error ? <div className="error">{error}</div> : null}
 
@@ -630,9 +710,12 @@ function BrainShell(): JSX.Element {
             <Metric icon={<Database />} label="memories" value={counts.memories ?? 0} />
             <Metric icon={<Activity />} label="agents" value={dashboard?.agents.length ?? 0} />
             <Metric icon={<Network />} label="graph nodes" value={counts.graphNodes ?? 0} />
-            <Metric icon={<Workflow />} label="tasks" value={counts.tasks ?? 0} />
+            <Metric icon={<Target />} label="goals" value={dashboard?.goals.length ?? 0} />
             <Panel title="Recent Work Brief" icon={<Radar />}>
               <p className="large-copy">{dashboard?.pet.recent_brief ?? "Computer Brain is starting."}</p>
+            </Panel>
+            <Panel title="Goal Stack" icon={<Target />}>
+              <GoalStack goals={dashboard?.goals ?? []} />
             </Panel>
             <Panel title="Event Stream" icon={<Braces />}>
               <Timeline rows={(dashboard?.events ?? []).slice(0, 8).map((e) => ({
@@ -732,8 +815,10 @@ function BrainShell(): JSX.Element {
 
         {tab === "context" && (
           <Panel title="Context Viewer" icon={<Radar />}>
+            <ModeControl mode={operatingMode} onChange={(mode) => void setMode(mode)} />
             <div className="settings-grid">
-              <div><strong>Mode</strong><span>{dashboard?.cognitive_state.cognitive_mode ?? "unknown"}</span></div>
+              <div><strong>Operating Mode</strong><span>{operatingMode}</span></div>
+              <div><strong>Cognitive State</strong><span>{dashboard?.cognitive_state.cognitive_mode ?? "unknown"}</span></div>
               <div><strong>Focus</strong><span>{dashboard?.cognitive_state.current_focus ?? "none"}</span></div>
               <div><strong>Pending tasks</strong><span>{dashboard?.cognitive_state.pending_tasks ?? 0}</span></div>
               <div><strong>System load</strong><span>{Math.round((dashboard?.cognitive_state.system_load.cpu ?? 0) * 100) / 100}% CPU</span></div>
@@ -797,7 +882,9 @@ function BrainShell(): JSX.Element {
 
         {tab === "settings" && (
           <Panel title="Safety Permissions Panel" icon={<Lock />}>
+            <ModeControl mode={operatingMode} onChange={(mode) => void setMode(mode)} />
             <div className="settings-grid">
+              <div><strong>Current operating mode</strong><span>{operatingMode}</span></div>
               <div><strong>Local first</strong><span>Cloud uploads blocked by default</span></div>
               <div><strong>Command safety</strong><span>Allowlist plus dangerous command confirmation</span></div>
               <div><strong>API keys</strong><span>Reserved for encrypted key storage</span></div>
@@ -807,6 +894,41 @@ function BrainShell(): JSX.Element {
         )}
       </section>
     </main>
+  );
+}
+
+function ModeControl({ mode, onChange }: { mode: OperatingMode; onChange: (mode: OperatingMode) => void }): JSX.Element {
+  const modes: OperatingMode[] = ["passive", "assisted", "active", "autonomous"];
+  return (
+    <div className="mode-control" aria-label="Operating mode">
+      {modes.map((item) => (
+        <button key={item} className={mode === item ? "active" : ""} onClick={() => onChange(item)}>
+          {item}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function GoalStack({ goals }: { goals: GoalRecord[] }): JSX.Element {
+  if (!goals.length) {
+    return <p className="muted">No active goals have been detected yet.</p>;
+  }
+  return (
+    <div className="goal-stack">
+      {goals.slice(0, 8).map((goal) => (
+        <article key={goal.id}>
+          <div>
+            <strong>{goal.title}</strong>
+            <span>{goal.owner_agent} / {goal.status}</span>
+          </div>
+          <small>{goal.risk_level} risk / priority {goal.priority}</small>
+          <div className="chip-list">
+            {goal.required_tools.slice(0, 4).map((tool) => <span key={tool}>{tool}</span>)}
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 

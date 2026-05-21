@@ -68,7 +68,7 @@ pub struct SystemMonitor {
 impl SystemMonitor {
     pub fn new() -> Self {
         let system = System::new_with_specifics(
-            RefreshKind::new()
+            RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
         );
@@ -102,13 +102,10 @@ impl SystemMonitor {
         let memory = self.collect_memory_metrics();
         let processes = self.collect_top_processes(5);
         let disk = self.collect_disk_metrics();
-        let (network, rx_rate, tx_rate) = self.collect_network_metrics(timestamp);
+        let (network, _rx_rate, _tx_rate) = self.collect_network_metrics(timestamp);
 
-        let load_average = [
-            self.system.load_average().one,
-            self.system.load_average().five,
-            self.system.load_average().fifteen,
-        ];
+        let load = System::load_average();
+        let load_average = [load.one as f32, load.five as f32, load.fifteen as f32];
 
         let uptime = System::uptime();
 
@@ -159,8 +156,6 @@ impl SystemMonitor {
     }
 
     fn collect_top_processes(&self, count: usize) -> Vec<ProcessInfo> {
-        use std::cmp::Reverse;
-
         let processes: Vec<_> = self.system.processes().iter()
             .map(|(pid, process)| ProcessInfo {
                 pid: pid.as_u32(),
@@ -173,7 +168,7 @@ impl SystemMonitor {
         let mut sorted: Vec<_> = processes.into_iter()
             .map(|p| (p.cpu_usage, p))
             .collect();
-        sorted.sort_by_key(|k| Reverse(k.0));
+        sorted.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         sorted.into_iter()
             .take(count)

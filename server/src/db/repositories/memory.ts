@@ -256,18 +256,86 @@ export function getRelationsFor(memoryId: string): MemoryRelation[] {
   }));
 }
 
-export function listRecentMemories(limit: number, sourceType?: MemorySourceType): MemoryPoint[] {
+export function listRecentMemories(
+  limit: number,
+  sourceType?: MemorySourceType,
+  offset = 0,
+): MemoryPoint[] {
   const db = openDb();
   const rows = sourceType
     ? db
-        .prepare<[string, number], MemoryRow>(
-          `SELECT * FROM memory_points WHERE source_type = ? ORDER BY updated_at DESC LIMIT ?`,
+        .prepare<[string, number, number], MemoryRow>(
+          `SELECT * FROM memory_points WHERE source_type = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
         )
-        .all(sourceType, limit)
+        .all(sourceType, limit, offset)
     : db
-        .prepare<[number], MemoryRow>(
-          `SELECT * FROM memory_points ORDER BY updated_at DESC LIMIT ?`,
+        .prepare<[number, number], MemoryRow>(
+          `SELECT * FROM memory_points ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
         )
-        .all(limit);
+        .all(limit, offset);
   return rows.map(rowToMemory);
+}
+
+export function getMemoryCount(): number {
+  const db = openDb();
+  const row = db.prepare("SELECT COUNT(*) as count FROM memory_points").get() as { count: number };
+  return row.count;
+}
+
+export function deleteMemoryPoint(id: string): boolean {
+  const db = openDb();
+  const result = db.prepare("DELETE FROM memory_points WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+export interface EmbeddingDimMismatch {
+  valid: boolean;
+  expectedDim: number;
+  actualDims: number[];
+  memoryCount: number;
+}
+
+function parseEmbeddingDimFromSql(sql: string): number | null {
+  const match = sql.match(/embedding\s+float\[(\d+)\]/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+export function checkEmbeddingDimMismatch(): EmbeddingDimMismatch {
+  const db = openDb();
+  if (!isVectorAvailable()) {
+    return { valid: true, expectedDim: CONFIG.embeddingDim, actualDims: [], memoryCount: 0 };
+  }
+
+  const count = getMemoryCount();
+  if (count === 0) {
+    return { valid: true, expectedDim: CONFIG.embeddingDim, actualDims: [], memoryCount: 0 };
+  }
+
+  try {
+    const row = db
+      .prepare<[], { sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE name = 'memory_vec' AND type = 'table'`,
+      )
+      .get();
+
+    if (!row?.sql) {
+      return { valid: true, expectedDim: CONFIG.embeddingDim, actualDims: [], memoryCount: count };
+    }
+
+    const actualDim = parseEmbeddingDimFromSql(row.sql);
+    if (actualDim === null) {
+      return { valid: true, expectedDim: CONFIG.embeddingDim, actualDims: [], memoryCount: count };
+    }
+
+    const hasMismatch = actualDim !== CONFIG.embeddingDim;
+
+    return {
+      valid: !hasMismatch,
+      expectedDim: CONFIG.embeddingDim,
+      actualDims: hasMismatch ? [actualDim] : [actualDim],
+      memoryCount: count,
+    };
+  } catch {
+    return { valid: true, expectedDim: CONFIG.embeddingDim, actualDims: [], memoryCount: count };
+  }
 }

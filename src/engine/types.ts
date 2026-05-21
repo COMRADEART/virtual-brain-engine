@@ -123,6 +123,8 @@ export interface BrainMetrics {
   neurons: number;
   pathways: number;
   regions: number;
+  fps?: number;
+  mem?: number;
 }
 
 export type RegionVisibility = Record<BrainRegionId, boolean>;

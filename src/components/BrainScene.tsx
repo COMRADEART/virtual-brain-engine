@@ -13,6 +13,7 @@ import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
 import { generateNeuralGraph } from "../engine/neuralGraphGenerator";
 import { SignalSimulation } from "../engine/signalSimulation";
 import { subscribeBrainBus } from "../engine/brainBus";
+import type { PerfPreset } from "../engine/performancePresets";
 import { LOGICAL_REGION_IDS } from "../../shared/pipeline";
 import type {
   BrainActionId,
@@ -41,6 +42,7 @@ interface BrainSceneProps {
   cameraPreset: CameraPresetRequest;
   aiPick: AiPickEvent | null;
   audioEnabled: boolean;
+  perfPreset: PerfPreset;
   onRegionSelect: (regionId: BrainRegionId) => void;
   onMetricsChange: (metrics: BrainMetrics) => void;
   onAnatomyLoadProgress?: (progress: AnatomyLoadProgress) => void;
@@ -55,6 +57,18 @@ interface CameraTransition {
   endTarget: THREE.Vector3;
 }
 
+// Per-step flash magnitude so the brain visibly distinguishes the 7 pipeline
+// steps: memory retrieval / response burn brightest, bookkeeping steps dimmer.
+const PIPELINE_STEP_GAIN: Record<string, number> = {
+  input: 0.45,
+  memory: 0.95,
+  reasoning: 0.85,
+  project: 0.6,
+  error: 0.7,
+  response: 0.9,
+  learning: 0.55,
+};
+
 // Shared soft-circular sprite used by the anatomy point cloud. Built once and
 // reused across remounts (HMR-friendly).
 let pointSpriteTexture: THREE.Texture | null = null;
@@ -68,8 +82,7 @@ function getPointSpriteTexture(): THREE.Texture {
   canvas.height = size;
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    pointSpriteTexture = new THREE.Texture();
-    return pointSpriteTexture;
+    return new THREE.Texture();
   }
   const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
   gradient.addColorStop(0, "rgba(255,255,255,1)");
@@ -157,6 +170,7 @@ export function BrainScene({
   cameraPreset,
   aiPick,
   audioEnabled,
+  perfPreset,
   onRegionSelect,
   onMetricsChange,
   onAnatomyLoadProgress,
@@ -184,6 +198,10 @@ export function BrainScene({
   const initialAnatomyVisibleRef = useRef(anatomyVisible);
   const initialAnatomyOpacityRef = useRef(anatomyOpacity);
   const initialAudioEnabledRef = useRef(audioEnabled);
+  const initialPerfPresetRef = useRef(perfPreset);
+  const perfPresetRef = useRef(perfPreset);
+  const composerRef = useRef<EffectComposer | null>(null);
+  const bloomPassRef = useRef<UnrealBloomPass | null>(null);
   // The load-progress callback is read via a ref so the main scene effect
   // doesn't tear down when the parent's callback identity changes.
   const onAnatomyLoadProgressRef = useRef(onAnatomyLoadProgress);
@@ -231,8 +249,7 @@ export function BrainScene({
   // beginning, not when it finishes.
   //
   // We also track the most recent pipeline activity timestamp so the idle
-  // "breathing" loop below pauses while a real run is happening — otherwise
-  // the two animations stack and the brain reads as twitchy.
+  // "breathing" loop below pauses while a real run is happening.
   const lastPipelineActivityRef = useRef(0);
   useEffect(() => {
     return subscribeBrainBus((message) => {
@@ -243,13 +260,24 @@ export function BrainScene({
       if (message.status !== "start") {
         return;
       }
-      const sim = simulationRef.current;
-      if (!sim) {
+      const gain = PIPELINE_STEP_GAIN[message.step] ?? 0.7;
+      message.logicalRegions.forEach((region, index) => {
+        // Stagger flashes so a multi-region step reads as a travelling wave
+        // through the thought, not a single simultaneous blink.
+        window.setTimeout(() => {
+          simulationRef.current?.flashLogicalRegion(region, gain);
+        }, index * 70);
+      });
+    });
+  }, []);
+
+  // Memory count updates drive the hippocampus glow intensity.
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      if (message.type !== "memory-count") {
         return;
       }
-      for (const region of message.logicalRegions) {
-        sim.flashLogicalRegion(region);
-      }
+      simulationRef.current?.setMemoryIntensity(message.count);
     });
   }, []);
 
@@ -278,6 +306,26 @@ export function BrainScene({
   useEffect(() => {
     ambientBusRef.current?.setEnabled(audioEnabled);
   }, [audioEnabled]);
+
+  // Performance preset changes apply live without tearing down the scene:
+  // re-cap the pixel ratio, toggle the bloom pass, and resize the pulse pool.
+  useEffect(() => {
+    perfPresetRef.current = perfPreset;
+    const renderer = rendererRef.current;
+    const composer = composerRef.current;
+    const container = containerRef.current;
+    if (renderer && container) {
+      const width = Math.max(1, container.clientWidth);
+      const height = Math.max(1, container.clientHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, perfPreset.dprCap));
+      renderer.setSize(width, height);
+      composer?.setSize(width, height);
+    }
+    if (bloomPassRef.current) {
+      bloomPassRef.current.enabled = perfPreset.bloom;
+    }
+    simulationRef.current?.setMaxPulses(perfPreset.maxPulses);
+  }, [perfPreset]);
 
   useEffect(() => {
     if (shellRef.current) {
@@ -318,7 +366,7 @@ export function BrainScene({
       alpha: true,
       powerPreference: "high-performance",
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, initialPerfPresetRef.current.dprCap));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -329,6 +377,7 @@ export function BrainScene({
     // Cinematic glow on bright pixels (pulses + lit regions). The threshold
     // keeps the dark background sharp; only pixels well above neutral bloom.
     const composer = new EffectComposer(renderer);
+    composerRef.current = composer;
     composer.setSize(container.clientWidth, container.clientHeight);
     composer.addPass(new RenderPass(scene, camera));
     // Tuned conservatively so the bloom enhances pulses and lit regions without
@@ -340,6 +389,10 @@ export function BrainScene({
       0.35, // radius
       0.55, // threshold — only pixels already pretty bright will bloom
     );
+    // EffectComposer skips disabled passes, so the Light/Balanced presets pay
+    // nothing for bloom. The reactive preset effect below flips this live.
+    bloomPass.enabled = initialPerfPresetRef.current.bloom;
+    bloomPassRef.current = bloomPass;
     composer.addPass(bloomPass);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -453,6 +506,12 @@ export function BrainScene({
     let animationFrame = 0;
     let audioFrameCounter = 0;
 
+    // Pause simulation when the tab is hidden to save GPU/CPU.
+    const handleVisibilityChange = () => {
+      simulationRef.current?.setRunning(!document.hidden);
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     const renderFrame = () => {
       animationFrame = window.requestAnimationFrame(renderFrame);
       const delta = Math.min(clock.getDelta(), 0.033);
@@ -526,6 +585,7 @@ export function BrainScene({
     return () => {
       cancelled = true;
       window.cancelAnimationFrame(animationFrame);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       renderer.domElement.removeEventListener("click", handlePointerClick);
       resizeObserver.disconnect();
       controls.dispose();
@@ -541,7 +601,9 @@ export function BrainScene({
       ambientBus.dispose();
       ambientBusRef.current = null;
       bloomPass.dispose();
+      bloomPassRef.current = null;
       composer.dispose();
+      composerRef.current = null;
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -571,6 +633,7 @@ export function BrainScene({
     const simulation = new SignalSimulation(graph, selectedActionId);
     simulation.setRunning(simulationRunning);
     simulation.setSpeed(signalSpeed);
+    simulation.setMaxPulses(perfPresetRef.current.maxPulses);
     simulationRef.current = simulation;
 
     onMetricsChange({

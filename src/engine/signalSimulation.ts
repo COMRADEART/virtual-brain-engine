@@ -1,4 +1,4 @@
-import { ACTION_BY_ID } from "./brainRegions";
+import { ACTION_BY_ID, REGION_INDEX } from "./brainRegions";
 import { LOGICAL_REGION_MAP } from "./logicalRegions";
 import type { LogicalRegionId } from "../../shared/pipeline";
 import type {
@@ -9,7 +9,7 @@ import type {
   SynapticPathway,
 } from "./types";
 
-const MAX_PULSES = 260;
+const DEFAULT_MAX_PULSES = 260;
 
 function weightedPick<T>(items: T[], weights: number[], random: () => number): T | undefined {
   let total = 0;
@@ -46,6 +46,7 @@ export class SignalSimulation {
   private actionId: BrainActionId;
   private running = true;
   private speed = 1;
+  private maxPulses = DEFAULT_MAX_PULSES;
   private nextPulseId = 1;
   private spawnAccumulator = 0;
   private readonly random = mulberry32(381);
@@ -59,6 +60,10 @@ export class SignalSimulation {
   // so the visual feels like a momentary burst on top of steady-state activity.
   readonly regionFlashIntensity: Float32Array;
   readonly pathwayIntensity: Float32Array;
+  private _memoryIntensity = 0;
+  get memoryIntensity(): number {
+    return this._memoryIntensity;
+  }
 
   constructor(graph: NeuralGraph, actionId: BrainActionId) {
     this.graph = graph;
@@ -122,6 +127,16 @@ export class SignalSimulation {
     this.speed = speed;
   }
 
+  // Performance presets shrink the active pulse pool on lighter tiers so the
+  // step loop stays cheap. Existing pulses are left to expire naturally.
+  setMaxPulses(maxPulses: number): void {
+    this.maxPulses = Math.max(20, Math.round(maxPulses));
+  }
+
+  setMemoryIntensity(count: number): void {
+    this._memoryIntensity = Math.min(1, count / 500);
+  }
+
   step(deltaSeconds: number, elapsedSeconds: number): void {
     const decay = Math.pow(0.05, deltaSeconds);
     const flashDecay = Math.pow(0.18, deltaSeconds);
@@ -134,6 +149,8 @@ export class SignalSimulation {
       this.pathwayIntensity[index] *= Math.pow(0.08, deltaSeconds);
     }
 
+    this._memoryIntensity *= Math.pow(0.92, deltaSeconds);
+
     const action = ACTION_BY_ID[this.actionId];
     const activeRegionSet = new Set(action.activeRegions);
 
@@ -144,6 +161,17 @@ export class SignalSimulation {
           this.regionIntensity[regionIndex],
           0.28 + Math.sin(elapsedSeconds * 4.5 + regionIndex) * 0.09,
         );
+      }
+    }
+
+    if (this.memoryIntensity > 0.005) {
+      const hippoL = REGION_INDEX["hippocampus-l"];
+      const hippoR = REGION_INDEX["hippocampus-r"];
+      if (hippoL !== undefined) {
+        this.regionIntensity[hippoL] = Math.max(this.regionIntensity[hippoL], this.memoryIntensity * 0.72);
+      }
+      if (hippoR !== undefined) {
+        this.regionIntensity[hippoR] = Math.max(this.regionIntensity[hippoR], this.memoryIntensity * 0.72);
       }
     }
 
@@ -181,7 +209,10 @@ export class SignalSimulation {
           this.regionIntensity[targetNode.regionIndex],
           pulse.intensity,
         );
-        this.pulses.splice(index, 1);
+        const last = this.pulses.pop()!;
+        if (index < this.pulses.length) {
+          this.pulses[index] = last;
+        }
       }
     }
   }
@@ -209,7 +240,7 @@ export class SignalSimulation {
   }
 
   private spawnPulse(activeRegionSet: Set<BrainRegionId>): void {
-    if (this.pulses.length >= MAX_PULSES || this.eligiblePathways.length === 0) {
+    if (this.pulses.length >= this.maxPulses || this.eligiblePathways.length === 0) {
       return;
     }
 

@@ -1,0 +1,32 @@
+[package]
+name = "conscious-workspace"
+version = "0.1.0"
+edition = "2021"
+authors = ["Computer Brain Team"]
+description = "Synthetic conscious workspace - active awareness, attention, and working memory"
+license = "MIT"
+repository = "https://github.com/anomalyco/computer-brain"
+
+[dependencies]
+# Core types from workspace
+shared-types = { path = "../shared-types", version = "0.1" }
+nervous-system = { path = "../nervous-system", version = "0.1" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["sync", "rt", "time"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID for content addressing
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+# HashMap/HashSet for collections
+parking_lot = "0.12"
+hashbrown = "0.15"
+
+# Rand for priority scoring
+rand = "0.8"
+
+# Logging
+tracing = "0.1"

@@ -115,8 +115,8 @@ function computeControlPoint(
     sourceHemi !== "midline" &&
     targetHemi !== "midline" &&
     sourceHemi !== targetHemi &&
-    sourceRegion.lobe !== "subcortical" &&
-    targetRegion.lobe !== "subcortical";
+    sourceRegion?.lobe !== "subcortical" &&
+    targetRegion?.lobe !== "subcortical";
 
   const touchesPosteriorFossa =
     sourceRegion?.lobe === "cerebellum" ||
