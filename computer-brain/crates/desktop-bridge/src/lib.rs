@@ -1,7 +1,7 @@
 use anyhow::Result;
 use brain_core::{BrainCore, BrainDashboard};
 use serde::{Deserialize, Serialize};
-use shared_types::{BrainConfig, GraphEdgeRecord, GraphNodeRecord, MemoryRecord};
+use shared_types::{BrainConfig, GraphEdgeRecord, GraphNodeRecord, MemoryRecord, OperatingMode};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -38,6 +38,11 @@ pub struct ProjectInput {
 pub struct CommandInput {
     pub command: String,
     pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatingModeInput {
+    pub mode: OperatingMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +97,10 @@ impl DesktopBridge {
 
     pub async fn run_command(&self, input: CommandInput) -> Result<()> {
         self.core.lock().await.run_command(input.command, input.cwd).await
+    }
+
+    pub async fn set_operating_mode(&self, input: OperatingModeInput) -> Result<cognitive_state::WorldState> {
+        self.core.lock().await.set_operating_mode(input.mode)
     }
 
     pub async fn graph(&self) -> Result<GraphOutput> {

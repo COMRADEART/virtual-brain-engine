@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use shared_types::{AgentDescriptor, BrainEvent, BrainId, ProjectRecord};
+use shared_types::{AgentDescriptor, BrainEvent, BrainId, GoalRecord, OperatingMode, ProjectRecord};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,6 +35,7 @@ pub struct SystemLoad {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldState {
     pub cognitive_mode: CognitiveMode,
+    pub operating_mode: OperatingMode,
     pub active_project: Option<BrainId>,
     pub active_window: Option<String>,
     pub running_apps: Vec<String>,
@@ -52,6 +53,7 @@ impl Default for WorldState {
     fn default() -> Self {
         Self {
             cognitive_mode: CognitiveMode::Idle,
+            operating_mode: OperatingMode::Passive,
             active_project: None,
             active_window: None,
             running_apps: Vec::new(),
@@ -141,6 +143,7 @@ impl Default for SystemBodyMap {
 pub struct CognitiveStateEngine {
     world: Arc<RwLock<WorldState>>,
     body_map: Arc<RwLock<SystemBodyMap>>,
+    goals: Arc<RwLock<Vec<GoalRecord>>>,
 }
 
 impl CognitiveStateEngine {
@@ -150,6 +153,34 @@ impl CognitiveStateEngine {
 
     pub fn body_map(&self) -> SystemBodyMap {
         self.body_map.read().clone()
+    }
+
+    pub fn operating_mode(&self) -> OperatingMode {
+        self.world.read().operating_mode.clone()
+    }
+
+    pub fn set_operating_mode(&self, mode: OperatingMode) -> WorldState {
+        let mut world = self.world.write();
+        world.operating_mode = mode;
+        world.updated_at = Utc::now();
+        world.clone()
+    }
+
+    pub fn goals(&self) -> Vec<GoalRecord> {
+        self.goals.read().clone()
+    }
+
+    pub fn replace_goals(&self, goals: Vec<GoalRecord>) {
+        *self.goals.write() = goals;
+    }
+
+    pub fn push_goal(&self, goal: GoalRecord) {
+        let mut goals = self.goals.write();
+        if goals.iter().any(|existing| existing.id == goal.id) {
+            return;
+        }
+        goals.insert(0, goal);
+        goals.truncate(64);
     }
 
     pub fn install_body_map(&self, body_map: SystemBodyMap) {

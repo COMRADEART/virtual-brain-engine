@@ -4,6 +4,7 @@ import {
   Eye,
   Gauge,
   Layers3,
+  MonitorSmartphone,
   MousePointer2,
   Pause,
   Play,
@@ -23,6 +24,13 @@ import type {
   CameraPresetRequest,
   RegionVisibility,
 } from "../engine/types";
+
+export type NeuronPreset = "light" | "balanced" | "beautiful";
+export const NEURON_PRESETS: Record<NeuronPreset, { density: number; label: string }> = {
+  light: { density: 0.4, label: "Light" },
+  balanced: { density: 1.0, label: "Balanced" },
+  beautiful: { density: 2.5, label: "Beautiful" },
+};
 
 const LOBE_ORDER: BrainLobe[] = [
   "frontal",
@@ -237,12 +245,36 @@ export function RegionControls({
 
         <label className="range-control">
           <span>
+            <MonitorSmartphone size={16} />
+            Performance
+          </span>
+          <div className="preset-row">
+            {(Object.keys(NEURON_PRESETS) as NeuronPreset[]).map((preset) => {
+              const { label, density } = NEURON_PRESETS[preset];
+              const isActive =
+                Math.abs(neuronDensity - density) < 0.05;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  className={isActive ? "preset-button active" : "preset-button"}
+                  onClick={() => onNeuronDensityChange(density)}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </label>
+
+        <label className="range-control">
+          <span>
             <Layers3 size={16} />
             Neuron density
             <output>{getEstimatedNeuronCount(neuronDensity).toLocaleString()}</output>
           </span>
           <input
-            min="0.8"
+            min="0.3"
             max="2.8"
             step="0.1"
             type="range"

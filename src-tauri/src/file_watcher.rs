@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
+use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
@@ -39,6 +38,8 @@ pub struct GitActivity {
 pub struct FileWatcher {
     watcher: Option<RecommendedWatcher>,
     watched_paths: Vec<PathBuf>,
+    // TODO(phase2): drained by poll_events/add_change in a later phase.
+    #[allow(dead_code)]
     recent_changes: Vec<FileChange>,
     project_stats: ProjectStats,
 }
@@ -80,19 +81,14 @@ impl FileWatcher {
         Ok(())
     }
 
+    // TODO(phase2): used by a later phase — kept as scaffolding (see CLAUDE.md).
+    #[allow(dead_code)]
     pub fn poll_events(&mut self) -> Vec<FileChange> {
-        let mut new_changes = Vec::new();
-
-        if let Some(ref w) = self.watcher {
-            // Just trigger a refresh - events come through the channel
-        }
-
-        // Swap recent changes
-        let mut changes = std::mem::take(&mut self.recent_changes);
-        std::mem::swap(&mut self.recent_changes, &mut changes);
-        changes
+        std::mem::take(&mut self.recent_changes)
     }
 
+    // TODO(phase2): used by a later phase — kept as scaffolding (see CLAUDE.md).
+    #[allow(dead_code)]
     pub fn add_change(&mut self, change: FileChange) {
         // Keep only last 100 changes
         if self.recent_changes.len() >= 100 {
@@ -165,7 +161,7 @@ impl FileWatcher {
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                         if let Some(lang) = extensions.get(ext) {
                             stats.total_files += 1;
-                            stats.languages.insert(lang.to_string(), *stats.languages.get(lang.to_string()).unwrap_or(&0) + 1);
+                            stats.languages.insert(lang.to_string(), *stats.languages.get(*lang).unwrap_or(&0) + 1);
                             stats.total_lines += count_lines(&path);
 
                             if let Ok(metadata) = entry.metadata() {
@@ -196,21 +192,16 @@ impl FileWatcher {
             h.shorthand().map(|s| s.to_string())
         });
 
-        let (ahead, behind) = if let Some(head) = repo.head().ok() {
-            if let Ok(upstream) = head.upstream() {
-                let ahead = head.peel_to_commit().ok().and_then(|c| {
-                    repo.graph_ahead_behind(c.id(), upstream.peel_to_commit().ok()?.id()).ok()
-                }).map(|(a, _)| a).unwrap_or(0);
-                let behind = head.peel_to_commit().ok().and_then(|c| {
-                    repo.graph_ahead_behind(c.id(), upstream.peel_to_commit().ok()?.id()).ok()
-                }).map(|(_, b)| b).unwrap_or(0);
-                (ahead, behind)
-            } else {
-                (0, 0)
-            }
-        } else {
-            (0, 0)
-        };
+        let (ahead, behind) = branch
+            .as_deref()
+            .and_then(|name| {
+                let local = repo.find_branch(name, git2::BranchType::Local).ok()?;
+                let upstream = local.upstream().ok()?;
+                let local_commit = local.get().peel_to_commit().ok()?;
+                let upstream_commit = upstream.get().peel_to_commit().ok()?;
+                repo.graph_ahead_behind(local_commit.id(), upstream_commit.id()).ok()
+            })
+            .unwrap_or((0, 0));
 
         let statuses = repo.statuses(None).ok();
         let uncommitted_changes = statuses

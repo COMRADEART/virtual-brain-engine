@@ -1,5 +1,5 @@
 use crate::database::{BrainActivity, MemoryPoint, ProjectContext};
-use crate::file_watcher::{FileChange, GitActivity, ProjectStats};
+use crate::file_watcher::{GitActivity, ProjectStats};
 use crate::system_monitor::SystemMetrics;
 use crate::database::SharedDatabase;
 use crate::file_watcher::SharedFileWatcher;
@@ -28,6 +28,8 @@ impl Default for AppState {
     }
 }
 
+// TODO(phase2): consumed by a later phase — kept as scaffolding (see CLAUDE.md).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchedProject {
     pub path: String,
@@ -55,7 +57,7 @@ pub fn start_monitoring(
         app_state.is_monitoring = true;
     }
 
-    let monitor_clone = monitor.clone();
+    let monitor_clone = monitor.inner().clone();
     let app_clone = app.clone();
 
     std::thread::spawn(move || {
@@ -164,7 +166,7 @@ pub fn record_brain_activity(
     metadata: String,
     db: State<'_, SharedDatabase>,
 ) -> Result<(), String> {
-    let db = db.read();
+    let db = db.lock();
 
     let activity = BrainActivity {
         id: Uuid::new_v4().to_string(),
@@ -184,7 +186,7 @@ pub fn get_recent_activity(
     limit: usize,
     db: State<'_, SharedDatabase>,
 ) -> Result<Vec<BrainActivity>, String> {
-    let db = db.read();
+    let db = db.lock();
     db.get_recent_activity(limit)
         .map_err(|e| format!("Failed to get recent activity: {}", e))
 }
@@ -197,7 +199,7 @@ pub fn add_memory_point(
     source_path: Option<String>,
     db: State<'_, SharedDatabase>,
 ) -> Result<MemoryPoint, String> {
-    let db = db.read();
+    let db = db.lock();
     let now = Utc::now().to_rfc3339();
 
     let point = MemoryPoint {
@@ -224,7 +226,7 @@ pub fn get_recent_memories(
     limit: usize,
     db: State<'_, SharedDatabase>,
 ) -> Result<Vec<MemoryPoint>, String> {
-    let db = db.read();
+    let db = db.lock();
     db.get_recent_memories(limit)
         .map_err(|e| format!("Failed to get recent memories: {}", e))
 }
@@ -240,7 +242,7 @@ pub fn save_project_context(
     recent_files: String,
     db: State<'_, SharedDatabase>,
 ) -> Result<(), String> {
-    let db = db.read();
+    let db = db.lock();
 
     let context = ProjectContext {
         id: Uuid::new_v4().to_string(),
@@ -263,7 +265,7 @@ pub fn get_project_context(
     project_path: String,
     db: State<'_, SharedDatabase>,
 ) -> Result<Option<ProjectContext>, String> {
-    let db = db.read();
+    let db = db.lock();
     db.get_project_context(&project_path)
         .map_err(|e| format!("Failed to get project context: {}", e))
 }
@@ -290,5 +292,17 @@ pub fn toggle_brain_activity(
 ) -> Result<(), String> {
     let mut app_state = state.write();
     app_state.brain_activity_enabled = enabled;
+    Ok(())
+}
+
+/// Bring the main window to the foreground. Invoked by the desktop pet
+/// (PetWindow.tsx) when the user clicks it — mirrors the tray "show" handler.
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }

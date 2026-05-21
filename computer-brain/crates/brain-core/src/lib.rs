@@ -1,30 +1,45 @@
 use agent_runtime::{Agent, AgentContext, AgentFuture, AgentRuntime};
+use adaptation_engine::AdaptationEngine;
 use anyhow::{Context, Result};
 use capability_system::{CapabilityDescriptor, CapabilityRegistry};
 use chrono::Utc;
 use cognitive_state::{CognitiveMode, CognitiveStateEngine, SystemBodyMap, SystemBodyScanner, WorldState};
 use context_engine::ContextEngine;
+use evolution_engine::{
+    GenomeKind, PerformanceSignals, RecursiveEvolutionEngine,
+    DEFAULT_POPULATION,
+};
 use execution_graph::ExecutionGraphRuntime;
 use knowledge_graph::KnowledgeGraph;
+use learning_engine::LearningEngine;
 use memory_cortex::{memory, MemoryCortex};
 use nervous_system::BrainBus;
 use observability::{EventMetrics, ObservabilityHub, ReasoningTrace};
+use perception_engine::{ObservationKind, PerceptionEngine, StructuredObservation};
 use personality_engine::{MoodInput, PersonalityEngine};
+use planning_engine::PlanningEngine as CognitivePlanningEngine;
 use planner_engine::PlannerEngine;
+use reflection_engine::{ExecutionOutcome, PlanningQuality, ReflectionEngine, ReflectionRecord, WorkflowEfficiency};
 use safety_layer::SafetyLayer;
 use semantic_memory::{SemanticHit, SemanticMemory};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use shared_types::{
     new_id, AgentCapability, AgentState, AgentTask, BrainConfig, BrainEvent, BrainEventEnvelope,
-    GraphEdgeRecord, GraphNodeRecord, MemoryKind, MemoryRecord, PetState, ProjectRecord,
+    ConsciousnessCycleRecord, GoalRecord, GoalRisk, GoalStatus, GraphEdgeRecord, GraphNodeRecord,
+    MemoryKind, MemoryRecord, OperatingMode, PetState, ProjectRecord,
     SafetyDecisionKind, ToolProvider, ToolRequest,
 };
+use skill_learning::{ObservedAction, SkillFailure, SkillLearningEngine, SkillRun};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 use tool_cortex::{ToolCortex, ToolCortexConfig};
+use web_cortex::{WebCortex, WebCortexConfig};
+use understanding_engine::{SituationalIntent, SituationalUnderstanding, UnderstandingEngine};
 use workflow_engine::{new_task, WorkflowEngine};
+use conscious_workspace::ConsciousWorkspace;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrainDashboard {
@@ -36,10 +51,26 @@ pub struct BrainDashboard {
     pub pet: PetState,
     pub events: Vec<BrainEventEnvelope>,
     pub cognitive_state: WorldState,
+    pub operating_mode: OperatingMode,
+    pub goals: Vec<GoalRecord>,
     pub body_map: SystemBodyMap,
     pub capabilities: Vec<CapabilityDescriptor>,
     pub recent_traces: Vec<ReasoningTrace>,
     pub event_metrics: EventMetrics,
+    pub workspace_state: WorkspaceDashboardState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceDashboardState {
+    pub current_focus: Option<String>,
+    pub focus_intensity: f64,
+    pub active_stream_count: usize,
+    pub working_memory_load: f64,
+    pub cognitive_load: String,
+    pub cognitive_load_pct: f64,
+    pub attention_bandwidth_used: f64,
+    pub total_attention: f64,
+    pub uncertainty_level: f64,
 }
 
 #[derive(Clone)]
@@ -50,14 +81,24 @@ pub struct BrainServices {
     pub graph: KnowledgeGraph,
     pub context: ContextEngine,
     pub cognitive: CognitiveStateEngine,
+    pub perception: PerceptionEngine,
+    pub understanding: UnderstandingEngine,
     pub planner: PlannerEngine,
+    pub planning: CognitivePlanningEngine,
     pub execution: ExecutionGraphRuntime,
+    pub reflection: ReflectionEngine,
+    pub learning: LearningEngine,
+    pub adaptation: AdaptationEngine,
+    pub evolution: RecursiveEvolutionEngine,
     pub capabilities: CapabilityRegistry,
     pub observability: ObservabilityHub,
+    pub skill_learning: SkillLearningEngine,
     pub workflow: WorkflowEngine,
     pub tool_cortex: ToolCortex,
     pub safety: SafetyLayer,
     pub personality: Arc<Mutex<PersonalityEngine>>,
+    pub web_cortex: WebCortex,
+    pub workspace: Arc<ConsciousWorkspace>,
 }
 
 pub struct BrainCore {
@@ -77,10 +118,22 @@ impl BrainCore {
         let semantic = SemanticMemory::new(config.embedding_dimensions);
         let graph = KnowledgeGraph::new(memory.clone());
         let cognitive = CognitiveStateEngine::default();
+        let operating_mode = memory.latest_operating_mode()?;
+        cognitive.set_operating_mode(operating_mode.clone());
+        memory.store_operating_mode(&operating_mode)?;
+        cognitive.replace_goals(memory.recent_goals(64)?);
+        let perception = PerceptionEngine::default();
+        let understanding = UnderstandingEngine::default();
         let planner = PlannerEngine::default();
+        let planning = CognitivePlanningEngine::default();
         let execution = ExecutionGraphRuntime::default();
+        let reflection = ReflectionEngine::default();
+        let learning = LearningEngine::default();
+        let adaptation = AdaptationEngine::default();
+        let evolution = RecursiveEvolutionEngine::default();
         let capabilities = CapabilityRegistry::with_builtins();
         let observability = ObservabilityHub::default();
+        let skill_learning = SkillLearningEngine::default();
         let workflow = WorkflowEngine::default();
         let tool_cortex = ToolCortex::new(
             ToolCortexConfig {
@@ -90,6 +143,8 @@ impl BrainCore {
             },
             safety.clone(),
         );
+        let web_cortex = WebCortex::new(WebCortexConfig::default());
+        let workspace = Arc::new(ConsciousWorkspace::new());
         let services = BrainServices {
             bus: bus.clone(),
             memory: memory.clone(),
@@ -97,14 +152,24 @@ impl BrainCore {
             graph,
             context: ContextEngine::default(),
             cognitive,
+            perception,
+            understanding,
             planner,
+            planning,
             execution,
+            reflection,
+            learning,
+            adaptation,
+            evolution,
             capabilities,
             observability,
+            skill_learning,
             workflow,
             tool_cortex,
             safety,
             personality: Arc::new(Mutex::new(PersonalityEngine::default())),
+            web_cortex,
+            workspace,
         };
         let runtime = AgentRuntime::new(bus);
         let core = Self {
@@ -123,6 +188,7 @@ impl BrainCore {
         self.runtime.register(MemoryAgent::new(self.services.clone()));
         self.runtime.register(SemanticMemoryAgent::new(self.services.clone()));
         self.runtime.register(PlannerAgent::new(self.services.clone()));
+        self.runtime.register(SkillAgent::new(self.services.clone()));
         self.runtime.register(ProjectAgent::new(self.services.clone()));
         self.runtime.register(ToolRouterAgent::new(self.services.clone()));
         self.runtime.register(CommandAgent::new(self.services.clone()));
@@ -131,10 +197,12 @@ impl BrainCore {
         self.runtime.register(WorkflowAgent::new(self.services.clone()));
         self.runtime.register(PetAgent::new(self.services.clone()));
         self.runtime.register(SafetyAgent::new(self.services.clone()));
+        self.runtime.register(WebAgent::new(self.services.clone()));
     }
 
     pub async fn start(&mut self) -> Result<()> {
         self.persist_events();
+        self.start_heartbeat();
         tracing::info!(agent_count = self.runtime.registry().descriptors().len(), "starting agent runtime");
         for agent in self.runtime.registry().descriptors() {
             self.services.memory.upsert_agent(&agent)?;
@@ -154,6 +222,51 @@ impl BrainCore {
             )?;
         }
         Ok(())
+    }
+
+    fn start_heartbeat(&self) {
+        let services = self.services.clone();
+        tokio::spawn(async move {
+            let mut tick: u64 = 0;
+            loop {
+                sleep(Duration::from_secs(60)).await;
+                tick = tick.wrapping_add(1);
+                let world = services.cognitive.snapshot();
+                let summary = format!(
+                    "heartbeat: cognitive={:?}, operating={:?}, focus={}, pending_tasks={}, active_agents={}",
+                    world.cognitive_mode,
+                    world.operating_mode,
+                    world.current_focus,
+                    world.pending_tasks,
+                    world.active_agents.len()
+                );
+                let trace = services.observability.trace(
+                    "heartbeat",
+                    summary.clone(),
+                    serde_json::json!({
+                        "world_state": world,
+                        "recent_action_count": services.skill_learning.recent_actions(16).len(),
+                    }),
+                );
+                let _ = services.memory.store_reasoning_trace(&trace);
+                run_consciousness_cycle(&services, world);
+                // Recursive cognitive evolution runs on its own slow cadence
+                // (~240s), not per cognitive-loop event, so a single tool
+                // result never triggers a full population search.
+                if tick % 4 == 0 {
+                    if let Err(error) = run_evolution(&services) {
+                        tracing::warn!(%error, "recursive evolution generation failed");
+                    }
+                }
+                let _ = services.bus.emit(
+                    BrainEvent::Heartbeat {
+                        summary,
+                        at: Utc::now(),
+                    },
+                    Some("BrainCore".to_string()),
+                );
+            }
+        });
     }
 
     fn initialize_body_map(&self) -> Result<()> {
@@ -176,6 +289,7 @@ impl BrainCore {
         let memory = self.services.memory.clone();
         let cognitive = self.services.cognitive.clone();
         let observability = self.services.observability.clone();
+        let services = self.services.clone();
         let mut rx = self.services.bus.subscribe();
         tokio::spawn(async move {
             loop {
@@ -186,6 +300,7 @@ impl BrainCore {
                 let world = cognitive.observe_event(&event.event);
                 let _ = memory.store_event(&event);
                 let _ = memory.store_world_state(&world);
+                run_cognitive_loop(&services, &event, &world);
             }
         });
     }
@@ -254,7 +369,27 @@ impl BrainCore {
         Ok(())
     }
 
+    pub fn set_operating_mode(&self, mode: OperatingMode) -> Result<WorldState> {
+        let world = self.services.cognitive.set_operating_mode(mode.clone());
+        self.services.memory.store_operating_mode(&mode)?;
+        self.services.bus.emit(
+            BrainEvent::OperatingModeChanged {
+                mode,
+                at: Utc::now(),
+            },
+            Some("BrainCore".to_string()),
+        )?;
+        Ok(world)
+    }
+
+    pub fn run_consciousness_once(&self) {
+        run_consciousness_cycle(&self.services, self.services.cognitive.snapshot());
+    }
+
     pub fn dashboard(&self) -> Result<BrainDashboard> {
+        let cognitive_state = self.services.cognitive.snapshot();
+        let workspace_state = self.services.workspace.get_self_aware_state();
+        let heatmap = self.services.workspace.get_attention_heatmap();
         Ok(BrainDashboard {
             counts: self.services.memory.counts()?,
             agents: self.runtime.registry().descriptors(),
@@ -263,17 +398,641 @@ impl BrainCore {
             recent_tasks: self.services.memory.recent_tasks(20)?,
             pet: self.services.memory.latest_pet_state()?,
             events: self.services.bus.recent(80),
-            cognitive_state: self.services.cognitive.snapshot(),
+            operating_mode: cognitive_state.operating_mode.clone(),
+            goals: self.services.memory.recent_goals(32)?,
+            cognitive_state,
             body_map: self.services.cognitive.body_map(),
             capabilities: self.services.capabilities.list(),
             recent_traces: self.services.observability.recent_traces(20),
             event_metrics: self.services.observability.metrics(),
+            workspace_state: WorkspaceDashboardState {
+                current_focus: workspace_state.current_focus.as_ref().map(|f| f.content.clone()),
+                focus_intensity: workspace_state.current_focus.as_ref().map(|f| f.intensity).unwrap_or(0.0),
+                active_stream_count: workspace_state.active_streams.len(),
+                working_memory_load: workspace_state.working_memory_load,
+                cognitive_load: format!("{:?}", workspace_state.cognitive_load),
+                cognitive_load_pct: workspace_state.cognitive_load as i32 as f64 * 16.67,
+                attention_bandwidth_used: workspace_state.attention_bandwidth_used,
+                total_attention: heatmap.total_attention,
+                uncertainty_level: workspace_state.uncertainty_level,
+            },
         })
     }
 
     pub fn graph_snapshot(&self) -> Result<(Vec<GraphNodeRecord>, Vec<GraphEdgeRecord>)> {
         self.services.graph.snapshot(300)
     }
+}
+
+fn run_cognitive_loop(services: &BrainServices, event: &BrainEventEnvelope, world: &WorldState) {
+    if let Some(observation) = services.perception.perceive(event) {
+        if let Err(error) = services.memory.store_observation(&observation) {
+            tracing::warn!(%error, "failed to persist cognitive observation");
+        }
+        emit_cognitive(
+            services,
+            BrainEvent::PerceptionCreated {
+                observation_id: observation.id.clone(),
+                source: format!("{:?}", &observation.source),
+                summary: observation.summary.clone(),
+                at: Utc::now(),
+            },
+            "PerceptionEngine",
+        );
+
+        let projects = services.memory.recent_projects(5).unwrap_or_default();
+        let memories = services.memory.recent_memories(20).unwrap_or_default();
+        let understanding = services.understanding.understand(&observation, &projects, &memories);
+        if let Err(error) = services.memory.store_understanding(&understanding) {
+            tracing::warn!(%error, "failed to persist situational understanding");
+        }
+        emit_cognitive(
+            services,
+            BrainEvent::UnderstandingCreated {
+                understanding_id: understanding.id.clone(),
+                intent: format!("{:?}", &understanding.intent),
+                confidence: understanding.confidence,
+                at: Utc::now(),
+            },
+            "UnderstandingEngine",
+        );
+
+        create_goal_stack_entries(services, &observation, &understanding);
+
+        if matches!(
+            &observation.kind,
+            ObservationKind::Request | ObservationKind::Failure | ObservationKind::PlanSignal
+        ) {
+            let plan = services
+                .planner
+                .plan(observation.summary.clone(), understanding.summary.clone(), &memories);
+            let assessment = services
+                .planning
+                .assess(&plan, &understanding, &services.capabilities.list());
+            if let Err(error) = services.memory.store_plan_assessment(&assessment) {
+                tracing::warn!(%error, "failed to persist cognitive plan assessment");
+            }
+            let trace = services.observability.trace(
+                "cognitive-planning",
+                assessment.rationale.clone(),
+                serde_json::json!({
+                    "observation_id": observation.id,
+                    "understanding_id": understanding.id,
+                    "plan_id": plan.id,
+                    "risk_score": assessment.risk_score,
+                    "quality_score": assessment.quality_score,
+                    "permission_required": assessment.permission_required,
+                    "chosen_tools": assessment.chosen_tools,
+                    "agent_assignments": assessment.agent_assignments,
+                }),
+            );
+            if let Err(error) = services.memory.store_reasoning_trace(&trace) {
+                tracing::warn!(%error, "failed to persist cognitive planning trace");
+            }
+            emit_cognitive(
+                services,
+                BrainEvent::PlanAssessed {
+                    assessment_id: assessment.id,
+                    plan_id: assessment.plan_id,
+                    risk_score: assessment.risk_score,
+                    quality_score: assessment.quality_score,
+                    at: Utc::now(),
+                },
+                "PlanningEngine",
+            );
+            emit_cognitive(
+                services,
+                BrainEvent::ReasoningTraced {
+                    trace_id: trace.id,
+                    summary: trace.summary,
+                    at: Utc::now(),
+                },
+                "PlanningEngine",
+            );
+        }
+    }
+
+    if let BrainEvent::ToolCompleted { result, .. } = &event.event {
+        let tool = format!("{:?}:{}", &result.provider, result.request_id);
+        let (outcome, reflection, efficiency, planning_quality) = services.reflection.reflect_tool_result(&tool, result);
+        persist_reflection_learning(services, world, outcome, reflection, efficiency, planning_quality);
+    }
+
+    if let BrainEvent::WorkflowQueued { task_id, agent, action, .. } = &event.event {
+        let workflow = format!("{agent}:{action}");
+        let (outcome, reflection, efficiency, planning_quality) = services.reflection.reflect_workflow_checkpoint(
+            &workflow,
+            &format!("Queue workflow task {task_id} for {agent}."),
+            true,
+            "Workflow entered the bounded execution path through the event bus.",
+        );
+        persist_reflection_learning(services, world, outcome, reflection, efficiency, planning_quality);
+    }
+}
+
+fn persist_reflection_learning(
+    services: &BrainServices,
+    world: &WorldState,
+    outcome: ExecutionOutcome,
+    reflection: ReflectionRecord,
+    efficiency: WorkflowEfficiency,
+    planning_quality: PlanningQuality,
+) {
+    if let Err(error) = services.memory.store_execution_outcome(&outcome) {
+        tracing::warn!(%error, "failed to persist execution outcome");
+    }
+    if let Err(error) = services.memory.store_reflection(&reflection) {
+        tracing::warn!(%error, "failed to persist reflection");
+    }
+    if let Err(error) = services.memory.store_workflow_efficiency(&efficiency) {
+        tracing::warn!(%error, "failed to persist workflow efficiency");
+    }
+    if let Err(error) = services.memory.store_planning_quality(&planning_quality) {
+        tracing::warn!(%error, "failed to persist planning quality");
+    }
+    emit_cognitive(
+        services,
+        BrainEvent::ExecutionOutcomeRecorded {
+            outcome_id: outcome.id,
+            ok: outcome.ok,
+            at: Utc::now(),
+        },
+        "ReflectionEngine",
+    );
+    emit_cognitive(
+        services,
+        BrainEvent::ReflectionCreated {
+            reflection_id: reflection.id.clone(),
+            summary: reflection.summary.clone(),
+            at: Utc::now(),
+        },
+        "ReflectionEngine",
+    );
+
+    let (lesson, signal) = services.learning.learn_from_reflection(&reflection);
+    if let Err(error) = services.memory.store_lesson(&lesson, &signal) {
+        tracing::warn!(%error, "failed to persist learned lesson");
+    }
+    emit_cognitive(
+        services,
+        BrainEvent::LessonLearned {
+            lesson_id: lesson.id,
+            summary: lesson.summary,
+            at: Utc::now(),
+        },
+        "LearningEngine",
+    );
+
+    for decision in services.adaptation.adapt(world, Some(&reflection), Some(&signal)) {
+        if let Err(error) = services.memory.store_adaptation(&decision) {
+            tracing::warn!(%error, "failed to persist adaptation decision");
+        }
+        emit_cognitive(
+            services,
+            BrainEvent::AdaptationApplied {
+                adaptation_id: decision.id,
+                behavior: decision.behavior,
+                at: Utc::now(),
+            },
+            "AdaptationEngine",
+        );
+    }
+}
+
+fn create_goal_stack_entries(
+    services: &BrainServices,
+    observation: &StructuredObservation,
+    understanding: &SituationalUnderstanding,
+) {
+    if !matches!(&observation.kind, ObservationKind::Request) {
+        return;
+    }
+    let title = observation
+        .signal
+        .get("content")
+        .and_then(Value::as_str)
+        .map(clean_goal_title)
+        .unwrap_or_else(|| clean_goal_title(&observation.summary));
+    if title.is_empty() {
+        return;
+    }
+
+    let mode = services.cognitive.operating_mode();
+    let risk = infer_goal_risk(&title);
+    let status = goal_status_for_mode(&mode, &risk);
+    let now = Utc::now();
+    let parent = GoalRecord {
+        id: new_id("goal"),
+        parent_id: None,
+        title,
+        priority: goal_priority(&risk),
+        status,
+        owner_agent: "PlannerAgent".to_string(),
+        required_tools: vec!["context.load".to_string(), "memory.retrieve".to_string(), "schedule.task".to_string()],
+        risk_level: risk,
+        memory_links: understanding.related_memory_ids.clone(),
+        deadline: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store_goal_and_emit(services, parent.clone());
+
+    for (label, owner, tools) in subgoals_for_intent(&understanding.intent) {
+        let subgoal = GoalRecord {
+            id: new_id("goal"),
+            parent_id: Some(parent.id.clone()),
+            title: label,
+            priority: parent.priority.saturating_sub(8).max(10),
+            status: parent.status.clone(),
+            owner_agent: owner,
+            required_tools: tools,
+            risk_level: parent.risk_level.clone(),
+            memory_links: parent.memory_links.clone(),
+            deadline: None,
+            created_at: now,
+            updated_at: now,
+        };
+        store_goal_and_emit(services, subgoal);
+    }
+}
+
+fn run_consciousness_cycle(services: &BrainServices, world: WorldState) {
+    let mode = world.operating_mode.clone();
+    let memories = services.memory.recent_memories(12).unwrap_or_default();
+    let mut goals = services.memory.recent_goals(16).unwrap_or_default();
+    if goals.is_empty() {
+        goals = services.cognitive.goals();
+    } else {
+        services.cognitive.replace_goals(goals.clone());
+    }
+
+    let capabilities = services.capabilities.list();
+    let available_tools = capabilities
+        .iter()
+        .filter(|capability| !capability.approval_required)
+        .map(|capability| capability.id.clone())
+        .collect::<Vec<_>>();
+    let available_skills = services.cognitive.body_map().skill_map.known_skills;
+    let recalled_memory_ids = memories.iter().map(|memory| memory.id.clone()).collect::<Vec<_>>();
+    let detected_goal_ids = goals.iter().take(8).map(|goal| goal.id.clone()).collect::<Vec<_>>();
+    let mut plan_ids = Vec::new();
+    let mut actions_taken = Vec::new();
+
+    if let Some(goal) = goals.iter().find(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Proposed)) {
+        let plan = services.planner.plan(goal.title.clone(), world.current_focus.clone(), &memories);
+        let assessment = services.planning.assess(&plan, &services.understanding.understand(
+            &StructuredObservation {
+                id: new_id("obs"),
+                source: perception_engine::PerceptionSource::System,
+                kind: ObservationKind::PlanSignal,
+                raw_event_id: new_id("evt"),
+                raw_event_kind: "consciousness-cycle".to_string(),
+                summary: goal.title.clone(),
+                signal: serde_json::json!({ "goal_id": goal.id, "mode": format!("{:?}", &mode) }),
+                confidence: 0.72,
+                tags: vec!["consciousness-loop".to_string(), "goal-stack".to_string()],
+                created_at: Utc::now(),
+            },
+            &services.memory.recent_projects(5).unwrap_or_default(),
+            &memories,
+        ), &capabilities);
+        plan_ids.push(plan.id.clone());
+        if let Err(error) = services.memory.store_plan_assessment(&assessment) {
+            tracing::warn!(%error, "failed to persist consciousness plan assessment");
+        }
+        actions_taken.push(format!(
+            "assessed goal '{}' with risk {:.2} and quality {:.2}",
+            goal.title, assessment.risk_score, assessment.quality_score
+        ));
+    }
+
+    match mode {
+        OperatingMode::Passive => {
+            actions_taken.push("observed world state, recalled memory, and stored a cycle summary only".to_string());
+        }
+        OperatingMode::Assisted => {
+            actions_taken.push("prepared plan context and waited for user approval before execution".to_string());
+        }
+        OperatingMode::Active => {
+            if world.pending_tasks == 0 && goals.iter().any(is_low_risk_active_goal) {
+                queue_consciousness_task(services, "active-safe-checkpoint", &mut actions_taken);
+            } else {
+                actions_taken.push("no low-risk approved task was ready for active execution".to_string());
+            }
+        }
+        OperatingMode::Autonomous => {
+            if world.pending_tasks == 0 && goals.iter().any(is_low_risk_active_goal) {
+                queue_consciousness_task(services, "autonomous-trusted-checkpoint", &mut actions_taken);
+            } else {
+                actions_taken.push("autonomous mode found no pre-approved trusted workflow to run".to_string());
+            }
+        }
+    }
+
+    let risk_score = estimate_cycle_risk(&mode, &goals);
+    let summary = format!(
+        "Consciousness cycle in {:?}: recalled {} memories, tracked {} goals, risk {:.2}.",
+        mode,
+        recalled_memory_ids.len(),
+        detected_goal_ids.len(),
+        risk_score
+    );
+    let cycle = ConsciousnessCycleRecord {
+        id: new_id("cycle"),
+        mode: mode.clone(),
+        world_state: serde_json::json!(world),
+        recalled_memory_ids,
+        detected_goal_ids,
+        available_tools,
+        available_skills,
+        risk_score,
+        plan_ids,
+        actions_taken,
+        reflection_ids: Vec::new(),
+        summary: summary.clone(),
+        created_at: Utc::now(),
+    };
+    if let Err(error) = services.memory.store_consciousness_cycle(&cycle) {
+        tracing::warn!(%error, "failed to persist consciousness cycle");
+    }
+    let _ = services.memory.store_memory(memory(
+        MemoryKind::Temporal,
+        Some("Consciousness loop cycle".to_string()),
+        summary.clone(),
+        None,
+        vec!["consciousness-loop".to_string(), "temporal-memory".to_string()],
+        None,
+        0.42,
+    ));
+    emit_cognitive(
+        services,
+        BrainEvent::ConsciousnessCycleCompleted {
+            cycle_id: cycle.id,
+            mode,
+            summary,
+            at: Utc::now(),
+        },
+        "ConsciousnessLoop",
+    );
+}
+
+fn store_goal_and_emit(services: &BrainServices, goal: GoalRecord) {
+    services.cognitive.push_goal(goal.clone());
+    if let Err(error) = services.memory.store_goal(&goal) {
+        tracing::warn!(%error, "failed to persist goal");
+    }
+    emit_cognitive(
+        services,
+        BrainEvent::GoalStackUpdated {
+            goal_id: goal.id,
+            title: goal.title,
+            status: goal.status,
+            at: Utc::now(),
+        },
+        "ConsciousnessLoop",
+    );
+}
+
+fn queue_consciousness_task(services: &BrainServices, action: &str, actions_taken: &mut Vec<String>) {
+    let task = new_task(
+        None,
+        "WorkflowAgent",
+        action,
+        35,
+        serde_json::json!({ "source": "consciousness-loop", "risk": "low" }),
+    );
+    if let Err(error) = services.memory.store_task(&task) {
+        tracing::warn!(%error, "failed to persist consciousness task");
+        return;
+    }
+    let task_id = task.id.clone();
+    let task_agent = task.agent.clone();
+    let task_action = task.action.clone();
+    emit_cognitive(
+        services,
+        BrainEvent::WorkflowQueued {
+            task_id,
+            agent: task_agent,
+            action: task_action.clone(),
+            at: Utc::now(),
+        },
+        "ConsciousnessLoop",
+    );
+    actions_taken.push(format!("queued low-risk workflow task '{}'", task_action));
+}
+
+fn clean_goal_title(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches("User request received:")
+        .trim()
+        .chars()
+        .take(180)
+        .collect::<String>()
+}
+
+fn subgoals_for_intent(intent: &SituationalIntent) -> Vec<(String, String, Vec<String>)> {
+    match intent {
+        SituationalIntent::Debug => vec![
+            subgoal("Inspect project context", "ContextAgent", &["context.load", "memory.retrieve"]),
+            subgoal("Run safe diagnostics when approved", "CommandAgent", &["terminal.execute"]),
+            subgoal("Analyze failure output", "SummaryAgent", &["summarize.code"]),
+            subgoal("Store reflection and lessons", "MemoryAgent", &["memory.store"]),
+        ],
+        SituationalIntent::Build => vec![
+            subgoal("Load build context", "ContextAgent", &["context.load"]),
+            subgoal("Assess build command risk", "SafetyAgent", &["terminal.execute"]),
+            subgoal("Summarize build result", "SummaryAgent", &["summarize.code"]),
+        ],
+        SituationalIntent::Test => vec![
+            subgoal("Recall previous test failures", "SemanticMemoryAgent", &["memory.retrieve"]),
+            subgoal("Run approved test workflow", "CommandAgent", &["terminal.execute"]),
+            subgoal("Reflect on test result", "MemoryAgent", &["memory.store"]),
+        ],
+        SituationalIntent::Recall => vec![
+            subgoal("Search semantic memory", "SemanticMemoryAgent", &["memory.retrieve"]),
+            subgoal("Rank relevant memories", "MemoryAgent", &["memory.retrieve"]),
+        ],
+        SituationalIntent::Learn => vec![
+            subgoal("Detect repeated workflow", "SkillAgent", &["memory.retrieve"]),
+            subgoal("Update skill memory", "SkillAgent", &["memory.store"]),
+        ],
+        SituationalIntent::SafetyReview => vec![subgoal("Review safety constraints", "SafetyAgent", &["memory.retrieve"])],
+        SituationalIntent::Observe | SituationalIntent::Unknown => {
+            vec![subgoal("Observe and summarize context", "SummaryAgent", &["memory.store"])]
+        }
+    }
+}
+
+fn subgoal(label: &str, owner: &str, tools: &[&str]) -> (String, String, Vec<String>) {
+    (label.to_string(), owner.to_string(), tools.iter().map(|tool| (*tool).to_string()).collect())
+}
+
+fn infer_goal_risk(title: &str) -> GoalRisk {
+    let text = title.to_ascii_lowercase();
+    if text.contains("delete") || text.contains("push") || text.contains("install") || text.contains("kill") {
+        GoalRisk::High
+    } else if text.contains("fix") || text.contains("run") || text.contains("command") || text.contains("write") {
+        GoalRisk::Medium
+    } else {
+        GoalRisk::Low
+    }
+}
+
+fn goal_status_for_mode(mode: &OperatingMode, risk: &GoalRisk) -> GoalStatus {
+    match mode {
+        OperatingMode::Passive | OperatingMode::Assisted => GoalStatus::Proposed,
+        OperatingMode::Active => {
+            if matches!(risk, GoalRisk::Low) {
+                GoalStatus::Active
+            } else {
+                GoalStatus::WaitingApproval
+            }
+        }
+        OperatingMode::Autonomous => {
+            if matches!(risk, GoalRisk::Low) {
+                GoalStatus::Active
+            } else {
+                GoalStatus::WaitingApproval
+            }
+        }
+    }
+}
+
+fn goal_priority(risk: &GoalRisk) -> u8 {
+    match risk {
+        GoalRisk::Low => 45,
+        GoalRisk::Medium => 65,
+        GoalRisk::High => 85,
+        GoalRisk::Critical => 95,
+    }
+}
+
+fn is_low_risk_active_goal(goal: &GoalRecord) -> bool {
+    matches!(&goal.status, GoalStatus::Active) && matches!(&goal.risk_level, GoalRisk::Low)
+}
+
+fn estimate_cycle_risk(mode: &OperatingMode, goals: &[GoalRecord]) -> f32 {
+    let goal_risk = goals
+        .iter()
+        .take(8)
+        .map(|goal| match &goal.risk_level {
+            GoalRisk::Low => 0.15,
+            GoalRisk::Medium => 0.45,
+            GoalRisk::High => 0.75,
+            GoalRisk::Critical => 1.0,
+        })
+        .fold(0.0_f32, f32::max);
+    let mode_risk: f32 = match mode {
+        OperatingMode::Passive => 0.05,
+        OperatingMode::Assisted => 0.18,
+        OperatingMode::Active => 0.38,
+        OperatingMode::Autonomous => 0.55,
+    };
+    goal_risk.max(mode_risk).clamp(0.0, 1.0)
+}
+
+fn emit_cognitive(services: &BrainServices, event: BrainEvent, source: &str) {
+    if let Err(error) = services.bus.emit(event, Some(source.to_string())) {
+        tracing::warn!(%error, source, "failed to emit cognitive event");
+    }
+}
+
+fn build_performance_signals(memory: &MemoryCortex) -> Result<PerformanceSignals> {
+    let stats = memory.execution_stats()?;
+    let prediction_accuracy = memory.recent_workflow_efficiency_avg(16).unwrap_or(0.62);
+    let memory_quality = memory.recent_planning_quality_avg(16).unwrap_or(0.55);
+    Ok(PerformanceSignals {
+        runs: stats.runs,
+        completed: stats.completed,
+        failed: stats.failed,
+        avg_latency_ms: stats.avg_latency_ms,
+        prediction_accuracy,
+        memory_quality,
+        blocked_actions: stats.blocked_actions,
+    })
+}
+
+fn run_evolution(services: &BrainServices) -> Result<()> {
+    let engine = &services.evolution;
+    let signals = build_performance_signals(&services.memory)?;
+
+    for kind in GenomeKind::ALL {
+        let incumbent = match services.memory.evolution_champion(kind)? {
+            Some(c) => c,
+            None => {
+                let champion = engine.initial_champion(kind, &signals);
+                services.memory.store_evolution_candidate(&champion)?;
+                champion
+            }
+        };
+
+        let gen_index = services.memory.next_evolution_generation_index(kind)?;
+        let seed = ((kind as u32 as u64) << 32) | (gen_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
+        let generation = engine.evolve_generation(
+            &incumbent,
+            &signals,
+            seed,
+            gen_index,
+            DEFAULT_POPULATION,
+        );
+
+        services.memory.store_evolution_generation(&generation)?;
+
+        for candidate in &generation.population {
+            services.memory.store_evolution_candidate(candidate)?;
+        }
+
+        let champion = generation
+            .population
+            .iter()
+            .find(|c| c.id == generation.champion_id)
+            .expect("champion must exist in population");
+
+        let decision = engine.promote(champion, Some(&incumbent), &services.safety);
+
+        if decision.promoted {
+            let promoted = engine.apply_promotion(champion);
+            services.memory.store_evolution_candidate(&promoted)?;
+            emit_cognitive(
+                services,
+                BrainEvent::EvolutionPromoted {
+                    candidate_id: promoted.id.clone(),
+                    genome_kind: kind.as_str().to_string(),
+                    margin: decision.margin,
+                    reason: decision.reason.clone(),
+                    at: Utc::now(),
+                },
+                "EvolutionEngine",
+            );
+        }
+
+        emit_cognitive(
+            services,
+            BrainEvent::EvolutionGenerationCompleted {
+                generation_id: generation.id.clone(),
+                genome_kind: kind.as_str().to_string(),
+                index: generation.index,
+                champion_id: champion.id.clone(),
+                champion_fitness: champion.fitness.overall,
+                summary: generation.summary.clone(),
+                at: Utc::now(),
+            },
+            "EvolutionEngine",
+        );
+
+        tracing::debug!(
+            kind = %kind.as_str(),
+            gen = gen_index,
+            champion_fitness = champion.fitness.overall,
+            promoted = decision.promoted,
+            margin = decision.margin,
+            "evolution cycle complete",
+        );
+    }
+
+    Ok(())
 }
 
 macro_rules! boxed {
@@ -510,6 +1269,111 @@ impl Agent for PlannerAgent {
 }
 
 #[derive(Clone)]
+struct SkillAgent { services: BrainServices }
+impl SkillAgent { fn new(services: BrainServices) -> Self { Self { services } } }
+impl Agent for SkillAgent {
+    fn name(&self) -> String { "SkillAgent".to_string() }
+    fn capabilities(&self) -> Vec<AgentCapability> { vec![AgentCapability::LearnSkills, AgentCapability::WriteMemory] }
+    fn init<'a>(&'a self, ctx: &'a AgentContext) -> AgentFuture<'a> {
+        boxed!(ctx.status(&self.name(), AgentState::Idle, Some("skill learning loop ready".to_string())))
+    }
+    fn handle_event<'a>(&'a self, _ctx: &'a AgentContext, event: BrainEventEnvelope) -> AgentFuture<'a> {
+        boxed!({
+            match event.event {
+                BrainEvent::ActionObserved { actor, action, capability, ok, .. } => {
+                    let observed = ObservedAction::new(
+                        actor,
+                        action,
+                        capability,
+                        ok,
+                        serde_json::json!({ "event_id": event.id }),
+                    );
+                    self.learn_from_observation(observed)?;
+                }
+                BrainEvent::WorkflowQueued { agent, action, task_id, .. } => {
+                    let observed = ObservedAction::new(
+                        agent,
+                        action,
+                        "schedule.task",
+                        true,
+                        serde_json::json!({ "task_id": task_id }),
+                    );
+                    self.learn_from_observation(observed)?;
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+    fn run_task<'a>(&'a self, _ctx: &'a AgentContext, task: AgentTask) -> AgentFuture<'a> {
+        boxed!({
+            let observed = ObservedAction::new(
+                "SkillAgent",
+                task.action,
+                "memory.store",
+                true,
+                task.payload,
+            );
+            self.learn_from_observation(observed)?;
+            Ok(())
+        })
+    }
+    fn shutdown<'a>(&'a self, ctx: &'a AgentContext) -> AgentFuture<'a> { boxed!(ctx.status(&self.name(), AgentState::Stopped, None)) }
+}
+
+impl SkillAgent {
+    fn learn_from_observation(&self, observed: ObservedAction) -> Result<()> {
+        if let Some(candidate) = self.services.skill_learning.observe(observed.clone()) {
+            self.services.memory.upsert_learned_skill(&candidate.skill)?;
+            self.services.memory.store_skill_version(&candidate.version)?;
+            self.services.memory.store_skill_run(&SkillRun {
+                id: new_id("skill-run"),
+                skill_id: candidate.skill.id.clone(),
+                ok: observed.ok,
+                input: observed.metadata.clone(),
+                output: serde_json::json!({
+                    "action": observed.action,
+                    "capability": observed.capability,
+                    "supporting_actions": candidate.supporting_actions.len(),
+                }),
+                started_at: observed.occurred_at,
+                finished_at: Utc::now(),
+            })?;
+            if !observed.ok {
+                self.services.memory.store_skill_failure(&SkillFailure {
+                    id: new_id("skill-failure"),
+                    skill_id: candidate.skill.id.clone(),
+                    reason: "observed action failed".to_string(),
+                    recovery_hint: "pause skill reuse and ask for permission before retry".to_string(),
+                    metadata: observed.metadata,
+                    created_at: Utc::now(),
+                })?;
+            }
+            self.services.memory.store_memory(memory(
+                MemoryKind::Skill,
+                Some(candidate.skill.name.clone()),
+                format!(
+                    "Learned reusable skill '{}' from {} repeated successful actions.",
+                    candidate.skill.name,
+                    candidate.supporting_actions.len()
+                ),
+                None,
+                vec!["skill-learning".to_string(), "hermes-style".to_string()],
+                None,
+                candidate.skill.confidence,
+            ))?;
+            self.services.bus.emit(BrainEvent::SkillLearned {
+                skill_id: candidate.skill.id,
+                name: candidate.skill.name,
+                confidence: candidate.skill.confidence,
+                at: Utc::now(),
+            }, Some(self.name()))?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
 struct ProjectAgent { services: BrainServices }
 impl ProjectAgent { fn new(services: BrainServices) -> Self { Self { services } } }
 impl Agent for ProjectAgent {
@@ -546,6 +1410,13 @@ impl Agent for ToolRouterAgent {
                 let prompt = request.input.get("prompt").and_then(Value::as_str).map(ToString::to_string);
                 let result = self.services.tool_cortex.route(request).await;
                 self.services.memory.store_tool_result(&tool_name, &provider, prompt.as_deref(), &result)?;
+                self.services.bus.emit(BrainEvent::ActionObserved {
+                    actor: self.name(),
+                    action: tool_name,
+                    capability: capability_for_provider(&provider),
+                    ok: result.ok,
+                    at: Utc::now(),
+                }, Some(self.name()))?;
                 self.services.bus.emit(BrainEvent::ToolCompleted { result, at: Utc::now() }, Some(self.name()))?;
             }
             Ok(())
@@ -553,6 +1424,18 @@ impl Agent for ToolRouterAgent {
     }
     fn run_task<'a>(&'a self, _ctx: &'a AgentContext, _task: AgentTask) -> AgentFuture<'a> { boxed!(Ok(())) }
     fn shutdown<'a>(&'a self, ctx: &'a AgentContext) -> AgentFuture<'a> { boxed!(ctx.status(&self.name(), AgentState::Stopped, None)) }
+}
+
+fn capability_for_provider(provider: &str) -> String {
+    match provider {
+        "Shell" => "terminal.execute",
+        "Python" => "script.run",
+        "GitHub" => "api.call",
+        "OpenAI" | "Claude" | "Gemini" => "network.cloud-model",
+        "Ollama" => "local-ai.call",
+        _ => "tool.route",
+    }
+    .to_string()
 }
 
 #[derive(Clone)]
@@ -726,6 +1609,159 @@ impl Agent for SafetyAgent {
                         at: Utc::now(),
                     }, Some(self.name()))?;
                 }
+            }
+            Ok(())
+        })
+    }
+    fn run_task<'a>(&'a self, _ctx: &'a AgentContext, _task: AgentTask) -> AgentFuture<'a> { boxed!(Ok(())) }
+    fn shutdown<'a>(&'a self, ctx: &'a AgentContext) -> AgentFuture<'a> { boxed!(ctx.status(&self.name(), AgentState::Stopped, None)) }
+}
+
+#[derive(Clone)]
+struct WebAgent { services: BrainServices }
+
+impl WebAgent { fn new(services: BrainServices) -> Self { Self { services } } }
+
+impl Agent for WebAgent {
+    fn name(&self) -> String { "WebAgent".to_string() }
+    fn capabilities(&self) -> Vec<AgentCapability> {
+        vec![
+            AgentCapability::BrowseWeb,
+            AgentCapability::SearchWeb,
+            AgentCapability::Research,
+            AgentCapability::VerifySources,
+            AgentCapability::AnalyzeGitHub,
+            AgentCapability::StoreWebKnowledge,
+        ]
+    }
+    fn init<'a>(&'a self, ctx: &'a AgentContext) -> AgentFuture<'a> { boxed!(ctx.status(&self.name(), AgentState::Idle, None)) }
+    fn handle_event<'a>(&'a self, _ctx: &'a AgentContext, event: BrainEventEnvelope) -> AgentFuture<'a> {
+        let services = self.services.clone();
+        let agent_name = self.name();
+        let ev = event.event;
+        Box::pin(async move {
+            match ev {
+                BrainEvent::WebSearchRequested { request, at } => {
+                    let query = match request.kind.query() {
+                        Some(q) => q,
+                        None => return Ok(()),
+                    };
+                    match services.web_cortex.search(&query).await {
+                        Ok(resp) => {
+                            let sources: Vec<String> = resp.results.iter().map(|r| r.url.clone()).collect();
+                            services.bus.emit(BrainEvent::WebSearchPerformed {
+                                query,
+                                result_count: resp.results.len(),
+                                sources,
+                                at,
+                            }, Some(agent_name.clone()))?;
+                            services.bus.emit(BrainEvent::ActionObserved {
+                                actor: agent_name.clone(),
+                                action: "web_search".to_string(),
+                                capability: "web.search".to_string(),
+                                ok: true,
+                                at,
+                            }, Some(agent_name))?;
+                        }
+                        Err(e) => {
+                            services.bus.emit(BrainEvent::Error {
+                                source: agent_name.clone(),
+                                message: e.to_string(),
+                                at,
+                            }, Some(agent_name))?;
+                        }
+                    }
+                }
+                BrainEvent::WebFetchRequested { request, at } => {
+                    let url = match request.kind.url() {
+                        Some(u) => u,
+                        None => return Ok(()),
+                    };
+                    match services.web_cortex.fetch_page(&url).await {
+                        Ok(result) => {
+                            services.bus.emit(BrainEvent::WebPageFetched {
+                                url: url.clone(),
+                                title: result.title,
+                                word_count: result.content.split_whitespace().count(),
+                                sanitized: result.sanitized_content,
+                                at,
+                            }, Some(agent_name.clone()))?;
+                        }
+                        Err(e) => {
+                            services.bus.emit(BrainEvent::Error {
+                                source: agent_name.clone(),
+                                message: e.to_string(),
+                                at,
+                            }, Some(agent_name))?;
+                        }
+                    }
+                }
+                BrainEvent::WebResearchRequested { request, at } => {
+                    let query = match request.kind.query() {
+                        Some(q) => q,
+                        None => return Ok(()),
+                    };
+                    let depth = request.kind.research_depth().unwrap_or(3);
+                    let mut all_sources = Vec::new();
+                    let mut credibility_sum = 0.0_f32;
+                    let mut source_count = 0usize;
+
+                    let engines: Vec<&str> = if depth >= 3 {
+                        vec!["duckduckgo", "github", "crates"]
+                    } else {
+                        vec!["duckduckgo"]
+                    };
+                    for resp in services.web_cortex.search_multi_engine(&query, &engines).await {
+                        for r in &resp.results {
+                            all_sources.push(r.url.clone());
+                            source_count += 1;
+                        }
+                    }
+
+                    for url in all_sources.iter().take(5) {
+                        if let Ok(result) = services.web_cortex.fetch_page(url).await {
+                            credibility_sum += result.credibility_score();
+                        }
+                    }
+
+                    let credibility_avg = if source_count > 0 { credibility_sum / source_count as f32 } else { 0.0 };
+                    let summary = format!("Research on '{}': {} sources, avg credibility {:.2}", query, source_count, credibility_avg);
+
+                    services.bus.emit(BrainEvent::WebResearchCompleted {
+                        topic: query,
+                        source_count,
+                        credibility_avg,
+                        summary,
+                        knowledge_stored: false,
+                        at,
+                    }, Some(agent_name.clone()))?;
+                }
+                BrainEvent::GitHubAnalysisRequested { request, at } => {
+                    let repo = match request.kind.repo() {
+                        Some(r) => r,
+                        None => return Ok(()),
+                    };
+                    match services.web_cortex.fetch_github_repo(&repo).await {
+                        Ok(info) => {
+                            let stars_str = info.stars.map(|s| s.to_string()).unwrap_or_default();
+                            services.bus.emit(BrainEvent::GitHubAnalyzed {
+                                repo: info.full_name.clone(),
+                                stars: info.stars,
+                                language: info.language.clone(),
+                                summary: format!("{} - {} ({} stars)", info.full_name, info.description.as_deref().unwrap_or(""), stars_str),
+                                at,
+                            }, Some(agent_name.clone()))?;
+                        }
+                        Err(e) => {
+                            services.bus.emit(BrainEvent::Error {
+                                source: agent_name.clone(),
+                                message: e.to_string(),
+                                at,
+                            }, Some(agent_name))?;
+                        }
+                    }
+                }
+                _ => {}
             }
             Ok(())
         })

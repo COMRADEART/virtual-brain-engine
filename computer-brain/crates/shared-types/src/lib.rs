@@ -43,8 +43,20 @@ pub enum AgentCapability {
     BuildExecutionGraph,
     ManageCapabilities,
     ObserveRuntime,
+    LearnSkills,
+    Perceive,
+    Understand,
+    Reflect,
+    Learn,
+    Adapt,
     UpdatePet,
     EnforceSafety,
+    BrowseWeb,
+    SearchWeb,
+    Research,
+    VerifySources,
+    AnalyzeGitHub,
+    StoreWebKnowledge,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +196,66 @@ pub struct ToolResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum WebRequestKind {
+    Search { query: String, engine: Option<String> },
+    Fetch { url: String },
+    Research { query: String, depth: Option<u8> },
+    AnalyzeGitHub { repo: String },
+}
+
+impl WebRequestKind {
+    pub fn query(&self) -> Option<String> {
+        match self {
+            WebRequestKind::Search { query, .. } => Some(query.clone()),
+            WebRequestKind::Research { query, .. } => Some(query.clone()),
+            _ => None,
+        }
+    }
+    pub fn url(&self) -> Option<String> {
+        match self { WebRequestKind::Fetch { url } => Some(url.clone()), _ => None }
+    }
+    pub fn repo(&self) -> Option<String> {
+        match self { WebRequestKind::AnalyzeGitHub { repo } => Some(repo.clone()), _ => None }
+    }
+    pub fn research_depth(&self) -> Option<u8> {
+        match self { WebRequestKind::Research { depth, .. } => *depth, _ => None }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebRequest {
+    pub id: BrainId,
+    pub kind: WebRequestKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WebResponseKind {
+    SearchResults { results: Vec<WebSearchResult> },
+    PageContent { url: String, title: String, content: String, word_count: usize },
+    ResearchSummary { summary: String, sources: Vec<String> },
+    GitHubInfo { repo: String, stars: Option<u64>, language: Option<String>, description: Option<String> },
+    Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub domain: String,
+    pub position: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebResponse {
+    pub request_id: BrainId,
+    pub ok: bool,
+    pub kind: WebResponseKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TaskState {
     Pending,
     Running,
@@ -204,6 +276,74 @@ pub struct AgentTask {
     pub result: Option<Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperatingMode {
+    Passive,
+    Assisted,
+    Active,
+    Autonomous,
+}
+
+impl Default for OperatingMode {
+    fn default() -> Self {
+        Self::Passive
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GoalStatus {
+    Proposed,
+    Active,
+    WaitingApproval,
+    Completed,
+    Failed,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GoalRisk {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalRecord {
+    pub id: BrainId,
+    pub parent_id: Option<BrainId>,
+    pub title: String,
+    pub priority: u8,
+    pub status: GoalStatus,
+    pub owner_agent: AgentName,
+    pub required_tools: Vec<String>,
+    pub risk_level: GoalRisk,
+    pub memory_links: Vec<BrainId>,
+    pub deadline: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsciousnessCycleRecord {
+    pub id: BrainId,
+    pub mode: OperatingMode,
+    pub world_state: Value,
+    pub recalled_memory_ids: Vec<BrainId>,
+    pub detected_goal_ids: Vec<BrainId>,
+    pub available_tools: Vec<String>,
+    pub available_skills: Vec<String>,
+    pub risk_score: f32,
+    pub plan_ids: Vec<BrainId>,
+    pub actions_taken: Vec<String>,
+    pub reflection_ids: Vec<BrainId>,
+    pub summary: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,9 +407,16 @@ pub enum BrainEvent {
     UserMessage { content: String, at: DateTime<Utc> },
     BodyMapUpdated { summary: String, at: DateTime<Utc> },
     CognitiveStateChanged { state: String, reason: String, at: DateTime<Utc> },
+    PerceptionCreated { observation_id: BrainId, source: String, summary: String, at: DateTime<Utc> },
+    UnderstandingCreated { understanding_id: BrainId, intent: String, confidence: f32, at: DateTime<Utc> },
     ContextUpdated { summary: String, project_id: Option<BrainId>, at: DateTime<Utc> },
     PlanCreated { plan_id: BrainId, intent: String, step_count: usize, at: DateTime<Utc> },
+    PlanAssessed { assessment_id: BrainId, plan_id: BrainId, risk_score: f32, quality_score: f32, at: DateTime<Utc> },
     ExecutionGraphCreated { graph_id: BrainId, plan_id: BrainId, node_count: usize, at: DateTime<Utc> },
+    ExecutionOutcomeRecorded { outcome_id: BrainId, ok: bool, at: DateTime<Utc> },
+    ReflectionCreated { reflection_id: BrainId, summary: String, at: DateTime<Utc> },
+    LessonLearned { lesson_id: BrainId, summary: String, at: DateTime<Utc> },
+    AdaptationApplied { adaptation_id: BrainId, behavior: String, at: DateTime<Utc> },
     CapabilityRegistered { capability: String, at: DateTime<Utc> },
     ReasoningTraced { trace_id: BrainId, summary: String, at: DateTime<Utc> },
     SummaryCreated { memory_id: BrainId, summary: String, project_id: Option<BrainId>, at: DateTime<Utc> },
@@ -280,8 +427,75 @@ pub enum BrainEvent {
     ToolRequested { request: ToolRequest, at: DateTime<Utc> },
     ToolCompleted { result: ToolResult, at: DateTime<Utc> },
     CommandRequested { command: String, cwd: Option<String>, at: DateTime<Utc> },
+    ActionObserved { actor: String, action: String, capability: String, ok: bool, at: DateTime<Utc> },
+    SkillLearned { skill_id: BrainId, name: String, confidence: f32, at: DateTime<Utc> },
+    SkillRunRecorded { skill_id: BrainId, ok: bool, at: DateTime<Utc> },
+    OperatingModeChanged { mode: OperatingMode, at: DateTime<Utc> },
+    GoalStackUpdated { goal_id: BrainId, title: String, status: GoalStatus, at: DateTime<Utc> },
+    ConsciousnessCycleCompleted { cycle_id: BrainId, mode: OperatingMode, summary: String, at: DateTime<Utc> },
+    Heartbeat { summary: String, at: DateTime<Utc> },
     SafetyAudited { actor: String, action: String, decision: SafetyDecision, at: DateTime<Utc> },
     PetUpdated { state: PetState, at: DateTime<Utc> },
+    EvolutionGenerationCompleted {
+        generation_id: BrainId,
+        genome_kind: String,
+        index: u32,
+        champion_id: BrainId,
+        champion_fitness: f32,
+        summary: String,
+        at: DateTime<Utc>,
+    },
+    EvolutionPromoted {
+        candidate_id: BrainId,
+        genome_kind: String,
+        margin: f32,
+        reason: String,
+        at: DateTime<Utc>,
+    },
+    WebSearchPerformed {
+        query: String,
+        result_count: usize,
+        sources: Vec<String>,
+        at: DateTime<Utc>,
+    },
+    WebPageFetched {
+        url: String,
+        title: String,
+        word_count: usize,
+        sanitized: bool,
+        at: DateTime<Utc>,
+    },
+    WebResearchCompleted {
+        topic: String,
+        source_count: usize,
+        credibility_avg: f32,
+        summary: String,
+        knowledge_stored: bool,
+        at: DateTime<Utc>,
+    },
+    WebSourceVerified {
+        url: String,
+        credible: bool,
+        confidence: f32,
+        reason: String,
+        at: DateTime<Utc>,
+    },
+    WebContentSanitized {
+        url: String,
+        threats_removed: Vec<String>,
+        at: DateTime<Utc>,
+    },
+    GitHubAnalyzed {
+        repo: String,
+        stars: Option<u64>,
+        language: Option<String>,
+        summary: String,
+        at: DateTime<Utc>,
+    },
+    WebSearchRequested { request: WebRequest, at: DateTime<Utc> },
+    WebFetchRequested { request: WebRequest, at: DateTime<Utc> },
+    WebResearchRequested { request: WebRequest, at: DateTime<Utc> },
+    GitHubAnalysisRequested { request: WebRequest, at: DateTime<Utc> },
     Error { source: String, message: String, at: DateTime<Utc> },
 }
 

@@ -143,6 +143,94 @@ CREATE TABLE IF NOT EXISTS skills (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS learned_skills (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL,
+  trigger_conditions TEXT NOT NULL DEFAULT '[]',
+  required_tools TEXT NOT NULL DEFAULT '[]',
+  required_permissions TEXT NOT NULL DEFAULT '[]',
+  execution_graph TEXT NOT NULL DEFAULT '{}',
+  failure_handling TEXT NOT NULL DEFAULT '[]',
+  memory_refs TEXT NOT NULL DEFAULT '[]',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_versions (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  definition TEXT NOT NULL,
+  change_summary TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(skill_id) REFERENCES learned_skills(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS skill_runs (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  ok INTEGER NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  output TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  FOREIGN KEY(skill_id) REFERENCES learned_skills(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS skill_failures (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  recovery_hint TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(skill_id) REFERENCES learned_skills(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS skill_permissions (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  permission TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(skill_id) REFERENCES learned_skills(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS skill_triggers (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  trigger_value TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(skill_id) REFERENCES learned_skills(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS skill_confidence (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(skill_id) REFERENCES learned_skills(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS skill_improvements (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  before_confidence REAL NOT NULL,
+  after_confidence REAL NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(skill_id) REFERENCES learned_skills(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS permissions (
   id TEXT PRIMARY KEY,
   project_id TEXT,
@@ -228,6 +316,134 @@ CREATE TABLE IF NOT EXISTS reasoning_traces (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS perception_observations (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  raw_event_id TEXT NOT NULL,
+  raw_event_kind TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  signal TEXT NOT NULL DEFAULT '{}',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  tags TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS understandings (
+  id TEXT PRIMARY KEY,
+  observation_id TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  project_id TEXT,
+  related_memory_ids TEXT NOT NULL DEFAULT '[]',
+  relationships TEXT NOT NULL DEFAULT '[]',
+  recurring_patterns TEXT NOT NULL DEFAULT '[]',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS execution_outcomes (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  ok INTEGER NOT NULL,
+  duration_ms INTEGER,
+  output_summary TEXT NOT NULL,
+  error_summary TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reflections (
+  id TEXT PRIMARY KEY,
+  outcome_id TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  reflection_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lessons (
+  id TEXT PRIMARY KEY,
+  reflection_id TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  tags TEXT NOT NULL DEFAULT '[]',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_evolution (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT,
+  lesson_id TEXT,
+  summary TEXT NOT NULL,
+  confidence_delta REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS adaptation_history (
+  id TEXT PRIMARY KEY,
+  trigger TEXT NOT NULL,
+  behavior TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  priority_delta INTEGER NOT NULL DEFAULT 0,
+  notification_policy TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_efficiency (
+  id TEXT PRIMARY KEY,
+  workflow TEXT NOT NULL,
+  score REAL NOT NULL,
+  bottlenecks TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS planning_quality (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT,
+  score REAL NOT NULL,
+  risk_score REAL,
+  permission_required INTEGER,
+  issues TEXT NOT NULL DEFAULT '[]',
+  assessment_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS operating_mode_state (
+  id TEXT PRIMARY KEY,
+  mode TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS goal_stack (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT,
+  title TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 50,
+  status TEXT NOT NULL,
+  owner_agent TEXT NOT NULL,
+  required_tools TEXT NOT NULL DEFAULT '[]',
+  risk_level TEXT NOT NULL,
+  memory_links TEXT NOT NULL DEFAULT '[]',
+  deadline TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS consciousness_cycles (
+  id TEXT PRIMARY KEY,
+  mode TEXT NOT NULL,
+  world_state TEXT NOT NULL DEFAULT '{}',
+  recalled_memory_ids TEXT NOT NULL DEFAULT '[]',
+  detected_goal_ids TEXT NOT NULL DEFAULT '[]',
+  available_tools TEXT NOT NULL DEFAULT '[]',
+  available_skills TEXT NOT NULL DEFAULT '[]',
+  risk_score REAL NOT NULL DEFAULT 0,
+  plan_ids TEXT NOT NULL DEFAULT '[]',
+  actions_taken TEXT NOT NULL DEFAULT '[]',
+  reflection_ids TEXT NOT NULL DEFAULT '[]',
+  summary TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS project_summaries (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -235,4 +451,28 @@ CREATE TABLE IF NOT EXISTS project_summaries (
   summary TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evolution_candidates (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0,
+  origin TEXT NOT NULL,
+  status TEXT NOT NULL,
+  fitness REAL NOT NULL DEFAULT 0,
+  parent_ids TEXT NOT NULL DEFAULT '[]',
+  candidate_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evolution_generations (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  generation_index INTEGER NOT NULL DEFAULT 0,
+  seed TEXT NOT NULL,
+  incumbent_id TEXT,
+  champion_id TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  generation_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
 );

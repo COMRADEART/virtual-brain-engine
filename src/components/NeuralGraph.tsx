@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { REGION_BY_ID } from "../engine/brainRegions";
+import { REGION_BY_ID, REGION_INDEX } from "../engine/brainRegions";
 import { PATHWAY_SEGMENTS, samplePathway } from "../engine/neuralGraphGenerator";
 import type {
   BrainRegionId,
@@ -70,6 +70,7 @@ export class NeuralGraphRenderer {
     elapsedSeconds: number,
   ): void {
     this.updateRegionVolumes(
+      simulation,
       simulation.regionIntensity,
       simulation.regionFlashIntensity,
       visibility,
@@ -248,6 +249,7 @@ export class NeuralGraphRenderer {
   }
 
   private updateRegionVolumes(
+    simulation: SignalSimulation,
     regionIntensity: Float32Array,
     regionFlashIntensity: Float32Array,
     visibility: RegionVisibility,
@@ -260,7 +262,9 @@ export class NeuralGraphRenderer {
       const regionIndex = this.graph.regionOrder.indexOf(regionId);
       const baseIntensity = regionIntensity[regionIndex] ?? 0;
       const flash = regionFlashIntensity[regionIndex] ?? 0;
-      const intensity = Math.min(1, baseIntensity + flash * 1.1);
+      const isHippocampus = regionId === "hippocampus-l" || regionId === "hippocampus-r";
+      const memoryGlow = isHippocampus ? simulation.memoryIntensity * 0.55 : 0;
+      const intensity = Math.min(1, baseIntensity + flash * 1.1 + memoryGlow);
       const selected = selectedRegionId === regionId;
       const material = this.regionMaterials.get(regionId);
 
@@ -371,11 +375,16 @@ export class NeuralGraphRenderer {
       samplePathway(pathway, t, this.pulseScratch);
       this.pulseSamplePosition.set(this.pulseScratch[0], this.pulseScratch[1], this.pulseScratch[2]);
 
-      const pulseSize = 0.024 + pulse.intensity * 0.038;
+      const progressBoost = 0.7 + Math.sin(t * Math.PI) * 0.3;
+      const velocityBoost = 0.8 + pulse.velocity * 0.4;
+      const pulseSize = (0.024 + pulse.intensity * 0.038) * progressBoost * velocityBoost;
       this.pulseScale.set(pulseSize, pulseSize, pulseSize);
       this.matrix.compose(this.pulseSamplePosition, IDENTITY_QUATERNION, this.pulseScale);
       this.pulseMesh.setMatrixAt(index, this.matrix);
-      this.pulseMesh.setColorAt(index, this.signalRegionColors[pulse.colorRegionIndex]);
+
+      const colorIntensity = 0.85 + pulse.intensity * 0.15;
+      this.color.copy(this.signalRegionColors[pulse.colorRegionIndex]).multiplyScalar(colorIntensity);
+      this.pulseMesh.setColorAt(index, this.color);
     }
 
     this.pulseMesh.instanceMatrix.needsUpdate = true;

@@ -152,6 +152,14 @@ async function main() {
     await client.send("Page.enable");
     await client.send("Runtime.enable");
     await client.send("Log.enable");
+    // The scientific control surface (RegionControls/InfoPanel) only renders in
+    // the "full" layout; "compact" is the default daily-driver mode. Seed the
+    // persisted layout preference before app JS runs so the per-action route
+    // assertions below can reach the controls. (useLayoutMode reads this
+    // localStorage key, JSON-encoded, on first render.)
+    await client.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "try { localStorage.setItem('brain-layout', JSON.stringify('full')); } catch (e) {}",
+    });
     const loadEvent = client.waitForEvent("Page.loadEventFired", 8000);
     await client.send("Page.navigate", { url: TARGET_URL });
     await loadEvent;

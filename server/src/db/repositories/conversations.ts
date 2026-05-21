@@ -67,14 +67,22 @@ export function listConversations(limit = 50): Conversation[] {
   return rows.map(rowToConversation);
 }
 
-export function listMessages(conversationId: string): ConversationMessage[] {
+export function listMessages(conversationId: string, limit = 100, offset = 0): ConversationMessage[] {
   const db = openDb();
   const rows = db
-    .prepare<[string], MessageRow>(
-      `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
+    .prepare<[string, number, number], MessageRow>(
+      `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?`,
     )
-    .all(conversationId);
+    .all(conversationId, limit, offset);
   return rows.map(rowToMessage);
+}
+
+export function getConversation(id: string): Conversation | null {
+  const db = openDb();
+  const row = db
+    .prepare<[string], ConversationRow>(`SELECT * FROM conversations WHERE id = ?`)
+    .get(id);
+  return row ? rowToConversation(row) : null;
 }
 
 export function insertMessage(input: {

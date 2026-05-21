@@ -11,6 +11,13 @@ Sensory System
       v
 Tokio Nervous System Event Bus
       |
+      +--> Perception Engine
+      +--> Understanding Engine
+      +--> Planning Engine
+      +--> Reflection Engine
+      +--> Learning Engine
+      +--> Adaptation Engine
+      |
       +--> ObserverAgent
       +--> ContextAgent
       +--> SummaryAgent
@@ -34,19 +41,67 @@ Tauri Desktop Bridge
 React UI + Floating Pet
 ```
 
+## Cognitive Architecture Layer
+
+Computer Brain runs a continuous cognitive loop over the nervous-system event stream:
+
+```text
+Perceive
+    |
+Understand
+    |
+Plan
+    |
+Execute
+    |
+Reflect
+    |
+Learn
+    |
+Adapt
+    |
+Repeat
+```
+
+The loop is wired in `brain-core` after each event is persisted and the world state is updated. Raw events become structured observations, observations become situational understanding, requests/failures/plan signals become assessed plans, completed tool calls become execution outcomes and reflections, reflections become lessons, and lessons drive adaptation decisions.
+
+Agents are movement, not the whole intelligence. The cognitive layer provides the perception, understanding, reflection, learning, and adaptation cycle that turns agent activity into persistent behavior changes.
+
+## Consciousness Loop
+
+The persistent consciousness loop is Brain Core's bounded internal thinking cycle. On each heartbeat it observes world state, recalls recent memories, inspects the goal stack, identifies safe tools and skills, estimates risk, updates plan assessment, records a cycle summary, and only then decides whether any action is allowed.
+
+Supported operating modes:
+
+1. `Passive`: observe, store memory, and summarize only.
+2. `Assisted`: propose plans and wait for user approval.
+3. `Active`: execute approved low-risk tasks through agents.
+4. `Autonomous`: run trusted scheduled or pre-approved workflows only.
+
+The loop is constrained by user intent, operating mode, safety policy, risk scoring, permissions, and audit/event logs. It never bypasses agents or the safety layer.
+
+The goal stack stores current goals and subgoals with priority, status, owner agent, required tools, risk level, memory links, and optional deadline. User requests create goal records; the consciousness loop uses them to keep planning state inspectable instead of hidden in model text.
+
 ## Crates
 
 - `shared-types`: common events, records, IDs, agent state, tool calls, graph DTOs.
 - `nervous-system`: Tokio broadcast event bus, event log, task messages.
 - `cognitive-state`: live world state, cognitive mode, system body map, onboarding scanner.
+- `perception-engine`: raw event normalization into structured observations.
+- `understanding-engine`: situational awareness, intent, relationships, and confidence estimation.
 - `agent-runtime`: custom Rust `Agent` trait, capabilities, registry, lifecycle runtime.
 - `memory-cortex`: SQLite schema and structured memory/session/project/event/task/audit storage.
 - `semantic-memory`: local hashed embeddings, vector search, semantic clustering.
 - `knowledge-graph`: project/file/system/concept/bug/fix graph upserts and traversal.
 - `context-engine`: active project, intent, related memory and tool detection.
 - `planner-engine`: intent parsing and grounded plan generation.
+- `planning-engine`: risk, permission, priority, tool, agent, and quality assessment for plans.
 - `execution-graph`: graph-shaped task runtime primitives, dependencies, replay summaries.
 - `capability-system`: named capabilities, risk levels, approval requirements.
+- `skill-learning`: Hermes-style action observation, repeated workflow detection, learned skills, skill runs, failures, and improvement records.
+- `reflection-engine`: execution outcomes, reflection records, efficiency scoring, and planning quality records.
+- `learning-engine`: lessons and learning signals derived from reflection.
+- `adaptation-engine`: behavior changes based on world state, reflection, and learning signals.
 - `temporal-engine`: timeline reconstruction, decay, summaries, recurring work detection.
 - `workflow-engine`: autonomous workflows, scheduled jobs, agent task chains.
 - `tool-cortex`: Ollama, cloud model abstraction, shell/Python/GitHub tool routing.
@@ -66,16 +121,40 @@ The MVP registers all required agents:
 3. `MemoryAgent`
 4. `SemanticMemoryAgent`
 5. `PlannerAgent`
-6. `ProjectAgent`
-7. `ToolRouterAgent`
-8. `CommandAgent`
-9. `SchedulerAgent`
-10. `ContextAgent`
-11. `WorkflowAgent`
-12. `PetAgent`
-13. `SafetyAgent`
+6. `SkillAgent`
+7. `ProjectAgent`
+8. `ToolRouterAgent`
+9. `CommandAgent`
+10. `SchedulerAgent`
+11. `ContextAgent`
+12. `WorkflowAgent`
+13. `PetAgent`
+14. `SafetyAgent`
 
 Every agent receives events from the nervous-system bus. Agent work emits follow-up events, persists state, or enqueues workflows.
+
+## OpenClaw + Hermes-Style Behavior
+
+Computer Brain combines OpenClaw-style action with Hermes-style learning in a Rust local-first architecture.
+
+OpenClaw-style action means the brain can operate real computer tools through controlled capabilities: terminal commands, project builds, test execution, file and folder access, APIs, browser automation, local scripts, model calls, and scheduled tasks.
+
+Hermes-style learning means repeated successful action patterns are observed, persisted, abstracted into reusable skills, versioned, and improved from later runs.
+
+The self-improving skill loop is:
+
+1. Observe action
+2. Store result
+3. Detect repeated workflow
+4. Abstract workflow into a skill
+5. Test skill safely
+6. Store skill in Skill Memory
+7. Reuse skill later
+8. Improve skill from future results
+
+The full-time heartbeat loop checks world state, scheduled tasks, active projects, pending workflows, memory updates, and whether safe action is needed. It records reasoning traces and world snapshots, but risky actions still require explicit permission and must flow through the same safety layer.
+
+All control channels, including desktop pet, dashboard, terminal command interface, local web UI, and future chat bridges, must enter through Brain Core and Safety Layer before reaching agents or tools.
 
 ## Computer Recognition + Brain Thought Process
 
@@ -382,6 +461,18 @@ The SQLite schema is in `crates/memory-cortex/src/schema.sql` and includes:
 - `audit_logs`
 - `semantic_vectors`
 - `project_summaries`
+- `perception_observations`
+- `understandings`
+- `execution_outcomes`
+- `reflections`
+- `lessons`
+- `skill_evolution`
+- `adaptation_history`
+- `workflow_efficiency`
+- `planning_quality`
+- `operating_mode_state`
+- `goal_stack`
+- `consciousness_cycles`
 
 ## Privacy Rules
 

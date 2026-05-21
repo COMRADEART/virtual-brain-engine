@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/pipeline.js";
 import type { MemoryPoint } from "../../../shared/memory.js";
 import {
+  getMemoryCount,
   insertRelation,
   upsertMemoryPoint,
   vectorSearch,
@@ -22,12 +23,22 @@ import { getDefaultConnectorInstance, listConnectorInstances } from "../connecto
 import { Connector, ConnectorError } from "../connectors/Connector.js";
 import { broadcast } from "../ws/brainBus.js";
 import {
+  maybeExplore,
+  rankHits,
+  selectPromptHits,
+  trainFromCitations,
+} from "./ranker.js";
+import { applyMemoryRetrievalBoost, onConversationMessage, processNewMemory } from "../memory/consolidationEngine.js";
+import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
+import {
   ERROR_SYSTEM,
   PROJECT_RERANK_SYSTEM,
   REASONING_SYSTEM,
   buildResponseSystem,
 } from "./prompts.js";
 import { createHash } from "node:crypto";
+import { getCognitiveSwarm } from "../core/swarm.js";
+import { getImaginationEngine } from "../core/imagination.js";
 
 export interface AskRequest {
   prompt: string;
@@ -95,18 +106,9 @@ function snippetFor(memory: MemoryPoint): string {
   return trimmed.length > 600 ? `${trimmed.slice(0, 600)}…` : trimmed;
 }
 
-// Re-rank vector hits with a recency / importance bias. Pure local arithmetic.
-function applyBoosts(hits: VectorSearchHit[]): VectorSearchHit[] {
-  const now = Date.now();
-  return [...hits]
-    .map((hit) => {
-      const ageDays = Math.max(0, (now - new Date(hit.memory.updatedAt).getTime()) / 86400000);
-      const recency = 1 / (1 + ageDays / 14); // ~14d half-life
-      const score = hit.score * 0.7 + recency * 0.15 + hit.memory.importance * 0.15;
-      return { ...hit, score };
-    })
-    .sort((a, b) => b.score - a.score);
-}
+// Vector-hit re-ranking now lives in ./ranker.ts (learned LTR + heuristic
+// cold-start blend). The original recency/importance formula is preserved
+// there as heuristicScore() so alpha=0 reproduces prior behaviour exactly.
 
 function ensureSections(answer: string, knownMemoryIds: Set<string>): string {
   const headerRe = /\b(Known memory:|Inferred reasoning:|Uncertain:)/g;
@@ -215,17 +217,37 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   }
   insertMessage({ conversationId: cid, role: "user", content: req.prompt, pipelineRunId: runId });
   emitAll(makeEvent(cid, runId, "input", "complete"), emit);
+  const swarm = getCognitiveSwarm();
+  swarm.routeCognitiveWorkflow(
+    `Answer user request: ${req.prompt.slice(0, 180)}`,
+    { conversationId: cid, runId, prompt: req.prompt },
+    { includeExecution: false, priority: 68, privacyMode: "local-first" },
+  );
+  getImaginationEngine().imagine({
+    goal: `Mentally rehearse answer path for: ${req.prompt.slice(0, 180)}`,
+    action: req.prompt,
+    mode: "future-prediction",
+    branchCount: 3,
+    context: { conversationId: cid, runId },
+  });
 
   // 2. MEMORY
   emitAll(makeEvent(cid, runId, "memory", "start", { detail: "Embedding question + searching memory" }), emit);
   let memoryHits: VectorSearchHit[] = [];
   let memoryError: string | undefined;
+  let rankFeatures: Map<string, number[]> = new Map();
+  let rankWarm = false;
+  let rankAlpha = 0;
   const embedder = getEmbedder(connector);
   if (embedder?.embed) {
     try {
       const embedding = await embedder.embed(req.prompt);
       const raw = vectorSearch(embedding, 8);
-      memoryHits = applyBoosts(raw);
+      const r = rankHits(raw);
+      memoryHits = r.ranked;
+      rankFeatures = r.featuresById;
+      rankWarm = r.warm;
+      rankAlpha = r.alpha;
     } catch (err) {
       memoryError = err instanceof Error ? err.message : String(err);
     }
@@ -239,11 +261,12 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     filePath: hit.memory.filePath ?? undefined,
     score: hit.score,
   }));
+  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}`;
   const memoryDetail = memoryError
     ? memoryError
     : embedder && embedder !== connector
-      ? `${memoryHits.length} memories retrieved (embeddings via ${embedder.descriptor.id})`
-      : `${memoryHits.length} memories retrieved`;
+      ? `${memoryHits.length} memories retrieved (embeddings via ${embedder.descriptor.id})${rankerTag}`
+      : `${memoryHits.length} memories retrieved${rankerTag}`;
   emitAll(
     makeEvent(cid, runId, "memory", "complete", {
       detail: memoryDetail,
@@ -251,10 +274,21 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     }),
     emit,
   );
+  if (memoryHits.length > 0) {
+    applyMemoryRetrievalBoost(memoryHits.map((h) => h.memory.id));
+  }
 
   // 3. REASONING
   emitAll(makeEvent(cid, runId, "reasoning", "start"), emit);
-  const memoryList = memoryHits
+  // What the LLM actually reads: warm-gated high-confidence subset, with the
+  // position-bias shuffle applied. Smaller block → less context → faster
+  // local inference. The full ranked set is still kept for training + the UI.
+  const promptHits = maybeExplore(
+    selectPromptHits(memoryHits, rankFeatures, rankWarm),
+    runId,
+    rankWarm,
+  );
+  const memoryList = promptHits
     .map((hit) => `[m:${hit.memory.id}] (${hit.memory.filePath ?? "conv"}): ${snippetFor(hit.memory)}`)
     .join("\n\n");
   type ReasoningOut = { plan: string; openQuestions: string[] };
@@ -285,6 +319,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     makeEvent(cid, runId, "reasoning", "complete", { detail: reasoning.plan.slice(0, 200) }),
     emit,
   );
+  swarm.runConsensus(`Compare reasoning plans for: ${req.prompt.slice(0, 180)}`);
 
   // 4. PROJECT
   emitAll(makeEvent(cid, runId, "project", "start"), emit);
@@ -336,7 +371,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
 
   // 6. RESPONSE
   emitAll(makeEvent(cid, runId, "response", "start"), emit);
-  const knownIds = new Set(memoryHits.map((hit) => hit.memory.id));
+  const knownIds = new Set(promptHits.map((hit) => hit.memory.id));
   const responseSystem = buildResponseSystem(memoryHits.length > 0);
   const responsePrompt = [
     `User question:\n${req.prompt}`,
@@ -382,6 +417,13 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     content: finalAnswer,
     pipelineRunId: runId,
   });
+  // Implicit relevance feedback: which *shown* memories the model actually
+  // cited (validated [m:<id>] markers), not merely what was retrieved.
+  const citedIds = new Set(
+    Array.from(finalAnswer.matchAll(/\[m:([A-Za-z0-9]+)\]/g))
+      .map((m) => m[1])
+      .filter((id) => knownIds.has(id)),
+  );
   try {
     const learned = upsertMemoryPoint({
       sourceType: "conversation",
@@ -393,9 +435,21 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       importance: errorReport.confidence,
       metadata: { conversationId: cid, runId },
     });
-    for (const hit of memoryHits.slice(0, 5)) {
+    const memoryContext = processNewMemory(
+      learned.content,
+      projectName ?? null,
+      learned.id,
+    );
+    if (memoryContext.noveltyCategory === "novel") {
+      updateMemoryImportance(learned.id, learned.importance + memoryContext.importanceBoost);
+    }
+    // "cites" now means cited, not retrieved — the relation graph stops lying.
+    const scoreById = new Map(
+      memoryHits.map((h) => [h.memory.id, h.score] as const),
+    );
+    for (const citedId of citedIds) {
       try {
-        insertRelation(learned.id, hit.memory.id, "cites", hit.score);
+        insertRelation(learned.id, citedId, "cites", scoreById.get(citedId) ?? 0.5);
       } catch {
         // ignore relation failures
       }
@@ -404,7 +458,20 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     // Learning is best-effort; surface but don't fail the run.
     console.warn("[pipeline] learning persistence failed:", err);
   }
+  // Online ranker update from this query's implicit feedback. Independent of
+  // persistence success; no-op when there were no citations.
+  trainFromCitations(rankFeatures, citedIds);
   completePipelineRun(runId, finalAnswer);
+  onConversationMessage({
+    lastMemories: Array.from(citedIds),
+    projectName: projectName ?? null,
+    query: req.prompt,
+  });
+  try {
+    broadcast({ type: "memory-count", count: getMemoryCount() });
+  } catch {
+    // best-effort
+  }
   emitAll(
     makeEvent(cid, runId, "learning", "complete", {
       detail: "Stored conversation memory",

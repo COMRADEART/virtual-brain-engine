@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
+use chrono::Utc;
+use parking_lot::Mutex;
 use rusqlite::{Connection, Result as SqliteResult, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -20,6 +20,8 @@ pub struct MemoryPoint {
     pub embedding: Option<Vec<f32>>,
 }
 
+// TODO(phase2): consumed by a later phase — kept as scaffolding (see CLAUDE.md).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRelation {
     pub id: String,
@@ -64,6 +66,8 @@ impl Database {
         Ok(db)
     }
 
+    // TODO(phase2): used by a later phase — kept as scaffolding (see CLAUDE.md).
+    #[allow(dead_code)]
     pub fn in_memory() -> SqliteResult<Self> {
         let conn = Connection::open_in_memory()?;
         let db = Self { conn };
@@ -224,6 +228,8 @@ impl Database {
         rows.collect()
     }
 
+    // TODO(phase2): used by a later phase — kept as scaffolding (see CLAUDE.md).
+    #[allow(dead_code)]
     pub fn record_system_event(
         &self,
         event_type: &str,
@@ -243,6 +249,8 @@ impl Database {
         Ok(())
     }
 
+    // TODO(phase2): used by a later phase — kept as scaffolding (see CLAUDE.md).
+    #[allow(dead_code)]
     pub fn get_activity_summary(&self, hours: i32) -> SqliteResult<Vec<BrainActivity>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, activity_type, region_id, intensity, timestamp, metadata
@@ -313,7 +321,7 @@ impl Database {
     }
 }
 
-pub type SharedDatabase = Arc<RwLock<Database>>;
+pub type SharedDatabase = Arc<Mutex<Database>>;
 
 pub fn create_database(data_dir: &Path) -> std::io::Result<SharedDatabase> {
     std::fs::create_dir_all(data_dir)?;
@@ -322,5 +330,5 @@ pub fn create_database(data_dir: &Path) -> std::io::Result<SharedDatabase> {
     let db = Database::new(&db_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-    Ok(Arc::new(RwLock::new(db)))
+    Ok(Arc::new(Mutex::new(db)))
 }

@@ -1,0 +1,15 @@
+[package]
+name = "adaptation-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+cognitive-state.workspace = true
+learning-engine.workspace = true
+reflection-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shared-types.workspace = true

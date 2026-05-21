@@ -1,4 +1,4 @@
-use desktop_bridge::{ChatInput, CommandInput, DesktopBridge, GraphOutput, IngestMemoryInput, ProjectInput};
+use desktop_bridge::{ChatInput, CommandInput, DesktopBridge, GraphOutput, IngestMemoryInput, OperatingModeInput, ProjectInput};
 use shared_types::BrainConfig;
 use tauri::Manager;
 
@@ -33,6 +33,11 @@ async fn run_safe_command(input: CommandInput, state: tauri::State<'_, BridgeSta
 }
 
 #[tauri::command]
+async fn set_operating_mode(input: OperatingModeInput, state: tauri::State<'_, BridgeState>) -> Result<cognitive_state::WorldState, String> {
+    state.bridge.set_operating_mode(input).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn knowledge_graph(state: tauri::State<'_, BridgeState>) -> Result<GraphOutput, String> {
     state.bridge.graph().await.map_err(|e| e.to_string())
 }
@@ -61,6 +66,7 @@ pub fn run() {
             ingest_memory,
             observe_project,
             run_safe_command,
+            set_operating_mode,
             knowledge_graph,
         ])
         .run(tauri::generate_context!())

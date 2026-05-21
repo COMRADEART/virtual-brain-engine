@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Virtual Brain Engine",
@@ -22,6 +23,20 @@
         "fullscreen": false,
         "center": true,
         "decorations": true,
+        "visible": true
+      },
+      {
+        "title": "Brain Pet",
+        "label": "pet",
+        "url": "index.html?window=pet",
+        "width": 220,
+        "height": 240,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
         "visible": true
       }
     ],
