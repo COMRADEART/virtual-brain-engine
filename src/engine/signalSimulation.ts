@@ -1,5 +1,6 @@
 import { ACTION_BY_ID, REGION_INDEX } from "./brainRegions";
 import { LOGICAL_REGION_MAP } from "./logicalRegions";
+import * as emergentActions from "./emergentActions";
 import type { LogicalRegionId } from "../../shared/pipeline";
 import type {
   BrainActionId,
@@ -8,8 +9,15 @@ import type {
   SignalPulse,
   SynapticPathway,
 } from "./types";
+import { getActionColor } from "../data/regionDefinitions";
 
 const DEFAULT_MAX_PULSES = 260;
+
+// Stub oscillation phases for SignalSimulation (no bio-physical oscillation model).
+// SpikingEngine drives real theta/gamma phases; these are just static defaults so
+// BrainVisualEffects can read the same interface from either engine.
+const STUB_THETA_PHASE = 0;
+const STUB_GAMMA_PHASE = 0;
 
 function weightedPick<T>(items: T[], weights: number[], random: () => number): T | undefined {
   let total = 0;
@@ -49,9 +57,27 @@ export class SignalSimulation {
   private maxPulses = DEFAULT_MAX_PULSES;
   private nextPulseId = 1;
   private spawnAccumulator = 0;
+  private actionStartTime = 0;
   private readonly random = mulberry32(381);
   private readonly eligiblePathways: SynapticPathway[] = [];
   private readonly eligibleWeights: number[] = [];
+  private readonly actionColors: Record<BrainActionId, string> = {
+    "attentional-blink": "#a0d8f3",
+    "eureka-moment": "#e7b3ff",
+    "fear-conditioning": "#ff6b6b",
+    "memory-reconsolidation": "#ffd700",
+    "decision-hesitation": "#ffff99",
+    "sensory-gating": "#6bcaff",
+    "sleep-ripple": "#ffffff",
+    // Default colors for base actions
+    "lift-hand": "#cccccc",
+    "see-object": "#aaddff",
+    "hear-sound": "#ffccaa",
+    "remember-event": "#ffdd88",
+    "fear-response": "#ff8888",
+    "speak": "#aaffaa",
+    "read-text": "#ddaaff"
+  };
 
   readonly pulses: SignalPulse[] = [];
   readonly regionIntensity: Float32Array;
@@ -65,13 +91,23 @@ export class SignalSimulation {
     return this._memoryIntensity;
   }
 
+  // BrainSimulation optional extension properties (not modelled by SignalSimulation).
+  // Always undefined/defaults — SpikingEngine provides the real values.
+  readonly membranePotentialNorm: Float32Array | undefined = undefined;
+  readonly dopamine = 0.3;
+  readonly acetylcholine = 0.4;
+  readonly thetaPhase = STUB_THETA_PHASE;
+  readonly gammaPhase = STUB_GAMMA_PHASE;
+
   constructor(graph: NeuralGraph, actionId: BrainActionId) {
     this.graph = graph;
     this.actionId = actionId;
+    this.actionStartTime = Date.now();
     this.regionIntensity = new Float32Array(graph.regionOrder.length);
     this.regionFlashIntensity = new Float32Array(graph.regionOrder.length);
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
     this.rebuildEligiblePathways();
+    this.initializeEmergentAction();
   }
 
   setGraph(graph: NeuralGraph): void {
@@ -112,11 +148,45 @@ export class SignalSimulation {
     }
 
     this.actionId = actionId;
+    this.actionStartTime = Date.now();
     this.pulses.length = 0;
     this.spawnAccumulator = 0;
     this.regionIntensity.fill(0);
     this.pathwayIntensity.fill(0);
     this.rebuildEligiblePathways();
+    this.initializeEmergentAction();
+  }
+  
+  private initializeEmergentAction(): void {
+    const elapsedSeconds = (Date.now() - this.actionStartTime) / 1000;
+    
+    switch (this.actionId) {
+      case "attentional-blink":
+        emergentActions.initAttentionalBlink(this);
+        break;
+      case "eureka-moment":
+        emergentActions.initEurekaMoment(this);
+        break;
+      case "fear-conditioning":
+        emergentActions.initFearConditioning(this);
+        break;
+      case "memory-reconsolidation":
+        emergentActions.initMemoryReconsolidation(this);
+        break;
+      case "decision-hesitation":
+        emergentActions.initDecisionHesitation(this);
+        break;
+      case "sensory-gating":
+        emergentActions.initSensoryGating(this);
+        break;
+      case "sleep-ripple":
+        emergentActions.initSleepRipple(this);
+        break;
+    }
+  }
+  
+  getActionColor(): string {
+    return this.actionColors[this.actionId] || "#cccccc";
   }
 
   setRunning(running: boolean): void {
@@ -257,6 +327,15 @@ export class SignalSimulation {
     const fromRegionIndex = reverse ? pathway.targetRegionIndex : pathway.sourceRegionIndex;
     const fromRegionId = reverse ? pathway.targetRegionId : pathway.sourceRegionId;
 
+    // For emergent actions, use the action-specific color
+    const isEmergentAction = [
+      "attentional-blink", "eureka-moment", "fear-conditioning", 
+      "memory-reconsolidation", "decision-hesitation", "sensory-gating", 
+      "sleep-ripple"
+    ].includes(this.actionId);
+    
+    const color = this.getActionColor();
+    
     this.pulses.push({
       id: this.nextPulseId,
       pathwayIndex: pathway.id,
@@ -268,6 +347,8 @@ export class SignalSimulation {
       colorRegionId: fromRegionId,
       colorRegionIndex: fromRegionIndex,
       reverse,
+      // Add color property for visualization
+      actionColor: color
     });
 
     this.nextPulseId += 1;

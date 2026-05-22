@@ -213,12 +213,18 @@ export class SpikingEngine {
   private regionDrive!: Float32Array;
 
   // ── Neuromodulator and oscillation state ──────────────────────────────────
-  private dopamine = DA_BASELINE;
-  private acetylcholine = ACH_BASELINE;
-  private thetaPhase = 0;
-  private gammaPhase = 0;
+  dopamine = DA_BASELINE;
+  acetylcholine = ACH_BASELINE;
+  serotonin = 0.2;
+  norepinephrine = 0.1;
+  thetaPhase = 0;
+  gammaPhase = 0;
   private thetaGain = 1.0;
   private gammaGain = 1.0;
+  
+  // ── Memory and bursting visualization state ──────────────────────────────
+  private burstStatus!: Float32Array; // 0-1 indicating bursting neurons
+  private memoryTrace!: Float32Array; // 0-1 memory engagement per neuron
   // Per-region oscillation routing: how strongly each region listens to
   // theta vs gamma. Real brains: hippocampus → theta; sensory cortex → gamma.
   private regionThetaWeight!: Float32Array;
@@ -239,6 +245,8 @@ export class SpikingEngine {
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
     this.membranePotentialNorm = new Float32Array(graph.nodes.length);
     this.neuronType = new Int8Array(graph.nodes.length);
+    this.burstStatus = new Float32Array(graph.nodes.length);
+    this.memoryTrace = new Float32Array(graph.nodes.length);
     this.buildFromGraph(graph);
     this.applyAction(actionId);
   }
@@ -335,11 +343,18 @@ export class SpikingEngine {
 
     this._memoryIntensity *= Math.pow(0.92, deltaSeconds);
 
-    // Decay neuromodulators toward their baselines.
-    const daRate = Math.pow(DA_DECAY_PER_SEC, deltaSeconds);
-    const achRate = Math.pow(ACH_DECAY_PER_SEC, deltaSeconds);
-    this.dopamine = DA_BASELINE + (this.dopamine - DA_BASELINE) * daRate;
-    this.acetylcholine = ACH_BASELINE + (this.acetylcholine - ACH_BASELINE) * achRate;
+  // Decay neuromodulators toward their baselines.
+  const daRate = Math.pow(DA_DECAY_PER_SEC, deltaSeconds);
+  const achRate = Math.pow(ACH_DECAY_PER_SEC, deltaSeconds);
+  const serotoninBaseline = 0.2;
+  const neBaseline = 0.1;
+  const serotoninRate = Math.pow(0.7, deltaSeconds);
+  const neRate = Math.pow(0.8, deltaSeconds);
+  
+  this.dopamine = DA_BASELINE + (this.dopamine - DA_BASELINE) * daRate;
+  this.acetylcholine = ACH_BASELINE + (this.acetylcholine - ACH_BASELINE) * achRate;
+  this.serotonin = serotoninBaseline + (this.serotonin - serotoninBaseline) * serotoninRate;
+  this.norepinephrine = neBaseline + (this.norepinephrine - neBaseline) * neRate;
 
     // Memory channel keeps hippocampal regions visibly lit during recall.
     if (this._memoryIntensity > 0.005) {
@@ -385,6 +400,14 @@ export class SpikingEngine {
   setAcetylcholine(level: number): void {
     this.acetylcholine = Math.max(0, Math.min(1, level));
   }
+  
+  setSerotonin(level: number): void {
+    this.serotonin = Math.max(0, Math.min(1, level));
+  }
+  
+  setNorepinephrine(level: number): void {
+    this.norepinephrine = Math.max(0, Math.min(1, level));
+  }
 
   setOscillationGains(theta: number, gamma: number): void {
     this.thetaGain = Math.max(0, theta);
@@ -397,6 +420,12 @@ export class SpikingEngine {
     }
     if (state.acetylcholine !== undefined) {
       this.setAcetylcholine(state.acetylcholine);
+    }
+    if (state.serotonin !== undefined) {
+      this.setSerotonin(state.serotonin);
+    }
+    if (state.norepinephrine !== undefined) {
+      this.setNorepinephrine(state.norepinephrine);
     }
     this.setOscillationGains(state.thetaGain ?? 1.0, state.gammaGain ?? 1.0);
 
@@ -525,6 +554,40 @@ export class SpikingEngine {
       }
     }
   }
+  
+  // Triggers a memory replay event from hippocampus to neocortex
+  triggerMemoryReplay(sourceRegion: BrainRegionId = "hippocampus-l", targetRegions: BrainRegionId[] = ["prefrontal-l", "prefrontal-r", "parietal-l", "parietal-r"]): void {
+    // Increase global memory intensity
+    this._memoryIntensity = Math.min(1.0, this._memoryIntensity + 0.3);
+    
+    // Activate memory trace in source region neurons
+    for (let i = 0; i < this.graph.nodes.length; i++) {
+      const region = this.graph.nodes[i].regionId;
+      if (region === sourceRegion) {
+        this.memoryTrace[i] = Math.min(1.0, this.memoryTrace[i] + 0.5);
+        // Small chance of bursting in memory neurons
+        if (Math.random() < 0.2) {
+          this.burstStatus[i] = 1.0;
+        }
+      }
+    }
+    
+    // Simulate replay to target regions
+    for (const targetRegion of targetRegions) {
+      for (let i = 0; i < this.graph.nodes.length; i++) {
+        const region = this.graph.nodes[i].regionId;
+        if (region === targetRegion) {
+          this.memoryTrace[i] = Math.min(1.0, this.memoryTrace[i] + 0.15);
+        }
+      }
+    }
+    
+    // Boost neuromodulators involved in memory consolidation
+    this.setDopamine(Math.min(1.0, this.dopamine + 0.15));
+    this.setAcetylcholine(Math.min(1.0, this.acetylcholine + 0.1));
+    this.setSerotonin(Math.min(1.0, this.serotonin + 0.05));
+    this.setNorepinephrine(Math.min(1.0, this.norepinephrine + 0.1));
+  }
 
   // ──────────────────────────────────────────────────────────────────────
   // Inner loop: one LIF substep.
@@ -556,12 +619,19 @@ export class SpikingEngine {
     const xPreDecay = Math.exp(-dt / TAU_TRACE_PRE);
     const xPostDecay = Math.exp(-dt / TAU_TRACE_POST);
 
-    for (let i = 0; i < n; i += 1) {
-      this.iSynExc[i] *= excDecay;
-      this.iSynInh[i] *= inhDecay;
-      this.xPre[i] *= xPreDecay;
-      this.xPost[i] *= xPostDecay;
-    }
+  // Reset burst status and decay memory trace
+  for (let i = 0; i < n; i += 1) {
+    this.iSynExc[i] *= excDecay;
+    this.iSynInh[i] *= inhDecay;
+    this.xPre[i] *= xPreDecay;
+    this.xPost[i] *= xPostDecay;
+    
+    // Decay burst status (fades over ~100ms)
+    this.burstStatus[i] *= Math.pow(0.01, dt);
+    
+    // Decay memory trace (fades over ~1s)
+    this.memoryTrace[i] *= Math.pow(0.3, dt);
+  }
 
     // Integrate Vm and detect spikes.
     for (let i = 0; i < n; i += 1) {
@@ -615,6 +685,15 @@ export class SpikingEngine {
     this.refractoryUntil[neuron] = t + this.refractoryDur[neuron];
     this.spikeCount += 1;
     const sign = this.neuronType[neuron]; // +1 / -1
+    
+    // Detect bursting - neurons spiking in rapid succession
+    this.burstStatus[neuron] = 1.0; // Start burst
+    
+    // Memory systems: hippocampal neurons show higher memory trace
+    const region = this.graph.nodes[neuron].regionId;
+    if (region === "hippocampus-l" || region === "hippocampus-r") {
+      this.memoryTrace[neuron] = Math.min(1.0, this.memoryTrace[neuron] + 0.4);
+    }
 
     // ── Outgoing: deliver current to each target + LTD on this synapse.
     const outStart = this.outOffset[neuron];
