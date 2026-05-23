@@ -10,6 +10,7 @@ import type {
   SynapticPathway,
 } from "./types";
 import { getActionColor } from "../data/regionDefinitions";
+import type { ReplayEvent } from "../../server/src/memory/replayService";
 
 const DEFAULT_MAX_PULSES = 260;
 
@@ -49,6 +50,13 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+/**
+ * Handles signal propagation in the neural graph with LIF-like pulses and replay events.
+ * Supports: 
+ * - Real-time neural simulation (pulses decay and propagate along pathways)
+ * - Theta-gamma replay events (hippocampal flashes + neocortical gamma pulses)
+ * - Emergent actions (attentional blink, fear conditioning, memory reconsolidation)
+ */
 export class SignalSimulation {
   private graph: NeuralGraph;
   private actionId: BrainActionId;
@@ -108,6 +116,57 @@ export class SignalSimulation {
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
     this.rebuildEligiblePathways();
     this.initializeEmergentAction();
+  }
+
+  /**
+   * Handle replay events from consolidation (theta-gamma replay).
+   * - Hippocampus theta peaks: broad flashes
+   * - Neocortex theta troughs: sharp gamma pulses along pathways
+   */
+  handleReplayEvent(event: ReplayEvent): void {
+    const { memoryIds, region, thetaPhase } = event;
+    if (region === "hippocampus" && thetaPhase === "peak") {
+      // Theta peak: hippocampal flash
+      const hippoLIndex = this.graph.regionOrder.indexOf("hippocampus-l");
+      const hippoRIndex = this.graph.regionOrder.indexOf("hippocampus-r");
+      const intensity = 0.7;
+      if (hippoLIndex >= 0) this.regionIntensity[hippoLIndex] = Math.max(this.regionIntensity[hippoLIndex], intensity);
+      if (hippoRIndex >= 0) this.regionIntensity[hippoRIndex] = Math.max(this.regionIntensity[hippoRIndex], intensity);
+      this.flashRegions(["hippocampus-l", "hippocampus-r"], intensity);
+    } else if (region === "neocortex" && thetaPhase === "trough") {
+      // Theta trough: neocortical gamma pulses
+      for (const id of memoryIds) {
+        this.spawnReplayPulse(id);
+      }
+    }
+  }
+
+  /**
+   * Spawn a gamma replay pulse along the primary pathway for a memory.
+   * Uses blue-ish color to distinguish from regular pulses.
+   */
+  private spawnReplayPulse(memoryId: string): void {
+    if (this.pulses.length >= this.maxPulses || this.eligiblePathways.length === 0) return;
+
+    // In a real implementation, store memoryId → pathway mapping.
+    // For now, pick a random eligible pathway.
+    const pathway = weightedPick(this.eligiblePathways, this.eligibleWeights, this.random);
+    if (!pathway) return;
+
+    const replayColor = `hsl(220, 90%, ${50 + Math.floor(Math.random() * 30)}%)`; // Blue-ish
+    this.pulses.push({
+      id: this.nextPulseId++,
+      pathwayIndex: pathway.id,
+      fromNode: pathway.source,
+      toNode: pathway.target,
+      progress: 0,
+      velocity: 1.3, // Faster for gamma
+      intensity: 0.9, // Brighter for replay
+      colorRegionId: pathway.sourceRegionId,
+      colorRegionIndex: pathway.sourceRegionIndex,
+      reverse: false,
+      actionColor: replayColor,
+    });
   }
 
   setGraph(graph: NeuralGraph): void {
@@ -347,8 +406,8 @@ export class SignalSimulation {
       colorRegionId: fromRegionId,
       colorRegionIndex: fromRegionIndex,
       reverse,
-      // Add color property for visualization
-      actionColor: color
+      // Action-specific color for visualization (falls back to colorRegionId)
+      actionColor: color,
     });
 
     this.nextPulseId += 1;

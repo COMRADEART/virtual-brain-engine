@@ -24,8 +24,6 @@ export class NeuralGraphRenderer {
   readonly pathwayLines: THREE.LineSegments;
 
   private readonly graph: NeuralGraph;
-  private readonly neuronMesh: THREE.InstancedMesh;
-  private readonly pathwayLines: THREE.LineSegments;
   private readonly pulseMesh: THREE.InstancedMesh;
   private readonly lineColors: Float32Array;
   private readonly baseRegionColors: THREE.Color[];
@@ -355,8 +353,6 @@ export class NeuralGraphRenderer {
       const activity = Math.min(1, pathwayIntensity[index]);
       const sourceColor = this.baseRegionColors[pathway.sourceRegionIndex];
       const targetColor = this.signalRegionColors[pathway.targetRegionIndex];
-      const sourceStrength = 0.14 + activity * 0.46;
-      const targetStrength = 0.18 + activity * 1.1;
 
       // Apply LOD scaling for pathway intensity
       const lodIntensity = this.performanceManager

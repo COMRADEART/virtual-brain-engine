@@ -29,6 +29,8 @@
     "dev:desktop": "concurrently --names \"vite,tauri\" --prefix-colors \"cyan,magenta\" \"npm run dev\" \"npm run tauri:dev\""
   },
   "dependencies": {
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
     "@tauri-apps/api": "^2.3.0",
     "@tauri-apps/plugin-shell": "^2.2.0",
     "lucide-react": "^0.468.0",

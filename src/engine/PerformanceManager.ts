@@ -137,8 +137,8 @@ export class PerformanceManager {
       this.pulseCountScale = Math.min(2.0, this.pulseCountScale * 1.01);
     }
     // Clamp to reasonable ranges
-    this.neuronDensityScale = Math.clamp(this.neuronDensityScale, 0.3, 2.0);
-    this.pulseCountScale = Math.clamp(this.pulseCountScale, 0.3, 2.0);
+    this.neuronDensityScale = Math.max(0.3, Math.min(2.0, this.neuronDensityScale));
+    this.pulseCountScale = Math.max(0.3, Math.min(2.0, this.pulseCountScale));
   }
 
   /**
@@ -323,13 +323,6 @@ export class PerformanceManager {
     this.frameCount = 0;
     this.lastFpsUpdate = 0;
   }
-}
-
-// Math utility for clamping (since we might not have it in target environment)
-if (!Number.prototype.clamp) {
-  Number.prototype.clamp = function(min, max) {
-    return Math.min(Math.max(this, min), max);
-  };
 }
 
 // Static helper for clamping numbers

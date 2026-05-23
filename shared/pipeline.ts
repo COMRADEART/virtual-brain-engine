@@ -101,6 +101,8 @@ export type BrainBusMessage =
   | { type: "connector"; connectorId: string; state: "idle" | "busy" | "unreachable" | "ok"; message?: string }
   | { type: "memory-count"; count: number }
   | { type: "consolidation"; detail: string; status: "start" | "complete" | "progress" }
+  // --- Memory replay (hippocampal-neocortical consolidation) ---
+  | { type: "replay"; memoryIds: string[]; region: "hippocampus" | "neocortex"; thetaPhase: "peak" | "trough"; timestamp: string }
   // --- Computer Brain agentic layer (brainCore.ts bridge) ---
   | { type: "file-changed"; path: string; change: "add" | "change" | "unlink"; projectName: string; timestamp: string }
   | { type: "activity-observed"; projectName: string; fileCount: number; detail: string; timestamp: string }

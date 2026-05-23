@@ -19,20 +19,16 @@ import {
 } from "../engine/BrainVisualEffects";
 
 // ─── Engine toggle ────────────────────────────────────────────────────────
-// Flip to true to drive the brain with the biologically-realistic LIF
-// SpikingEngine (Leaky Integrate-and-Fire neurons with trace-based STDP,
-// dopamine/ACh neuromodulation, and theta/gamma oscillations) instead of
-// the lightweight scripted-pulse SignalSimulation. Both expose the same
-// public surface so this is the only line you need to flip.
+// Flip to false to use the lightweight SignalSimulation instead of LIF neurons.
+// Currently false: the LIF SpikingEngine rewrite blocks the main thread on
+// mount (the scene never paints). SignalSimulation is the stable engine; the
+// SpikingEngine path must be profiled/fixed before re-enabling.
 const USE_SPIKING_ENGINE = false;
 type SimulationLike = SignalSimulation | SpikingEngine;
-import { SpikingEngine } from "../engine/SpikingEngine";
 import { subscribeBrainBus } from "../engine/brainBus";
 import type { PerfPreset } from "../engine/performancePresets";
 import { PerformanceManager } from "../engine/PerformanceManager";
 import { LOGICAL_REGION_IDS } from "../../shared/pipeline";
-import { BrainVisualEffects } from "../engine/BrainVisualEffects";
-import { applyVisualEffectsToGraph } from "../engine/BrainVisualEffects";
 import type {
   BrainActionId,
   BrainMetrics,
@@ -62,9 +58,9 @@ interface BrainSceneProps {
   aiPick: AiPickEvent | null;
   audioEnabled: boolean;
   perfPreset: PerfPreset;
-  showEmergentControls: boolean;
+  showEmergentControls?: boolean;
   onRegionSelect: (regionId: BrainRegionId) => void;
-  onActionSelect: (actionId: BrainActionId) => void;
+  onActionSelect?: (actionId: BrainActionId) => void;
   onMetricsChange: (metrics: BrainMetrics) => void;
   onAnatomyLoadProgress?: (progress: AnatomyLoadProgress) => void;
 }
@@ -192,7 +188,9 @@ export function BrainScene({
   aiPick,
   audioEnabled,
   perfPreset,
+  showEmergentControls,
   onRegionSelect,
+  onActionSelect,
   onMetricsChange,
   onAnatomyLoadProgress,
 }: BrainSceneProps): JSX.Element {
@@ -294,7 +292,7 @@ export function BrainScene({
     });
   }, []);
 
-  // Memory count updates drive the hippocampus glow intensity.
+// Memory count updates drive the hippocampus glow intensity.
   useEffect(() => {
     return subscribeBrainBus((message) => {
       if (message.type !== "memory-count") {
@@ -302,10 +300,23 @@ export function BrainScene({
       }
       const simulation = simulationRef.current;
       simulation?.setMemoryIntensity(message.count);
-      
+
       // If using SpikingEngine, also trigger memory replay when there's significant memory activity
       if (simulation instanceof SpikingEngine && message.count > 5) {
         simulation.triggerMemoryReplay();
+      }
+    });
+  }, []);
+
+  // Replay events (hippocampal-neocortical consolidation, from the server)
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      const simulation = simulationRef.current;
+      if (message.type === "replay" && simulation instanceof SpikingEngine) {
+        // Forward replay events to the spiking engine to drive theta-burst /
+        // gamma-burst stimulation. Spikes are buffered inside the engine and
+        // pulled via drainSpikes(), so there is no separate spike WS path.
+        simulation.handleReplayEvent(message);
       }
     });
   }, []);
@@ -397,6 +408,7 @@ export function BrainScene({
 
     // Determine if we should use the advanced SpikingEngine
     const useSpikingEngine = window.location.search.includes("useSpiking=true") || USE_SPIKING_ENGINE;
+    void useSpikingEngine;
     
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -664,11 +676,6 @@ const handlePointerClick = (event: PointerEvent) => {
       return;
     }
 
-    // Check for debug key combinations
-    if (event.ctrlKey && event.shiftKey) {
-      handleDebugCommand(event.key);
-      return;
-    }
 
     const bounds = renderer.domElement.getBoundingClientRect();
     pointerRef.current.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
@@ -689,36 +696,36 @@ const handlePointerClick = (event: PointerEvent) => {
     
     switch (key) {
       case "1": // Test dopamine
-n        visualEffects.setNeuromodulators({ dopamine: 0.8 });
+        visualEffects.setNeuromodulators({ dopamine: 0.8 });
         break;
       case "2": // Test acetylcholine
-n        visualEffects.setNeuromodulators({ acetylcholine: 0.8 });
+        visualEffects.setNeuromodulators({ acetylcholine: 0.8 });
         break;
       case "3": // Test serotonin
-n        visualEffects.setNeuromodulators({ serotonin: 0.7 });
+        visualEffects.setNeuromodulators({ serotonin: 0.7 });
         break;
       case "4": // Test norepinephrine
-n        visualEffects.setNeuromodulators({ norepinephrine: 0.6 });
+        visualEffects.setNeuromodulators({ norepinephrine: 0.6 });
         break;
       case "5": // Test working memory
-n        visualEffects.visualizeWorkingMemory([
+        visualEffects.visualizeWorkingMemory([
           "prefrontal-l", "prefrontal-r", 
           "parietal-l", "parietal-r",
           "temporal-l", "hippocampus-l"
         ], 0.9);
         break;
       case "6": // Show EEG overlay
-n        visualEffects.showEegOverlay(true);
+        visualEffects.showEegOverlay(true);
         break;
       case "7": // Highlight rich-club hubs
-n        visualEffects.highlightRichClubHubs([
+        visualEffects.highlightRichClubHubs([
           "prefrontal-l", "prefrontal-r", 
           "parietal-l", "parietal-r", 
           "thalamus-l", "thalamus-r"
         ], 1.0);
         break;
       case "0": // Reset visualizations
-n        visualEffects.setNeuromodulators({});
+        visualEffects.setNeuromodulators({});
         visualEffects.visualizeWorkingMemory([]);
         visualEffects.showEegOverlay(false);
         break;
@@ -776,6 +783,11 @@ n        visualEffects.setNeuromodulators({});
       visualEffectsRef.current = null;
     }
 
+    // Add spike raster container (if using SpikingEngine)
+    if (USE_SPIKING_ENGINE && containerRef.current) {
+      containerRef.current.style.position = "relative";
+    }
+
     const performanceManager = performanceManagerRef.current;
 const adjustedDensity = performanceManager
     ? performanceManager.getAdjustedDensity(neuronDensity)
@@ -794,11 +806,11 @@ const adjustedDensity = performanceManager
     // Enable advanced visual effects if using spiking engine
     let simulation: SimulationLike;
     let visualEffects: BrainVisualEffects | null = null;
-    
-    simulation = useSpikingEngine
+
+    simulation = USE_SPIKING_ENGINE
       ? new SpikingEngine(graph, selectedActionId)
       : new SignalSimulation(graph, selectedActionId);
-    
+
     simulation.setRunning(simulationRunning);
     simulation.setSpeed(signalSpeed);
     const adjustedMaxPulses = performanceManager
@@ -806,24 +818,32 @@ const adjustedDensity = performanceManager
       : perfPresetRef.current.maxPulses;
     simulation.setMaxPulses(adjustedMaxPulses);
     simulationRef.current = simulation;
-    
+
     // Create advanced visual effects
-    if (useSpikingEngine) {
+    if (USE_SPIKING_ENGINE) {
       visualEffects = new BrainVisualEffects(graph, simulation, {
         enableNeuromodTint: true,
         enableNeurotransmitterParticles: true,
         enableRegionBreathing: true,
         enablePulseTrails: true,
+        enableSpikeRaster: true, // Enable spike raster
       });
       visualEffectsRef.current = visualEffects;
       scene.add(visualEffects.group);
-      
+
       // Apply visual effects to the graph renderer
       applyVisualEffectsToGraph(graphRenderer, visualEffects);
-      
+
       // For production, create a secondary composer for post-processing
       if (composerRef.current) {
         visualEffects.attachToComposer(composerRef.current);
+      }
+      
+      // Add debug UI (the spike-raster debug panel ships in the optional spike
+      // extension; guard so a build without it doesn't crash on mount)
+      const dbgEffects = visualEffects as Partial<{ addDebugControls: (el: HTMLElement) => void }>;
+      if (containerRef.current && typeof dbgEffects.addDebugControls === "function") {
+        dbgEffects.addDebugControls(containerRef.current);
       }
     }
 
@@ -862,7 +882,7 @@ const adjustedDensity = performanceManager
     {showEmergentControls && (
       <div style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 100 }}> 
         <EmergentBehaviorControls
-          onActionSelect={onActionSelect}
+          onActionSelect={onActionSelect ?? (() => {})}
           currentAction={selectedActionId}
         />
       </div>

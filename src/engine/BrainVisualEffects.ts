@@ -6,6 +6,9 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { GammaCorrectionShader } from "three/examples/jsm/shaders/GammaCorrectionShader.js";
 import { REGION_BY_ID, REGION_INDEX } from "./brainRegions";
 import { PATHWAY_SEGMENTS } from "./neuralGraphGenerator";
+import { Pass } from "three/examples/jsm/postprocessing/Pass.js";
+import { SpikingEngine } from "./SpikingEngine";
+import type { NeuralGraphRenderer } from "../components/NeuralGraph";
 import type {
   BrainRegionId,
   BrainSimulation,
@@ -259,7 +262,7 @@ void main() {
   vIntensity = intensity;
   vPulseType = pulseType;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}`,
+}`;
 
 const TRAIL_FRAG = /* glsl */ `
 varying float vProgress;
@@ -284,18 +287,6 @@ void main() {
   }
   
   col *= fade;
-  gl_FragColor = vec4(col, fade * 0.65);
-}
-`;
-
-const TRAIL_FRAG = /* glsl */ `
-varying float vProgress;
-varying float vIntensity;
-
-void main() {
-  // Fade: bright at head (t≈1), invisible at tail (t≈0)
-  float fade = pow(vProgress, 0.6) * vIntensity;
-  vec3 col = vec3(0.5, 0.95, 1.0) * fade;
   gl_FragColor = vec4(col, fade * 0.65);
 }
 `;
@@ -819,7 +810,32 @@ export class BrainVisualEffects {
       this.updateNeurotransmitterParticles(elapsed, deltaSeconds);
     }
 
-// Update EEG waveform
+    // Update EEG waveform
+    this.updateEegWaveform(elapsed, regionIntensity, pathwayIntensity);
+
+    // Update working memory highlights
+    if (this.workingMemoryGroup) {
+      this.updateWorkingMemoryVisualization(elapsed);
+    }
+
+    // Drive post-processing
+    if (this.composer) {
+      const tp = this.neuromodPass;
+      if (tp) {
+        tp.uniforms.uDopamine.value = this.dopamine;
+        tp.uniforms.uAcetylcholine.value = this.acetylcholine;
+        tp.uniforms.uSerotonin.value = this.serotonin;
+        tp.uniforms.uNorepinephrine.value = this.norepinephrine;
+        tp.uniforms.uTime.value = elapsed;
+      }
+      const fg = this.filmGrainPass;
+      if (fg) {
+        fg.uniforms.uTime.value = elapsed;
+      }
+    }
+  }
+
+  // Update EEG waveform
   private updateEegWaveform(elapsed: number, regionIntensity: Float32Array, pathwayIntensity: Float32Array): void {
     const samples = this.eegSampleAttr.array as Float32Array;
     const N = samples.length;
@@ -872,35 +888,13 @@ export class BrainVisualEffects {
     });
   }
     
-    // Update working memory highlights
-    if (this.workingMemoryGroup) {
-      this.updateWorkingMemoryVisualization(elapsed);
-    }
-
-    // Drive post-processing
-    if (this.composer) {
-      const tp = this.neuromodPass;
-      if (tp) {
-        tp.uniforms.uDopamine.value = this.dopamine;
-        tp.uniforms.uAcetylcholine.value = this.acetylcholine;
-        tp.uniforms.uSerotonin.value = this.serotonin;
-        tp.uniforms.uNorepinephrine.value = this.norepinephrine;
-        tp.uniforms.uTime.value = elapsed;
-      }
-      const fg = this.filmGrainPass;
-      if (fg) {
-        fg.uniforms.uTime.value = elapsed;
-      }
-    }
-  }
-
   // ── Membrane potential update (for drop-in neuron shader material) ──────────
   // Call this with SpikingEngine.membranePotentialNorm to drive the heatmap.
   // If using SignalSimulation (no membrane potential), pass null and the shader
   // falls back to activity-based colouring.
   updateMembranePotential(membraneNorm: Float32Array | null): void {
     if (!membraneNorm) return;
-    const attr = this.neuronMaterial.attributes.membraneNorm as THREE.BufferAttribute | undefined;
+    const attr = this.neuronAttrGeometry?.getAttribute("membraneNorm") as THREE.BufferAttribute | undefined;
     if (!attr) return;
     const arr = attr.array as Float32Array;
     const count = Math.min(arr.length, membraneNorm.length);
@@ -917,7 +911,7 @@ export class BrainVisualEffects {
   ): void {
     // Update neuron type attribute
     if (neuronType) {
-      const attr = this.neuronMaterial.attributes.neuronType as THREE.BufferAttribute | undefined;
+      const attr = this.neuronAttrGeometry?.getAttribute("neuronType") as THREE.BufferAttribute | undefined;
       if (attr) {
         const arr = attr.array as Float32Array;
         const count = Math.min(arr.length, neuronType.length);
@@ -931,7 +925,7 @@ export class BrainVisualEffects {
     
     // Update bursting status
     if (burstStatus) {
-      const attr = this.neuronMaterial.attributes.burstStatus as THREE.BufferAttribute | undefined;
+      const attr = this.neuronAttrGeometry?.getAttribute("burstStatus") as THREE.BufferAttribute | undefined;
       if (attr) {
         const arr = attr.array as Float32Array;
         const count = Math.min(arr.length, burstStatus.length);
@@ -944,7 +938,7 @@ export class BrainVisualEffects {
     
     // Update memory trace
     if (memoryTrace) {
-      const attr = this.neuronMaterial.attributes.memoryTrace as THREE.BufferAttribute | undefined;
+      const attr = this.neuronAttrGeometry?.getAttribute("memoryTrace") as THREE.BufferAttribute | undefined;
       if (attr) {
         const arr = attr.array as Float32Array;
         const count = Math.min(arr.length, memoryTrace.length);
@@ -968,8 +962,6 @@ export class BrainVisualEffects {
     acetylcholine?: number;
     serotonin?: number;
     norepinephrine?: number;
-  } = {}) {
-    norepinephrine?: number
   } = {}): void {
     this.dopamine = dopamine;
     this.acetylcholine = acetylcholine;
@@ -1074,12 +1066,6 @@ export class BrainVisualEffects {
         uSerotonin: { value: 0.2 },
         uNorepinephrine: { value: 0.1 },
       },
-      attributes: {
-        membraneNorm: { size: 1, dynamic: true, value: new Float32Array(this.graph.nodes.length) },
-        neuronType: { size: 1, dynamic: true, value: new Float32Array(this.graph.nodes.length) },
-        burstStatus: { size: 1, dynamic: true, value: new Float32Array(this.graph.nodes.length) },
-        memoryTrace: { size: 1, dynamic: true, value: new Float32Array(this.graph.nodes.length) },
-      },
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
@@ -1093,9 +1079,6 @@ export class BrainVisualEffects {
       uniforms: {
         uTime: { value: 0 },
         uBaseOpacity: { value: 0.62 },
-      },
-      attributes: {
-        activity: { size: 1, dynamic: true, value: new Float32Array(this.graph.pathways.length * PATHWAY_SEGMENTS) },
       },
       transparent: true,
       blending: THREE.AdditiveBlending,
@@ -1129,11 +1112,6 @@ export class BrainVisualEffects {
     const mat = new THREE.ShaderMaterial({
       vertexShader: TRAIL_VERT,
       fragmentShader: TRAIL_FRAG,
-      attributes: {
-        progress: { size: 1, dynamic: true, value: progress },
-        intensity: { size: 1, dynamic: true, value: intensity },
-        pulseType: { size: 1, dynamic: true, value: pulseType },
-      },
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
@@ -1218,7 +1196,6 @@ private updatePulseTrails(_elapsed: number): void {
 
         writeCursor++;
       }
-    }
     }
 
     // Zero out unused slots
@@ -1408,7 +1385,7 @@ private updatePulseTrails(_elapsed: number): void {
     const geo = this.ntParticles.geometry;
     (geo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
     (geo.getAttribute("life") as THREE.BufferAttribute).needsUpdate = true;
-    this.ntParticles.material.uniforms.uTime.value = elapsed;
+    (this.ntParticles.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1515,33 +1492,14 @@ private updatePulseTrails(_elapsed: number): void {
   // Global storage for working memory group
   private workingMemoryGroup: THREE.Group | null = null;
 
-  private updateEegWaveform(elapsed: number, regionIntensity: Float32Array, pathwayIntensity: Float32Array): void {
-    const samples = this.eegSampleAttr.array as Float32Array;
-    const N = samples.length;
+  // Per-instance attribute geometry for the swapped neuron material (set by
+  // applyVisualEffectsToGraph). Null until the material swap happens.
+  private neuronAttrGeometry: THREE.BufferGeometry | null = null;
 
-    // Synthesise a multi-band waveform that reflects brain state:
-    // - theta (6 Hz), alpha (10 Hz), beta (20 Hz), gamma (40 Hz) components
-    // weighted by the active region's dominant frequency band.
-    const thetaW = 0.5, alphaW = 0.3, betaW = 0.4, gammaW = 0.6;
-
-    const globalAct = this.computeGlobalActivity(regionIntensity);
-    const avgPathway = this.averagePathwayActivity(pathwayIntensity);
-
-    for (let i = 0; i < N; i++) {
-      const t = (i / N) * 0.5 + elapsed; // 0.5s window
-      let v = 0;
-      v += Math.sin(t * 2 * Math.PI * 6  + elapsed * 0.3) * thetaW * globalAct;
-      v += Math.sin(t * 2 * Math.PI * 10 + elapsed * 0.5) * alphaW * (1 - globalAct * 0.5);
-      v += Math.sin(t * 2 * Math.PI * 20 + elapsed * 0.7) * betaW * avgPathway;
-      v += Math.sin(t * 2 * Math.PI * 40 + elapsed * 1.1) * gammaW * globalAct * avgPathway;
-
-      // Normalise to [-1, 1]
-      samples[i] = Math.tanh(v * 0.5);
-    }
-
-    this.eegSampleAttr.needsUpdate = true;
-    const mat = this.eegWaveform.material as THREE.ShaderMaterial;
-    mat.uniforms.uTime.value = elapsed;
+  /** Attach the neuron InstancedMesh geometry whose instanced attributes the
+   *  NEURON_VERT shader reads (membraneNorm/neuronType/burstStatus/memoryTrace). */
+  attachNeuronGeometry(geometry: THREE.BufferGeometry): void {
+    this.neuronAttrGeometry = geometry;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1561,7 +1519,7 @@ private updatePulseTrails(_elapsed: number): void {
     }
   }
 
-  attachToComposer(composer: EffectComposer, afterPass?: THREE.Pass): void {
+  attachToComposer(composer: EffectComposer, afterPass?: Pass): void {
     // Remove existing passes if they were added to another composer
     if (this.composer) {
       while (this.composer.passes.length > 0) {
@@ -1589,7 +1547,7 @@ private updatePulseTrails(_elapsed: number): void {
     
     // Set film grain resolution
     if (this.filmGrainPass) {
-      const size = composer.getSize(new THREE.Vector2());
+      const size = composer.renderer.getSize(new THREE.Vector2());
       this.filmGrainPass.uniforms.uResolution.value.set(size.width, size.height);
     }
     
@@ -1629,10 +1587,23 @@ export function applyVisualEffectsToGraph(
   const nm = effects.getNeuronMaterial();
   const pm = effects.getPathwayMaterial();
 
-  // Swap neuron material (preserves instanceMatrix and instanceColor setup)
+  // Swap neuron material (preserves instanceMatrix setup) and attach the
+  // per-instance attributes NEURON_VERT reads (membraneNorm / neuronType /
+  // burstStatus / memoryTrace), one float per neuron instance.
   const oldNeuron = (renderer as unknown as Record<string, unknown>).neuronMesh as THREE.InstancedMesh | undefined;
   if (oldNeuron) {
     oldNeuron.material = nm;
+    const geo = oldNeuron.geometry;
+    const count = oldNeuron.count;
+    if (!geo.getAttribute("membraneNorm")) {
+      for (const name of ["membraneNorm", "neuronType", "burstStatus", "memoryTrace"]) {
+        geo.setAttribute(
+          name,
+          new THREE.InstancedBufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage),
+        );
+      }
+    }
+    effects.attachNeuronGeometry(geo);
   }
 
   // Swap pathway material

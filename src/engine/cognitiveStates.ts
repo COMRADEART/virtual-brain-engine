@@ -34,6 +34,10 @@ export interface CognitiveState {
    * Lower ACh → noisier, more associative state (default-mode / creativity).
    */
   acetylcholine?: number;
+  /** Tonic serotonin level [0,1]. Baseline ~0.2. Mood / regulation tone. */
+  serotonin?: number;
+  /** Tonic norepinephrine level [0,1]. Baseline ~0.1. Arousal / alertness. */
+  norepinephrine?: number;
   /** Multiplier on theta-band drive (default 1.0). 4-8 Hz, hippocampus + PFC. */
   thetaGain?: number;
   /** Multiplier on gamma-band drive (default 1.0). 30-80 Hz, perceptual binding. */

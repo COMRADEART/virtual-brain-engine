@@ -102,7 +102,6 @@ const [anatomyProgress, setAnatomyProgress] = useState<AnatomyLoadProgress>({
   total: 0,
   done: false,
 });
-const [showEmergentControls, setShowEmergentControls] = useState(false);
 
   const shellOpacity = shellTransparent ? 0.02 : 0.08;
 

@@ -31,7 +31,7 @@ export const ACTION_BY_ID = BRAIN_ACTIONS.reduce(
 );
 
 // Add default implementations for emergent actions if not defined in regionDefinitions.ts
-const DEFAULT_EMERGENT_ACTIONS: Record<BrainActionId, {activeRegions: BrainRegionId[], impulseRate: number}> = {
+const DEFAULT_EMERGENT_ACTIONS: Partial<Record<BrainActionId, {activeRegions: BrainRegionId[], impulseRate: number}>> = {
   "attentional-blink": {
     activeRegions: ["occipital-l", "occipital-r", "parietal-l", "parietal-r", "thalamus-l", "thalamus-r", "brainstem"],
     impulseRate: 8.5
