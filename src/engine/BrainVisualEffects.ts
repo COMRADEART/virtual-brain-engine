@@ -670,6 +670,7 @@ export class BrainVisualEffects {
       enablePulseTrails?: boolean;
       useOwnComposer?: boolean;
       enableWorkingMemory?: boolean;
+      enableSpikeRaster?: boolean;
     } = {},
   ) {
     const o = {

@@ -1,5 +1,6 @@
 import type {
   BrainActionDefinition,
+  BrainActionId,
   BrainRegionDefinition,
   BrainRegionId,
   Hemisphere,

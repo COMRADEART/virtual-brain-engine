@@ -37,7 +37,7 @@ export const EmergentBehaviorControls: React.FC<EmergentBehaviorControlsProps> =
       <div className="action-description">
         {emergentActions.find(a => a.id === currentAction)?.description || "Select an action to simulate"}
       </div>
-      <style jsx>{`
+      <style>{`
         .emergent-behaviors {
           background: rgba(0, 0, 0, 0.7);
           backdrop-filter: blur(10px);

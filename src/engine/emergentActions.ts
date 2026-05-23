@@ -1,6 +1,7 @@
 // src/engine/emergentActions.ts
 import { ACTION_BY_ID, REGION_INDEX } from "./brainRegions";
-import type { BrainActionId, BrainRegionId, SignalSimulation } from "./types";
+import type { BrainActionId, BrainRegionId } from "./types";
+import type { SignalSimulation } from "./signalSimulation";
 import { getActionColor } from "../data/regionDefinitions";
 
 // Neuroscientific BrainAction implementations demonstrating emergent behavior

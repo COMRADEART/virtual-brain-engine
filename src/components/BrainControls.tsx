@@ -73,7 +73,7 @@ export const BrainControls: React.FC<BrainControlsProps> = ({
   // Get region name from ID
   const getRegionName = (regionId: BrainRegionId): string => {
     // This would ideally come from regionDefinitions, but we'll use a simple mapping
-    const regionMap: Record<BrainRegionId, string> = {
+    const regionMap: Record<string, string> = {
       "frontal-l": "Frontal L (Left)",
       "frontal-r": "Frontal R (Right)",
       "parietal-l": "Parietal L (Left)",
@@ -123,7 +123,7 @@ export const BrainControls: React.FC<BrainControlsProps> = ({
 
     // SignalSimulation has these as fixed values
     const dopamine = typeof simulation.dopamine === 'number' ? simulation.dopamine : 0.3;
-    const acetylcholine = typeof simulation.acetycholine === 'number' ? simulation.acetycholine : 0.4;
+    const acetylcholine = typeof simulation.acetylcholine === 'number' ? simulation.acetylcholine : 0.4;
 
     return { dopamine, acetylcholine };
   };
@@ -203,7 +203,7 @@ export const BrainControls: React.FC<BrainControlsProps> = ({
                       step="0.01"
                       value={value}
                       onChange={(e) => onNeuromodulatorChange(name, parseFloat(e.target.value))}
-                      disabled={!(simulation && typeof simulation[name] === 'number' && !simulation.hasOwnProperty(`${name}`))} // Simplified check
+                      disabled={!(simulation && typeof (simulation as unknown as Record<string, unknown>)[name] === 'number')}
                       title="Adjust level"
                     />
                   </div>
@@ -303,7 +303,7 @@ export const BrainControls: React.FC<BrainControlsProps> = ({
                       className={`action-button ${isActive ? 'active' : ''}`}
                       onClick={() => onActionChange(id as BrainActionId)}
                     >
-                      <div className="action-icon">{action.icon || '⚡'}</div>
+                      <div className="action-icon">{(action as { icon?: string }).icon || '⚡'}</div>
                       <div className="action-label">{action.label}</div>
                       <div className="action-description">{action.description}</div>
                     </button>

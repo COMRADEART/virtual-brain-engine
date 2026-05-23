@@ -783,8 +783,15 @@ const handlePointerClick = (event: PointerEvent) => {
       visualEffectsRef.current = null;
     }
 
-    // Add spike raster container (if using SpikingEngine)
-    if (USE_SPIKING_ENGINE && containerRef.current) {
+    // Engine selection: the advanced AdvancedBrainCore (aliased as SpikingEngine)
+    // is opt-in. Default stays SignalSimulation; append ?useSpiking=true to the
+    // URL to drive the scene with the biologically-plausible engine live.
+    const useSpikingEngine =
+      USE_SPIKING_ENGINE ||
+      (typeof window !== "undefined" && window.location.search.includes("useSpiking=true"));
+
+    // Add spike raster container (if using the spiking engine)
+    if (useSpikingEngine && containerRef.current) {
       containerRef.current.style.position = "relative";
     }
 
@@ -807,7 +814,7 @@ const adjustedDensity = performanceManager
     let simulation: SimulationLike;
     let visualEffects: BrainVisualEffects | null = null;
 
-    simulation = USE_SPIKING_ENGINE
+    simulation = useSpikingEngine
       ? new SpikingEngine(graph, selectedActionId)
       : new SignalSimulation(graph, selectedActionId);
 
@@ -820,7 +827,7 @@ const adjustedDensity = performanceManager
     simulationRef.current = simulation;
 
     // Create advanced visual effects
-    if (USE_SPIKING_ENGINE) {
+    if (useSpikingEngine) {
       visualEffects = new BrainVisualEffects(graph, simulation, {
         enableNeuromodTint: true,
         enableNeurotransmitterParticles: true,

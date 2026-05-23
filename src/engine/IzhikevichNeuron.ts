@@ -53,6 +53,14 @@ export const NEURON_PARAM_RANGES = {
   }
 } as const;
 
+/** Widened (non-literal) shape of an Izhikevich parameter range. */
+type IzhParamRange = {
+  a: { min: number; max: number };
+  b: { min: number; max: number };
+  c: { min: number; max: number };
+  d: { min: number; max: number };
+};
+
 /**
  * Neuromodulator receptor types and their qualitative effects.
  * Used for parameter modulation and plasticity rules.
@@ -152,7 +160,12 @@ export class IzhikevichNeuronEngine {
   private readonly neuronClass: NeuronClass[];
   private readonly regionAssignment: BrainRegionId[];
   private readonly rng: () => number;
-  private readonly dt: number = 1.0; // Integration timestep (ms)
+  private dt: number = 1.0; // Integration timestep (ms) — adjustable via setTimestep
+
+  // Indices of neurons that spiked during the most recent update() call. Exposed
+  // via getLastStepSpikes() so an orchestrator can propagate them through its own
+  // connectome without re-scanning the population.
+  private lastSpikes: number[] = [];
 
   /**
    * Initialize a population of Izhikevich neurons.
@@ -321,9 +334,11 @@ export class IzhikevichNeuronEngine {
   }
 
   /**
-   * Get parameter range based on neuron class.
+   * Get parameter range based on neuron class. The return type is the widened,
+   * structural shape (plain numbers) so the inhibitory/bursting branches — whose
+   * `as const` literal types differ from the excitatory one — remain assignable.
    */
-  private getParamRange(neuronClass: NeuronClass): typeof NEURON_PARAM_RANGES.excitatory {
+  private getParamRange(neuronClass: NeuronClass): IzhParamRange {
     switch (neuronClass) {
       case "excitatory_rs":
       case "excitatory_ib":
@@ -498,6 +513,30 @@ export class IzhikevichNeuronEngine {
     // Update spike timers
     for (let i = 0; i < this.lastSpikeTime.length; i++) {
       this.lastSpikeTime[i] += this.dt;
+    }
+
+    // Publish this step's spikes for an orchestrator to propagate.
+    this.lastSpikes = spikes;
+  }
+
+  /**
+   * Indices of neurons that spiked during the most recent update(). The array is
+   * replaced each step, so callers may hold the reference until the next update.
+   */
+  public getLastStepSpikes(): readonly number[] {
+    return this.lastSpikes;
+  }
+
+  /**
+   * Fill `out` in place with membrane potentials normalised to [0,1] (−80 mV → 0,
+   * +30 mV → 1). Allocation-free alternative to getMembranePotentialsNormalized()
+   * for per-frame visualisation.
+   */
+  public writeMembranePotentialsNormalized(out: Float32Array): void {
+    const n = Math.min(out.length, this.v.length);
+    for (let i = 0; i < n; i++) {
+      const vn = (this.v[i] + 80) / 110;
+      out[i] = vn < 0 ? 0 : vn > 1 ? 1 : vn;
     }
   }
 
