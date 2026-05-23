@@ -65,6 +65,7 @@ import {
   type LifecycleMemory,
   updateMemoryImportance,
 } from "./memoryLifecycle.js";
+import { replayMemories } from "./replayService.js";
 
 export interface ConsolidationAction {
   type: "promote" | "consolidate" | "archive" | "decay" | "skip";
@@ -82,6 +83,8 @@ export interface ConsolidationResult {
   archived: number;
   decayed: number;
   skipped: number;
+  replayed: number; // Count of replayed memories
+  strengthened: number; // Count of pathways strengthened via STDP
   durationMs: number;
   nextRunIn: number;
   algorithms: {
@@ -90,6 +93,7 @@ export interface ConsolidationResult {
     contradictionFlags: number;
     clustersAffected: number;
     strengthUpdates: number;
+    replayEvents: number; // Count of replay cycles
     predictions: number;
   };
 }
@@ -259,9 +263,11 @@ export async function runConsolidationCycle(): Promise<ConsolidationResult> {
       archived: 0,
       decayed: 0,
       skipped: 0,
+      replayed: 0,
+      strengthened: 0,
       durationMs: 0,
       nextRunIn: DECAY_INTERVAL_MESSAGES,
-      algorithms: { spreadingActivation: 0, noveltyBoost: 0, contradictionFlags: 0, clustersAffected: 0, strengthUpdates: 0, predictions: 0 },
+      algorithms: { spreadingActivation: 0, noveltyBoost: 0, contradictionFlags: 0, clustersAffected: 0, strengthUpdates: 0, replayEvents: 0, predictions: 0 },
     };
   }
 
@@ -288,12 +294,20 @@ export async function runConsolidationCycle(): Promise<ConsolidationResult> {
     contradictionFlags: 0,
     clustersAffected: 0,
     strengthUpdates: 0,
+    replayEvents: 0, // Initialize replay counter
     predictions: 0,
   };
 
   applySpreadingActivation();
   const strengthUpdates = flushActivationCache();
   stats.spreadingActivation = strengthUpdates.size;
+
+  // Hippocampal-neocortical replay during consolidation
+  // Focus on hot memories (frequently accessed, highly important)
+  const hotMemories = getHotMemories(24, 20);
+  const replayStats = await replayMemories(hotMemories.map((m) => m.id));
+  stats.replayEvents = replayStats.replayed;
+  stats.strengthUpdates += replayStats.strengthened;
 
   try {
     const candidates = getLowImportanceMemories(
@@ -393,6 +407,8 @@ export async function runConsolidationCycle(): Promise<ConsolidationResult> {
     archived,
     decayed,
     skipped,
+    replayed: replayStats.replayed,
+    strengthened: replayStats.strengthened,
     durationMs,
     nextRunIn: DECAY_INTERVAL_MESSAGES,
     algorithms: stats,
@@ -417,27 +433,30 @@ export async function onConversationMessage(
   messageCountSinceLastDecay++;
 
   if (conversationContext?.lastMemories?.length) {
+    // Build temporal access patterns between sequential memories
     for (let i = 0; i < conversationContext.lastMemories.length - 1; i++) {
       buildAccessPattern(
         conversationContext.lastMemories[i],
         conversationContext.lastMemories[i + 1],
       );
     }
-  }
-
-  if (conversationContext?.lastMemories?.length) {
+    
+    // Record conversation sequence
     recordConversationSequence(
       conversationContext.lastMemories[conversationContext.lastMemories.length - 1],
     );
     updateTemporalPattern(
       conversationContext.lastMemories[conversationContext.lastMemories.length - 1],
     );
-  }
-
-  if (conversationContext?.lastMemories?.length) {
+    
+    // Mark recent memories as accessed
     for (const id of conversationContext.lastMemories.slice(-3)) {
       recordAccess(id, conversationContext.query);
     }
+    
+    // Light replay during conversation (1 cycle)
+    // Reinforces pathway weights for conversational context
+    await replayMemories(conversationContext.lastMemories, 1);
   }
 
   if (conversationContext?.query) {

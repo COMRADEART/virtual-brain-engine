@@ -3,11 +3,13 @@ import { REGION_BY_ID, REGION_INDEX } from "../engine/brainRegions";
 import { PATHWAY_SEGMENTS, samplePathway } from "../engine/neuralGraphGenerator";
 import type {
   BrainRegionId,
+  BrainSimulation,
   NeuralGraph,
   RegionVisibility,
   SignalPulse,
 } from "../engine/types";
-import type { SignalSimulation } from "../engine/signalSimulation";
+import { getActionColor } from "../data/regionDefinitions";
+import { PerformanceManager } from "../engine/PerformanceManager";
 
 const INVISIBLE_SCALE = new THREE.Vector3(0, 0, 0);
 const IDENTITY_QUATERNION = new THREE.Quaternion();
@@ -17,9 +19,11 @@ export class NeuralGraphRenderer {
   readonly group = new THREE.Group();
   readonly regionMeshes: THREE.Mesh[] = [];
 
+  // Public for BrainVisualEffects material swap
+  readonly neuronMesh: THREE.InstancedMesh;
+  readonly pathwayLines: THREE.LineSegments;
+
   private readonly graph: NeuralGraph;
-  private readonly neuronMesh: THREE.InstancedMesh;
-  private readonly pathwayLines: THREE.LineSegments;
   private readonly pulseMesh: THREE.InstancedMesh;
   private readonly lineColors: Float32Array;
   private readonly baseRegionColors: THREE.Color[];
@@ -30,9 +34,11 @@ export class NeuralGraphRenderer {
   private readonly regionMaterials = new Map<BrainRegionId, THREE.MeshBasicMaterial>();
   private readonly pulseSamplePosition = new THREE.Vector3();
   private readonly pulseScratch: [number, number, number] = [0, 0, 0];
+  private performanceManager: PerformanceManager | null = null;
 
-  constructor(graph: NeuralGraph) {
+  constructor(graph: NeuralGraph, performanceManager: PerformanceManager | null = null) {
     this.graph = graph;
+    this.performanceManager = performanceManager;
     this.group.name = "NeuralGraph";
     this.baseRegionColors = graph.regionOrder.map((regionId) => new THREE.Color(REGION_BY_ID[regionId].color));
     this.signalRegionColors = this.baseRegionColors.map((color) => color.clone().lerp(new THREE.Color("#ffffff"), 0.36));
@@ -57,14 +63,14 @@ export class NeuralGraphRenderer {
     for (let index = 0; index < this.graph.nodes.length; index += 1) {
       const node = this.graph.nodes[index];
       const visible = visibility[node.regionId];
-      this.writeNeuronMatrix(index, visible ? 1 : 0);
+      this.writeNeuronMatrix(index, visible ? 1 : 0, 1); // lodScale=1 for base visibility
     }
 
     this.neuronMesh.instanceMatrix.needsUpdate = true;
   }
 
   update(
-    simulation: SignalSimulation,
+    simulation: BrainSimulation,
     visibility: RegionVisibility,
     selectedRegionId: BrainRegionId | null,
     elapsedSeconds: number,
@@ -79,6 +85,7 @@ export class NeuralGraphRenderer {
     );
     this.updateNeuronColors(simulation.regionIntensity, simulation.regionFlashIntensity, visibility);
     this.updatePathwayColors(simulation.pathwayIntensity, visibility);
+    this.updateNeuronMatricesLOD(visibility);
     this.updatePulses(simulation.pulses, visibility);
   }
 
@@ -235,10 +242,10 @@ export class NeuralGraphRenderer {
     return group;
   }
 
-  private writeNeuronMatrix(index: number, visibilityScale: number): void {
+  private writeNeuronMatrix(index: number, visibilityScale: number, lodScale: number = 1): void {
     const node = this.graph.nodes[index];
     const position = node.position;
-    const scaleValue = node.size * visibilityScale;
+    const scaleValue = node.size * visibilityScale * lodScale;
     const scale = visibilityScale > 0 ? this.pulseScale.set(scaleValue, scaleValue, scaleValue) : INVISIBLE_SCALE;
     this.matrix.compose(
       new THREE.Vector3(position[0], position[1], position[2]),
@@ -249,7 +256,7 @@ export class NeuralGraphRenderer {
   }
 
   private updateRegionVolumes(
-    simulation: SignalSimulation,
+    simulation: BrainSimulation,
     regionIntensity: Float32Array,
     regionFlashIntensity: Float32Array,
     visibility: RegionVisibility,
@@ -310,6 +317,28 @@ export class NeuralGraphRenderer {
     }
   }
 
+  /**
+   * Update neuron instance matrices for LOD scaling based on distance from camera.
+   * Called every frame if performanceManager is available.
+   * @param visibility Current region visibility to combine with LOD
+   */
+  updateNeuronMatricesLOD(visibility: RegionVisibility): void {
+    if (!this.performanceManager) return;
+
+    for (let index = 0; index < this.graph.nodes.length; index += 1) {
+      const node = this.graph.nodes[index];
+      const visible = visibility[node.regionId];
+      const lodScale = this.performanceManager.getNeuronLodScale(
+        this.performanceManager.getNeuronLodLevel(
+          new THREE.Vector3(node.position[0], node.position[1], node.position[2])
+        )
+      );
+      this.writeNeuronMatrix(index, visible ? 1 : 0, lodScale);
+    }
+
+    this.neuronMesh.instanceMatrix.needsUpdate = true;
+  }
+
   private updatePathwayColors(pathwayIntensity: Float32Array, visibility: RegionVisibility): void {
     for (let index = 0; index < this.graph.pathways.length; index += 1) {
       const pathway = this.graph.pathways[index];
@@ -324,8 +353,17 @@ export class NeuralGraphRenderer {
       const activity = Math.min(1, pathwayIntensity[index]);
       const sourceColor = this.baseRegionColors[pathway.sourceRegionIndex];
       const targetColor = this.signalRegionColors[pathway.targetRegionIndex];
-      const sourceStrength = 0.14 + activity * 0.46;
-      const targetStrength = 0.18 + activity * 1.1;
+
+      // Apply LOD scaling for pathway intensity
+      const lodIntensity = this.performanceManager
+        ? this.performanceManager.getPathwayLodIntensity(
+            this.performanceManager.getPathwayLodLevel(pathway, this.graph.nodes)
+          )
+        : 1;
+      const lodActivity = activity * lodIntensity;
+
+      const sourceStrength = 0.14 + lodActivity * 0.46;
+      const targetStrength = 0.18 + lodActivity * 1.1;
 
       // Write per-segment colors that fade from source-tinted to target-tinted along the curve.
       for (let segment = 0; segment < PATHWAY_SEGMENTS; segment += 1) {
@@ -352,7 +390,7 @@ export class NeuralGraphRenderer {
     this.pathwayLines.geometry.getAttribute("color").needsUpdate = true;
   }
 
-  private updatePulses(pulses: SignalPulse[], visibility: RegionVisibility): void {
+  private updatePulses(pulses: readonly SignalPulse[], visibility: RegionVisibility): void {
     for (let index = 0; index < 260; index += 1) {
       const pulse = pulses[index];
 
@@ -379,11 +417,26 @@ export class NeuralGraphRenderer {
       const velocityBoost = 0.8 + pulse.velocity * 0.4;
       const pulseSize = (0.024 + pulse.intensity * 0.038) * progressBoost * velocityBoost;
       this.pulseScale.set(pulseSize, pulseSize, pulseSize);
+
+      // Apply LOD scaling for pulse size
+      const lodScale = this.performanceManager
+        ? this.performanceManager.getPulseLodScale(
+            this.performanceManager.getPulseLodLevel(pulse, pathway, this.graph.nodes)
+          )
+        : 1;
+      this.pulseScale.multiplyScalar(lodScale);
+
       this.matrix.compose(this.pulseSamplePosition, IDENTITY_QUATERNION, this.pulseScale);
       this.pulseMesh.setMatrixAt(index, this.matrix);
 
       const colorIntensity = 0.85 + pulse.intensity * 0.15;
-      this.color.copy(this.signalRegionColors[pulse.colorRegionIndex]).multiplyScalar(colorIntensity);
+      
+      // Use action-specific color if available, otherwise use region color
+      if (pulse.actionColor) {
+        this.color.set(pulse.actionColor).multiplyScalar(colorIntensity);
+      } else {
+        this.color.copy(this.signalRegionColors[pulse.colorRegionIndex]).multiplyScalar(colorIntensity);
+      }
       this.pulseMesh.setColorAt(index, this.color);
     }
 

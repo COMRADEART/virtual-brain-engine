@@ -1,5 +1,6 @@
 import { ACTION_BY_ID, REGION_INDEX } from "./brainRegions";
 import { LOGICAL_REGION_MAP } from "./logicalRegions";
+import * as emergentActions from "./emergentActions";
 import type { LogicalRegionId } from "../../shared/pipeline";
 import type {
   BrainActionId,
@@ -8,8 +9,16 @@ import type {
   SignalPulse,
   SynapticPathway,
 } from "./types";
+import { getActionColor } from "../data/regionDefinitions";
+import type { ReplayEvent } from "../../server/src/memory/replayService";
 
 const DEFAULT_MAX_PULSES = 260;
+
+// Stub oscillation phases for SignalSimulation (no bio-physical oscillation model).
+// SpikingEngine drives real theta/gamma phases; these are just static defaults so
+// BrainVisualEffects can read the same interface from either engine.
+const STUB_THETA_PHASE = 0;
+const STUB_GAMMA_PHASE = 0;
 
 function weightedPick<T>(items: T[], weights: number[], random: () => number): T | undefined {
   let total = 0;
@@ -41,6 +50,13 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+/**
+ * Handles signal propagation in the neural graph with LIF-like pulses and replay events.
+ * Supports: 
+ * - Real-time neural simulation (pulses decay and propagate along pathways)
+ * - Theta-gamma replay events (hippocampal flashes + neocortical gamma pulses)
+ * - Emergent actions (attentional blink, fear conditioning, memory reconsolidation)
+ */
 export class SignalSimulation {
   private graph: NeuralGraph;
   private actionId: BrainActionId;
@@ -49,9 +65,27 @@ export class SignalSimulation {
   private maxPulses = DEFAULT_MAX_PULSES;
   private nextPulseId = 1;
   private spawnAccumulator = 0;
+  private actionStartTime = 0;
   private readonly random = mulberry32(381);
   private readonly eligiblePathways: SynapticPathway[] = [];
   private readonly eligibleWeights: number[] = [];
+  private readonly actionColors: Record<BrainActionId, string> = {
+    "attentional-blink": "#a0d8f3",
+    "eureka-moment": "#e7b3ff",
+    "fear-conditioning": "#ff6b6b",
+    "memory-reconsolidation": "#ffd700",
+    "decision-hesitation": "#ffff99",
+    "sensory-gating": "#6bcaff",
+    "sleep-ripple": "#ffffff",
+    // Default colors for base actions
+    "lift-hand": "#cccccc",
+    "see-object": "#aaddff",
+    "hear-sound": "#ffccaa",
+    "remember-event": "#ffdd88",
+    "fear-response": "#ff8888",
+    "speak": "#aaffaa",
+    "read-text": "#ddaaff"
+  };
 
   readonly pulses: SignalPulse[] = [];
   readonly regionIntensity: Float32Array;
@@ -65,13 +99,74 @@ export class SignalSimulation {
     return this._memoryIntensity;
   }
 
+  // BrainSimulation optional extension properties (not modelled by SignalSimulation).
+  // Always undefined/defaults — SpikingEngine provides the real values.
+  readonly membranePotentialNorm: Float32Array | undefined = undefined;
+  readonly dopamine = 0.3;
+  readonly acetylcholine = 0.4;
+  readonly thetaPhase = STUB_THETA_PHASE;
+  readonly gammaPhase = STUB_GAMMA_PHASE;
+
   constructor(graph: NeuralGraph, actionId: BrainActionId) {
     this.graph = graph;
     this.actionId = actionId;
+    this.actionStartTime = Date.now();
     this.regionIntensity = new Float32Array(graph.regionOrder.length);
     this.regionFlashIntensity = new Float32Array(graph.regionOrder.length);
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
     this.rebuildEligiblePathways();
+    this.initializeEmergentAction();
+  }
+
+  /**
+   * Handle replay events from consolidation (theta-gamma replay).
+   * - Hippocampus theta peaks: broad flashes
+   * - Neocortex theta troughs: sharp gamma pulses along pathways
+   */
+  handleReplayEvent(event: ReplayEvent): void {
+    const { memoryIds, region, thetaPhase } = event;
+    if (region === "hippocampus" && thetaPhase === "peak") {
+      // Theta peak: hippocampal flash
+      const hippoLIndex = this.graph.regionOrder.indexOf("hippocampus-l");
+      const hippoRIndex = this.graph.regionOrder.indexOf("hippocampus-r");
+      const intensity = 0.7;
+      if (hippoLIndex >= 0) this.regionIntensity[hippoLIndex] = Math.max(this.regionIntensity[hippoLIndex], intensity);
+      if (hippoRIndex >= 0) this.regionIntensity[hippoRIndex] = Math.max(this.regionIntensity[hippoRIndex], intensity);
+      this.flashRegions(["hippocampus-l", "hippocampus-r"], intensity);
+    } else if (region === "neocortex" && thetaPhase === "trough") {
+      // Theta trough: neocortical gamma pulses
+      for (const id of memoryIds) {
+        this.spawnReplayPulse(id);
+      }
+    }
+  }
+
+  /**
+   * Spawn a gamma replay pulse along the primary pathway for a memory.
+   * Uses blue-ish color to distinguish from regular pulses.
+   */
+  private spawnReplayPulse(memoryId: string): void {
+    if (this.pulses.length >= this.maxPulses || this.eligiblePathways.length === 0) return;
+
+    // In a real implementation, store memoryId → pathway mapping.
+    // For now, pick a random eligible pathway.
+    const pathway = weightedPick(this.eligiblePathways, this.eligibleWeights, this.random);
+    if (!pathway) return;
+
+    const replayColor = `hsl(220, 90%, ${50 + Math.floor(Math.random() * 30)}%)`; // Blue-ish
+    this.pulses.push({
+      id: this.nextPulseId++,
+      pathwayIndex: pathway.id,
+      fromNode: pathway.source,
+      toNode: pathway.target,
+      progress: 0,
+      velocity: 1.3, // Faster for gamma
+      intensity: 0.9, // Brighter for replay
+      colorRegionId: pathway.sourceRegionId,
+      colorRegionIndex: pathway.sourceRegionIndex,
+      reverse: false,
+      actionColor: replayColor,
+    });
   }
 
   setGraph(graph: NeuralGraph): void {
@@ -112,11 +207,45 @@ export class SignalSimulation {
     }
 
     this.actionId = actionId;
+    this.actionStartTime = Date.now();
     this.pulses.length = 0;
     this.spawnAccumulator = 0;
     this.regionIntensity.fill(0);
     this.pathwayIntensity.fill(0);
     this.rebuildEligiblePathways();
+    this.initializeEmergentAction();
+  }
+  
+  private initializeEmergentAction(): void {
+    const elapsedSeconds = (Date.now() - this.actionStartTime) / 1000;
+    
+    switch (this.actionId) {
+      case "attentional-blink":
+        emergentActions.initAttentionalBlink(this);
+        break;
+      case "eureka-moment":
+        emergentActions.initEurekaMoment(this);
+        break;
+      case "fear-conditioning":
+        emergentActions.initFearConditioning(this);
+        break;
+      case "memory-reconsolidation":
+        emergentActions.initMemoryReconsolidation(this);
+        break;
+      case "decision-hesitation":
+        emergentActions.initDecisionHesitation(this);
+        break;
+      case "sensory-gating":
+        emergentActions.initSensoryGating(this);
+        break;
+      case "sleep-ripple":
+        emergentActions.initSleepRipple(this);
+        break;
+    }
+  }
+  
+  getActionColor(): string {
+    return this.actionColors[this.actionId] || "#cccccc";
   }
 
   setRunning(running: boolean): void {
@@ -257,6 +386,15 @@ export class SignalSimulation {
     const fromRegionIndex = reverse ? pathway.targetRegionIndex : pathway.sourceRegionIndex;
     const fromRegionId = reverse ? pathway.targetRegionId : pathway.sourceRegionId;
 
+    // For emergent actions, use the action-specific color
+    const isEmergentAction = [
+      "attentional-blink", "eureka-moment", "fear-conditioning", 
+      "memory-reconsolidation", "decision-hesitation", "sensory-gating", 
+      "sleep-ripple"
+    ].includes(this.actionId);
+    
+    const color = this.getActionColor();
+    
     this.pulses.push({
       id: this.nextPulseId,
       pathwayIndex: pathway.id,
@@ -268,6 +406,8 @@ export class SignalSimulation {
       colorRegionId: fromRegionId,
       colorRegionIndex: fromRegionIndex,
       reverse,
+      // Action-specific color for visualization (falls back to colorRegionId)
+      actionColor: color,
     });
 
     this.nextPulseId += 1;

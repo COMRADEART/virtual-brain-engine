@@ -30,6 +30,51 @@ export const ACTION_BY_ID = BRAIN_ACTIONS.reduce(
   {} as Record<BrainActionId, (typeof BRAIN_ACTIONS)[number]>,
 );
 
+// Add default implementations for emergent actions if not defined in regionDefinitions.ts
+const DEFAULT_EMERGENT_ACTIONS: Partial<Record<BrainActionId, {activeRegions: BrainRegionId[], impulseRate: number}>> = {
+  "attentional-blink": {
+    activeRegions: ["occipital-l", "occipital-r", "parietal-l", "parietal-r", "thalamus-l", "thalamus-r", "brainstem"],
+    impulseRate: 8.5
+  },
+  "eureka-moment": {
+    activeRegions: ["prefrontal-l", "prefrontal-r", "frontal-l", "frontal-r", "hippocampus-l", "hippocampus-r", "temporal-l", "temporal-r", "brainstem"],
+    impulseRate: 12.0
+  },
+  "fear-conditioning": {
+    activeRegions: ["amygdala-l", "amygdala-r", "thalamus-l", "thalamus-r", "hippocampus-l", "hippocampus-r", "frontal-l", "frontal-r", "brainstem"],
+    impulseRate: 9.2
+  },
+  "memory-reconsolidation": {
+    activeRegions: ["hippocampus-l", "hippocampus-r", "frontal-l", "frontal-r", "temporal-l", "temporal-r", "parietal-l", "parietal-r"],
+    impulseRate: 6.8
+  },
+  "decision-hesitation": {
+    activeRegions: ["prefrontal-l", "prefrontal-r", "basal-ganglia-l", "basal-ganglia-r", "frontal-l", "frontal-r", "parietal-l", "parietal-r"],
+    impulseRate: 5.2
+  },
+  "sensory-gating": {
+    activeRegions: ["thalamus-l", "thalamus-r", "frontal-l", "frontal-r", "auditory-l", "auditory-r", "somatosensory-l", "somatosensory-r"],
+    impulseRate: 7.5
+  },
+  "sleep-ripple": {
+    activeRegions: ["hippocampus-l", "hippocampus-r", "frontal-l", "frontal-r", "temporal-l", "temporal-r", "thalamus-l", "thalamus-r"],
+    impulseRate: 4.8
+  }
+};
+
+// Populate default actions if not present
+for (const [actionId, def] of Object.entries(DEFAULT_EMERGENT_ACTIONS)) {
+  if (!(actionId in ACTION_BY_ID)) {
+    ACTION_BY_ID[actionId as BrainActionId] = {
+      id: actionId as BrainActionId,
+      label: actionId.replace(/-/g, " "),
+      description: `Emergent neural pattern demonstrating ${actionId.replace(/-/g, " ")}`,
+      activeRegions: def.activeRegions,
+      impulseRate: def.impulseRate
+    };
+  }
+}
+
 // Build the anatomical connection list once at module load.
 // Tuple format kept as [fromId, toId, count] to preserve the existing pathway-generator contract.
 function buildConnections(): Array<[BrainRegionId, BrainRegionId, number]> {

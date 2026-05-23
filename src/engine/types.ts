@@ -40,13 +40,20 @@ export type BrainRegionId =
   | "brainstem";
 
 export type BrainActionId =
-  | "lift-hand"
-  | "see-object"
-  | "hear-sound"
-  | "remember-event"
-  | "fear-response"
-  | "speak"
-  | "read-text";
+| "lift-hand"
+| "see-object"
+| "hear-sound"
+| "remember-event"
+| "fear-response"
+| "speak"
+| "read-text"
+| "attentional-blink"
+| "eureka-moment"
+| "fear-conditioning"
+| "memory-reconsolidation"
+| "decision-hesitation"
+| "sensory-gating"
+| "sleep-ripple";
 
 export interface BrainRegionDefinition {
   id: BrainRegionId;
@@ -117,6 +124,27 @@ export interface SignalPulse {
   colorRegionId: BrainRegionId;
   colorRegionIndex: number;
   reverse: boolean;
+  actionColor?: string; // Action-specific color for visualization
+}
+
+// Structural contract that the NeuralGraph renderer reads from. Both
+// SignalSimulation (scripted pulses) and SpikingEngine (LIF) satisfy this
+// — the renderer doesn't care which engine is driving the values.
+export interface BrainSimulation {
+  readonly regionIntensity: Float32Array;
+  readonly regionFlashIntensity: Float32Array;
+  readonly pathwayIntensity: Float32Array;
+  readonly pulses: readonly SignalPulse[];
+  readonly memoryIntensity: number;
+  // SpikingEngine-only: membrane potential [0,1] per neuron for heatmap viz.
+  // Undefined/null when running SignalSimulation (no membrane model).
+  readonly membranePotentialNorm?: Float32Array;
+  // SpikingEngine-only: neuromodulator scalars [0,1].
+  readonly dopamine?: number;
+  readonly acetylcholine?: number;
+  // SpikingEngine-only: oscillation phases in radians.
+  readonly thetaPhase?: number;
+  readonly gammaPhase?: number;
 }
 
 export interface BrainMetrics {

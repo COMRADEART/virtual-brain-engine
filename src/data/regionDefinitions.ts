@@ -1,5 +1,6 @@
 import type {
   BrainActionDefinition,
+  BrainActionId,
   BrainRegionDefinition,
   BrainRegionId,
   Hemisphere,
@@ -239,6 +240,17 @@ const TEMPLATES: RegionTemplate[] = [
 
 export const REGION_DEFINITIONS: BrainRegionDefinition[] = TEMPLATES.flatMap(expand);
 
+// Color mappings for emergent actions based on neuroscience visualization conventions
+const ACTION_COLORS: Record<string, string> = {
+  "attentional-blink": "#a0d8f3", // Light blue for occipital activity with attentional suppression
+  "eureka-moment": "#e7b3ff", // Purple for gamma bursts
+  "fear-conditioning": "#ff6b6b", // Red for amygdala activation
+  "memory-reconsolidation": "#ffd700", // Gold for hippocampal replay
+  "decision-hesitation": "#ffff99", // Yellow for prefrontal conflict
+  "sensory-gating": "#6bcaff", // Blue for thalamic filtering
+  "sleep-ripple": "#ffffff", // White for sharp-wave ripples
+};
+
 export const BRAIN_ACTIONS: BrainActionDefinition[] = [
   {
     id: "lift-hand",
@@ -338,4 +350,58 @@ export const BRAIN_ACTIONS: BrainActionDefinition[] = [
     ],
     impulseRate: 36,
   },
+  // Emergent behavior actions
+  {
+    id: "attentional-blink",
+    label: "Attentional Blink",
+    description: "Temporal attention bottleneck: rapid sequential stimuli create ~200ms unresponsiveness in parietal cortex.",
+    activeRegions: ["occipital-l", "occipital-r", "parietal-l", "parietal-r", "thalamus-l", "thalamus-r", "brainstem"],
+    impulseRate: 8.5
+  },
+  {
+    id: "eureka-moment",
+    label: "Eureka Moment",
+    description: "Insight gamma burst: sudden prefrontal-temporal synchronization reflects problem-solving insight.",
+    activeRegions: ["prefrontal-l", "prefrontal-r", "frontal-l", "frontal-r", "hippocampus-l", "hippocampus-r", "temporal-l", "temporal-r", "brainstem"],
+    impulseRate: 12.0
+  },
+  {
+    id: "fear-conditioning",
+    label: "Fear Conditioning",
+    description: "Amygdalar plasticity: neutral stimuli acquire persistent fear responses through associative learning.",
+    activeRegions: ["amygdala-l", "amygdala-r", "thalamus-l", "thalamus-r", "hippocampus-l", "hippocampus-r", "frontal-l", "frontal-r", "brainstem"],
+    impulseRate: 9.2
+  },
+  {
+    id: "memory-reconsolidation",
+    label: "Memory Reconsolidation",
+    description: "Memory updating: strong reactivation enables modification of existing memories during recall.",
+    activeRegions: ["hippocampus-l", "hippocampus-r", "frontal-l", "frontal-r", "temporal-l", "temporal-r", "parietal-l", "parietal-r"],
+    impulseRate: 6.8
+  },
+  {
+    id: "decision-hesitation",
+    label: "Decision Hesitation",
+    description: "Conflict monitoring: prefrontal-basal ganglia competition creates decision uncertainty.",
+    activeRegions: ["prefrontal-l", "prefrontal-r", "basal-ganglia-l", "basal-ganglia-r", "frontal-l", "frontal-r", "parietal-l", "parietal-r"],
+    impulseRate: 5.2
+  },
+  {
+    id: "sensory-gating",
+    label: "Sensory Gating",
+    description: "Thalamic filtering: irrelevant sensory input is inhibited at the thalamic level.",
+    activeRegions: ["thalamus-l", "thalamus-r", "frontal-l", "frontal-r", "auditory-l", "auditory-r", "somatosensory-l", "somatosensory-r"],
+    impulseRate: 7.5
+  },
+  {
+    id: "sleep-ripple",
+    label: "Sleep Ripple",
+    description: "Hippocampal-neocortical replay: coordinated sharp-wave ripples mediate memory consolidation during sleep.",
+    activeRegions: ["hippocampus-l", "hippocampus-r", "frontal-l", "frontal-r", "temporal-l", "temporal-r", "thalamus-l", "thalamus-r"],
+    impulseRate: 4.8
+  }
 ];
+
+export function getActionColor(actionId: BrainActionId): string {
+  return ACTION_COLORS[actionId] || "#cccccc"; // Default gray if no specific color
+}

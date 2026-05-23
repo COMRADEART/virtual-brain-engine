@@ -12,8 +12,25 @@ import { ACTION_BY_ID } from "../engine/brainRegions";
 import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
 import { generateNeuralGraph } from "../engine/neuralGraphGenerator";
 import { SignalSimulation } from "../engine/signalSimulation";
+import { SpikingEngine } from "../engine/SpikingEngine";
+import {
+  BrainVisualEffects,
+  applyVisualEffectsToGraph,
+} from "../engine/BrainVisualEffects";
+
+// ─── Engine toggle ────────────────────────────────────────────────────────
+// `SpikingEngine` is now an alias for AdvancedBrainCore (Izhikevich neurons over
+// a small-world/rich-club connectome with neuromodulation, oscillations,
+// predictive coding, memory, and homeostasis). It is headless-verified bounded
+// and performant (~1.4 ms/step @ 2k neurons) — the old main-thread hang is gone —
+// but its in-browser rendering path has not yet been visually verified, so it
+// stays opt-in. Default false → the lightweight scripted SignalSimulation runs.
+// Opt in WITHOUT a rebuild by appending `?useSpiking=true` to the URL.
+const USE_SPIKING_ENGINE = false;
+type SimulationLike = SignalSimulation | SpikingEngine;
 import { subscribeBrainBus } from "../engine/brainBus";
 import type { PerfPreset } from "../engine/performancePresets";
+import { PerformanceManager } from "../engine/PerformanceManager";
 import { LOGICAL_REGION_IDS } from "../../shared/pipeline";
 import type {
   BrainActionId,
@@ -22,6 +39,7 @@ import type {
   CameraPresetRequest,
   RegionVisibility,
 } from "../engine/types";
+import { EmergentBehaviorControls } from "./EmergentBehaviorControls";
 
 export interface AnatomyLoadProgress {
   loaded: number;
@@ -43,7 +61,9 @@ interface BrainSceneProps {
   aiPick: AiPickEvent | null;
   audioEnabled: boolean;
   perfPreset: PerfPreset;
+  showEmergentControls?: boolean;
   onRegionSelect: (regionId: BrainRegionId) => void;
+  onActionSelect?: (actionId: BrainActionId) => void;
   onMetricsChange: (metrics: BrainMetrics) => void;
   onAnatomyLoadProgress?: (progress: AnatomyLoadProgress) => void;
 }
@@ -171,7 +191,9 @@ export function BrainScene({
   aiPick,
   audioEnabled,
   perfPreset,
+  showEmergentControls,
   onRegionSelect,
+  onActionSelect,
   onMetricsChange,
   onAnatomyLoadProgress,
 }: BrainSceneProps): JSX.Element {
@@ -182,7 +204,9 @@ export function BrainScene({
   const controlsRef = useRef<OrbitControls | null>(null);
   const shellRef = useRef<THREE.Group | null>(null);
   const graphRendererRef = useRef<NeuralGraphRenderer | null>(null);
-  const simulationRef = useRef<SignalSimulation | null>(null);
+  const visualEffectsRef = useRef<BrainVisualEffects | null>(null);
+  const simulationRef = useRef<SimulationLike | null>(null);
+  const performanceManagerRef = useRef<PerformanceManager | null>(null);
   const transitionRef = useRef<CameraTransition | null>(null);
   const pointCloudRef = useRef<THREE.Group | null>(null);
   const pointCloudMaterialRef = useRef<THREE.PointsMaterial | null>(null);
@@ -271,13 +295,32 @@ export function BrainScene({
     });
   }, []);
 
-  // Memory count updates drive the hippocampus glow intensity.
+// Memory count updates drive the hippocampus glow intensity.
   useEffect(() => {
     return subscribeBrainBus((message) => {
       if (message.type !== "memory-count") {
         return;
       }
-      simulationRef.current?.setMemoryIntensity(message.count);
+      const simulation = simulationRef.current;
+      simulation?.setMemoryIntensity(message.count);
+
+      // If using SpikingEngine, also trigger memory replay when there's significant memory activity
+      if (simulation instanceof SpikingEngine && message.count > 5) {
+        simulation.triggerMemoryReplay();
+      }
+    });
+  }, []);
+
+  // Replay events (hippocampal-neocortical consolidation, from the server)
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      const simulation = simulationRef.current;
+      if (message.type === "replay" && simulation instanceof SpikingEngine) {
+        // Forward replay events to the spiking engine to drive theta-burst /
+        // gamma-burst stimulation. Spikes are buffered inside the engine and
+        // pulled via drainSpikes(), so there is no separate spike WS path.
+        simulation.handleReplayEvent(message);
+      }
     });
   }, []);
 
@@ -361,6 +404,15 @@ export function BrainScene({
     camera.position.set(0.1, 0.12, 4.25);
     cameraRef.current = camera;
 
+    // Initialize performance manager and set camera
+    const performanceManager = new PerformanceManager();
+    performanceManager.setCamera(camera);
+    performanceManagerRef.current = performanceManager;
+
+    // Determine if we should use the advanced SpikingEngine
+    const useSpikingEngine = window.location.search.includes("useSpiking=true") || USE_SPIKING_ENGINE;
+    void useSpikingEngine;
+    
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
@@ -512,23 +564,77 @@ export function BrainScene({
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    const renderFrame = () => {
-      animationFrame = window.requestAnimationFrame(renderFrame);
-      const delta = Math.min(clock.getDelta(), 0.033);
-      const elapsed = clock.elapsedTime;
-      const simulation = simulationRef.current;
-      const graphRenderer = graphRendererRef.current;
+const renderFrame = () => {
+    animationFrame = window.requestAnimationFrame(renderFrame);
+    const delta = Math.min(clock.getDelta(), 0.033);
+    const elapsed = clock.elapsedTime;
+    const simulation = simulationRef.current;
+    const graphRenderer = graphRendererRef.current;
+    const performanceManager = performanceManagerRef.current;
+    const visualEffects = visualEffectsRef.current;
 
-      updateCameraTransition(elapsed, camera, controls, transitionRef);
+    // Update performance manager with frame time in milliseconds
+    if (performanceManager) {
+      performanceManager.update(delta * 1000);
+    }
 
-      if (simulation && graphRenderer) {
-        simulation.step(delta, elapsed);
-        graphRenderer.update(
-          simulation,
-          visibilityRef.current,
-          selectedRegionRef.current,
+    updateCameraTransition(elapsed, camera, controls, transitionRef);
+
+    if (simulation && graphRenderer) {
+      // Step the simulation
+      simulation.step(delta, elapsed);
+      
+      // Update graph renderer
+      graphRenderer.update(
+        simulation,
+        visibilityRef.current,
+        selectedRegionRef.current,
+        elapsed,
+      );
+      
+      // Update advanced visual effects if available
+      if (visualEffects) {
+        // Update with core simulation data
+        visualEffects.update(
           elapsed,
+          delta,
+          visibilityRef.current,
+          simulation.regionIntensity,
+          simulation.pathwayIntensity,
         );
+        
+        // Update membrane potential visualization if using SpikingEngine
+        if ('membranePotentialNorm' in simulation && simulation.membranePotentialNorm) {
+          visualEffects.updateMembranePotential(simulation.membranePotentialNorm);
+        }
+        
+        // Update neuron-specific attributes if using SpikingEngine
+        if (simulation instanceof SpikingEngine) {
+          visualEffects.updateNeuronAttributes(
+            simulation.neuronType,
+            simulation.getBurstStatus?.(), // If available
+            simulation.getMemoryTrace?.() // If available
+          );
+          
+          // Update gamma phase for theta-gamma coupling visualization
+          visualEffects.setGammaPhase(simulation.gammaPhase || 0);
+          
+          // Update neuromodulator levels
+          visualEffects.setNeuromodulators({
+            dopamine: simulation.dopamine || 0.3,
+            acetylcholine: simulation.acetylcholine || 0.4,
+            serotonin: simulation.serotonin || 0.2,
+            norepinephrine: simulation.norepinephrine || 0.1
+          });
+          
+          // Highlight rich-club hubs (regions with high connectivity)
+          const hubRegionIds: BrainRegionId[] = [
+            "prefrontal-l", "prefrontal-r", "parietal-l", "parietal-r", 
+            "temporal-l", "temporal-r", "thalamus-l", "thalamus-r"
+          ];
+          visualEffects.highlightRichClubHubs(hubRegionIds, 0.8);
+        }
+      }
 
         // Feed average region intensity to the ambient bus every ~6 frames
         // (~10 Hz at 60 fps) so audio tracks activity without polling per tick.
@@ -551,33 +657,83 @@ export function BrainScene({
       composer.render();
     };
 
-    const resizeObserver = new ResizeObserver(() => {
-      const width = Math.max(1, container.clientWidth);
-      const height = Math.max(1, container.clientHeight);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-      renderer.setSize(width, height);
-      composer.setSize(width, height);
-    });
+const resizeObserver = new ResizeObserver(() => {
+    const width = Math.max(1, container.clientWidth);
+    const height = Math.max(1, container.clientHeight);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, height);
+    composer?.setSize(width, height);
+    
+    // Update visual effects size
+    const visualEffects = visualEffectsRef.current;
+    if (visualEffects) {
+      visualEffects.setSize(width, height);
+    }
+  });
     resizeObserver.observe(container);
 
-    const handlePointerClick = (event: PointerEvent) => {
-      const graphRenderer = graphRendererRef.current;
-      if (!graphRenderer) {
-        return;
-      }
+const handlePointerClick = (event: PointerEvent) => {
+    const graphRenderer = graphRendererRef.current;
+    if (!graphRenderer) {
+      return;
+    }
 
-      const bounds = renderer.domElement.getBoundingClientRect();
-      pointerRef.current.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
-      pointerRef.current.y = -(((event.clientY - bounds.top) / bounds.height) * 2 - 1);
-      raycasterRef.current.setFromCamera(pointerRef.current, camera);
 
-      const hits = raycasterRef.current.intersectObjects(graphRenderer.regionMeshes, false);
-      const hit = hits.find((entry) => entry.object.visible);
-      if (hit?.object.userData.regionId) {
-        onRegionSelect(hit.object.userData.regionId as BrainRegionId);
-      }
-    };
+    const bounds = renderer.domElement.getBoundingClientRect();
+    pointerRef.current.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+    pointerRef.current.y = -(((event.clientY - bounds.top) / bounds.height) * 2 - 1);
+    raycasterRef.current.setFromCamera(pointerRef.current, camera);
+
+    const hits = raycasterRef.current.intersectObjects(graphRenderer.regionMeshes, false);
+    const hit = hits.find((entry) => entry.object.visible);
+    if (hit?.object.userData.regionId) {
+      onRegionSelect(hit.object.userData.regionId as BrainRegionId);
+    }
+  };
+  
+  // Debug controls for testing visualizations
+  const handleDebugCommand = (key: string) => {
+    const visualEffects = visualEffectsRef.current;
+    if (!visualEffects) return;
+    
+    switch (key) {
+      case "1": // Test dopamine
+        visualEffects.setNeuromodulators({ dopamine: 0.8 });
+        break;
+      case "2": // Test acetylcholine
+        visualEffects.setNeuromodulators({ acetylcholine: 0.8 });
+        break;
+      case "3": // Test serotonin
+        visualEffects.setNeuromodulators({ serotonin: 0.7 });
+        break;
+      case "4": // Test norepinephrine
+        visualEffects.setNeuromodulators({ norepinephrine: 0.6 });
+        break;
+      case "5": // Test working memory
+        visualEffects.visualizeWorkingMemory([
+          "prefrontal-l", "prefrontal-r", 
+          "parietal-l", "parietal-r",
+          "temporal-l", "hippocampus-l"
+        ], 0.9);
+        break;
+      case "6": // Show EEG overlay
+        visualEffects.showEegOverlay(true);
+        break;
+      case "7": // Highlight rich-club hubs
+        visualEffects.highlightRichClubHubs([
+          "prefrontal-l", "prefrontal-r", 
+          "parietal-l", "parietal-r", 
+          "thalamus-l", "thalamus-r"
+        ], 1.0);
+        break;
+      case "0": // Reset visualizations
+        visualEffects.setNeuromodulators({});
+        visualEffects.visualizeWorkingMemory([]);
+        visualEffects.showEegOverlay(false);
+        break;
+    }
+  };
 
     renderer.domElement.addEventListener("click", handlePointerClick);
     renderFrame();
@@ -615,26 +771,91 @@ export function BrainScene({
       return;
     }
 
+    // Clean up previous renderer
     const previousRenderer = graphRendererRef.current;
     if (previousRenderer) {
       scene.remove(previousRenderer.group);
       previousRenderer.dispose();
     }
 
+    // Clean up previous visual effects
+    const prevEffects = visualEffectsRef.current;
+    if (prevEffects) {
+      scene.remove(prevEffects.group);
+      prevEffects.dispose();
+      visualEffectsRef.current = null;
+    }
+
+    // Engine selection: the advanced AdvancedBrainCore (aliased as SpikingEngine)
+    // is opt-in. Default stays SignalSimulation; append ?useSpiking=true to the
+    // URL to drive the scene with the biologically-plausible engine live.
+    const useSpikingEngine =
+      USE_SPIKING_ENGINE ||
+      (typeof window !== "undefined" && window.location.search.includes("useSpiking=true"));
+
+    // Add spike raster container (if using the spiking engine)
+    if (useSpikingEngine && containerRef.current) {
+      containerRef.current.style.position = "relative";
+    }
+
+    const performanceManager = performanceManagerRef.current;
+const adjustedDensity = performanceManager
+    ? performanceManager.getAdjustedDensity(neuronDensity)
+    : neuronDensity;
     const graph = generateNeuralGraph({
-      density: neuronDensity,
-      seed: Math.round(neuronDensity * 1000) + 19,
+      density: adjustedDensity,
+      seed: Math.round(adjustedDensity * 1000) + 19,
     });
-    const graphRenderer = new NeuralGraphRenderer(graph);
+    
+    // Create renderer and simulation
+    const graphRenderer = new NeuralGraphRenderer(graph, performanceManagerRef.current);
     graphRenderer.applyRegionVisibility(visibilityRef.current);
     graphRendererRef.current = graphRenderer;
     scene.add(graphRenderer.group);
 
-    const simulation = new SignalSimulation(graph, selectedActionId);
+    // Enable advanced visual effects if using spiking engine
+    let simulation: SimulationLike;
+    let visualEffects: BrainVisualEffects | null = null;
+
+    simulation = useSpikingEngine
+      ? new SpikingEngine(graph, selectedActionId)
+      : new SignalSimulation(graph, selectedActionId);
+
     simulation.setRunning(simulationRunning);
     simulation.setSpeed(signalSpeed);
-    simulation.setMaxPulses(perfPresetRef.current.maxPulses);
+    const adjustedMaxPulses = performanceManager
+      ? performanceManager.getAdjustedMaxPulses(perfPresetRef.current.maxPulses)
+      : perfPresetRef.current.maxPulses;
+    simulation.setMaxPulses(adjustedMaxPulses);
     simulationRef.current = simulation;
+
+    // Create advanced visual effects
+    if (useSpikingEngine) {
+      visualEffects = new BrainVisualEffects(graph, simulation, {
+        enableNeuromodTint: true,
+        enableNeurotransmitterParticles: true,
+        enableRegionBreathing: true,
+        enablePulseTrails: true,
+        enableSpikeRaster: true, // Enable spike raster
+      });
+      visualEffectsRef.current = visualEffects;
+      scene.add(visualEffects.group);
+
+      // Apply visual effects to the graph renderer
+      applyVisualEffectsToGraph(graphRenderer, visualEffects);
+
+      // For production, create a secondary composer for post-processing
+      if (composerRef.current) {
+        visualEffects.attachToComposer(composerRef.current);
+      }
+      
+      // Add debug UI (the spike-raster debug panel ships in the optional spike
+      // extension; guard so a build without it doesn't crash on mount)
+      const dbgEffects = visualEffects as Partial<{ addDebugControls: (el: HTMLElement) => void }>;
+      if (containerRef.current && typeof dbgEffects.addDebugControls === "function") {
+        dbgEffects.addDebugControls(containerRef.current);
+      }
+    }
 
     onMetricsChange({
       neurons: graph.nodes.length,
@@ -666,7 +887,18 @@ export function BrainScene({
     };
   }, [cameraPreset]);
 
-  return <div className="brain-scene" ref={containerRef} />;
+  return (
+  <div className="brain-scene" ref={containerRef}>
+    {showEmergentControls && (
+      <div style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 100 }}> 
+        <EmergentBehaviorControls
+          onActionSelect={onActionSelect ?? (() => {})}
+          currentAction={selectedActionId}
+        />
+      </div>
+    )}
+  </div>
+);
 }
 
 function getCameraPreset(mode: CameraPresetRequest["mode"]): {

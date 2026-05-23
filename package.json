@@ -15,7 +15,13 @@
     "verify:canvas": "node scripts/verify-canvas.mjs",
     "test:actions": "node scripts/smoke-actions.mjs",
     "test:all": "node scripts/test-all.mjs",
-    "test": "npm run verify:canvas && npm run test:actions",
+    "test": "npm run verify:canvas && npm run test:actions && npm run test:unit",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:unit:coverage": "vitest run --coverage",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "test:integration:watch": "vitest -c vitest.integration.config.ts",
+    "test:ui": "vitest --ui",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
@@ -23,6 +29,8 @@
     "dev:desktop": "concurrently --names \"vite,tauri\" --prefix-colors \"cyan,magenta\" \"npm run dev\" \"npm run tauri:dev\""
   },
   "dependencies": {
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
     "@tauri-apps/api": "^2.3.0",
     "@tauri-apps/plugin-shell": "^2.2.0",
     "lucide-react": "^0.468.0",
@@ -36,8 +44,11 @@
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.171.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/ui": "^4.1.7",
     "concurrently": "^9.0.1",
+    "jsdom": "^29.1.1",
     "typescript": "^5.6.3",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }

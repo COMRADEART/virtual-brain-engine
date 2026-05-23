@@ -37,8 +37,9 @@ const DEFAULT_VISIBILITY = REGION_DEFINITIONS.reduce((visibility, region) => {
 }, {} as RegionVisibility);
 
 function App(): JSX.Element {
-  const [running, setRunning] = useState(true);
-  const [selectedActionId, setSelectedActionId] = useState<BrainActionId>("lift-hand");
+const [running, setRunning] = useState(true);
+const [selectedActionId, setSelectedActionId] = useState<BrainActionId>("attentional-blink");
+const [showEmergentControls, setShowEmergentControls] = useState(true);
   
   // Phase 2 Panel States
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useState(true);
@@ -94,79 +95,83 @@ function App(): JSX.Element {
     mode: "overview",
     sequence: 0,
   });
-  const [aiPick, setAiPick] = useState<AiPickEvent | null>(null);
-  const aiPickSequence = useRef(0);
-  const [anatomyProgress, setAnatomyProgress] = useState<AnatomyLoadProgress>({
-    loaded: 0,
-    total: 0,
-    done: false,
-  });
+const [aiPick, setAiPick] = useState<AiPickEvent | null>(null);
+const aiPickSequence = useRef(0);
+const [anatomyProgress, setAnatomyProgress] = useState<AnatomyLoadProgress>({
+  loaded: 0,
+  total: 0,
+  done: false,
+});
 
   const shellOpacity = shellTransparent ? 0.02 : 0.08;
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
-        return;
+useEffect(() => {
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+      return;
+    }
+    // Focus Mode toggle: F11 or Ctrl+Shift+F
+    if (event.key === "F11" || ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === "F")) {
+      event.preventDefault();
+      if (layout === "focus") {
+        setMode("compact");
+      } else {
+        setMode("focus");
       }
-      // Focus Mode toggle: F11 or Ctrl+Shift+F
-      if (event.key === "F11" || ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === "F")) {
+      return;
+    }
+    switch (event.key) {
+      case " ":
         event.preventDefault();
-        if (layout === "focus") {
-          setMode("compact");
-        } else {
-          setMode("focus");
+        setRunning((r) => !r);
+        break;
+      case "1":
+      case "2":
+      case "3":
+      case "4":
+      case "5":
+      case "6":
+      case "7": {
+        const index = parseInt(event.key, 10) - 1;
+        if (index < BRAIN_ACTIONS.length) {
+          setSelectedActionId(BRAIN_ACTIONS[index].id);
         }
-        return;
+        break;
       }
-      switch (event.key) {
-        case " ":
-          event.preventDefault();
-          setRunning((r) => !r);
-          break;
-        case "1":
-        case "2":
-        case "3":
-        case "4":
-        case "5":
-        case "6":
-        case "7": {
-          const index = parseInt(event.key, 10) - 1;
-          if (index < BRAIN_ACTIONS.length) {
-            setSelectedActionId(BRAIN_ACTIONS[index].id);
-          }
-          break;
-        }
-        case "o":
-        case "O":
-          setCameraPreset((p) => ({ mode: "overview", sequence: p.sequence + 1 }));
-          break;
-        case "i":
-        case "I":
-          setCameraPreset((p) => ({ mode: "inside", sequence: p.sequence + 1 }));
-          break;
-        case "r":
-        case "R":
-          setCameraPreset((p) => ({ mode: "reset", sequence: p.sequence + 1 }));
-          break;
-        case "x":
-        case "X":
-          setShellTransparent((t) => !t);
-          break;
-        case "a":
-        case "A":
-          setAnatomyVisible((v) => !v);
-          break;
-        case "p":
-        case "P":
-          cyclePreset();
-          break;
-        case "l":
-        case "L":
-          cycleLayout();
-          break;
-      }
-    };
+      case "o":
+      case "O":
+        setCameraPreset((p) => ({ mode: "overview", sequence: p.sequence + 1 }));
+        break;
+      case "i":
+      case "I":
+        setCameraPreset((p) => ({ mode: "inside", sequence: p.sequence + 1 }));
+        break;
+      case "r":
+      case "R":
+        setCameraPreset((p) => ({ mode: "reset", sequence: p.sequence + 1 }));
+        break;
+      case "x":
+      case "X":
+        setShellTransparent((t) => !t);
+        break;
+      case "a":
+      case "A":
+        setAnatomyVisible((v) => !v);
+        break;
+      case "p":
+      case "P":
+        cyclePreset();
+        break;
+      case "l":
+      case "L":
+        cycleLayout();
+        break;
+      case "e":
+      case "E":
+        setShowEmergentControls((e) => !e);
+        break;
+    }
+  };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
@@ -267,24 +272,26 @@ function App(): JSX.Element {
 
       {layout === "full" && (
         <>
-          <BrainScene
-            aiPick={aiPick}
-            anatomyOpacity={anatomyOpacity}
-            anatomyVisible={anatomyVisible}
-            audioEnabled={false}
-            cameraPreset={cameraPreset}
-            neuronDensity={neuronDensity}
-            onAnatomyLoadProgress={setAnatomyProgress}
-            onMetricsChange={setMetrics}
-            onRegionSelect={setSelectedRegionId}
-            perfPreset={preset}
-            regionVisibility={sceneVisibility}
-            selectedActionId={selectedActionId}
-            selectedRegionId={selectedRegionId}
-            shellOpacity={shellOpacity}
-            signalSpeed={signalSpeed}
-            simulationRunning={running}
-          />
+      <BrainScene
+        aiPick={aiPick}
+        anatomyOpacity={anatomyOpacity}
+        anatomyVisible={anatomyVisible}
+        audioEnabled={false}
+        cameraPreset={cameraPreset}
+        neuronDensity={neuronDensity}
+        onAnatomyLoadProgress={setAnatomyProgress}
+        onMetricsChange={setMetrics}
+        onRegionSelect={setSelectedRegionId}
+        onActionSelect={setSelectedActionId}
+        perfPreset={preset}
+        regionVisibility={sceneVisibility}
+        selectedActionId={selectedActionId}
+        selectedRegionId={selectedRegionId}
+        showEmergentControls={showEmergentControls}
+        shellOpacity={shellOpacity}
+        signalSpeed={signalSpeed}
+        simulationRunning={running}
+      />
           {!anatomyProgress.done ? (
             <div className="anatomy-loading-pill" role="status" aria-live="polite">
               <span className="anatomy-loading-dot" aria-hidden="true" />
