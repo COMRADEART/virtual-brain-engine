@@ -19,10 +19,13 @@ import {
 } from "../engine/BrainVisualEffects";
 
 // ─── Engine toggle ────────────────────────────────────────────────────────
-// Flip to false to use the lightweight SignalSimulation instead of LIF neurons.
-// Currently false: the LIF SpikingEngine rewrite blocks the main thread on
-// mount (the scene never paints). SignalSimulation is the stable engine; the
-// SpikingEngine path must be profiled/fixed before re-enabling.
+// `SpikingEngine` is now an alias for AdvancedBrainCore (Izhikevich neurons over
+// a small-world/rich-club connectome with neuromodulation, oscillations,
+// predictive coding, memory, and homeostasis). It is headless-verified bounded
+// and performant (~1.4 ms/step @ 2k neurons) — the old main-thread hang is gone —
+// but its in-browser rendering path has not yet been visually verified, so it
+// stays opt-in. Default false → the lightweight scripted SignalSimulation runs.
+// Opt in WITHOUT a rebuild by appending `?useSpiking=true` to the URL.
 const USE_SPIKING_ENGINE = false;
 type SimulationLike = SignalSimulation | SpikingEngine;
 import { subscribeBrainBus } from "../engine/brainBus";
