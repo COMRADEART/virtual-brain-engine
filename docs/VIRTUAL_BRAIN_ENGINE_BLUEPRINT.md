@@ -7,7 +7,11 @@
 > data-flow, neural-memory architecture, event system, DB schema, agent
 > orchestration, visualization, cognition loop, deployment, API, local-first
 > model, autonomous algorithms, real-time pipeline) **by mapping the vision onto
-> the code that already exists in this repo** and naming the genuine gaps.
+> the code that already exists in this repo** and naming the genuine gaps. §18
+> extends this to the larger framing (22 modules / 20 deliverables) — cognitive
+> energy, competing thought streams, curiosity, meta-cognition, temporal
+> cognition, self-preservation, hybrid reasoning, and the "cognitive ecology" of
+> faculty agents — against the same code.
 >
 > **Prime directive.** This is *not* a from-scratch build. ~70% of the vision is
 > already implemented here in a **local-first TypeScript/React/Three.js + Rust**
@@ -687,6 +691,211 @@ Hard real-time on the render thread is the central constraint:
   explicit abstraction `level` to clusters/abstractions.
 - **Phase 4 — Scale (only on real need).** WebGPU/Worker for the spiking loop;
   civilization multi-node; HNSW only if `sqlite-vec` latency demands it.
+
+---
+
+## §18 — Extended Module Set (the 22-module / 20-deliverable framing)
+
+> This section extends §1–§17 to the larger brief (22 modules, 20 output
+> requirements). Most expand modules already covered above; the genuinely **new**
+> framings get focused sub-sections (§18.1–§18.11). Nothing here proposes a new
+> stack — it maps the expanded vision onto the same code and names the new gaps.
+
+### Master map — all 22 expanded modules
+
+| # | Module (expanded brief) | Status | Where / cross-reference |
+|---|--------------------------|--------|--------------------------|
+| 1 | Cognitive Energy System | 🟡 | frame budget (`HybridCognitiveCore` `SLOW_FRAME_BUDGET_MS`) + organism energy (`energy_usage`, `core/organism.ts`) → **§18.1** |
+| 2 | Multi-Layer Perception | 🟡 | §3 #1 (`vision/`, `scanner/`, `speechInput`) |
+| 3 | Attention Engine | 🟡 | §3 #2; expanded formula adds an `uncertainty` term → **§18.2** |
+| 4 | Associative Neural Memory (+ subconscious latent) | ✅ / 🟡 | §6; "subconscious latent memory" = low-strength/archived tier (🟡) |
+| 5 | Neuroplasticity | ✅ | STDP + BCM metaplasticity + pruning → **§18.3** |
+| 6 | Continuous Thought Loop | 🟡 | §11 (idle-monologue gap) |
+| 7 | Competing Thought Systems | 🟡 | System 1↔2 arbitration only; N-way streams = gap → **§18.4** |
+| 8 | Emotional Computation | ✅ | §3 #5 (neuromod + valence/arousal) |
+| 9 | Curiosity-Driven Exploration | 🟡 | `curiosityWeight`/`explorationTemp` genome + `noveltyDetector`; self-initiation gap → **§18.5** |
+| 10 | Predictive Cognition | ✅ | §3 #6 (`PredictiveCodingEngine`, `imagination`) |
+| 11 | World Model | 🟡 | §3 #7 (`twin/`, `organism_world_model`) |
+| 12 | Self-Model / Identity | ✅ | §3 #8 (persistence + `identity_profiles`) |
+| 13 | Meta-Cognition | ✅ | `MetaLearningSystem` + `error` step + held-out probe → **§18.6** |
+| 14 | Temporal Cognition | 🟡 | temporal patterns + `temporal-engine` crate + 4 cadences; future-self sim gap → **§18.7** |
+| 15 | Hierarchical Abstraction | 🟡 | §3 #11 (`semanticCluster`, `cognitive_abstractions`) |
+| 16 | Subconscious Processing | ✅ | background ticks reframed → **§18.8** |
+| 17 | Dream / Sleep Simulation | ✅ | §3 #10 (`replayService`, `dream_cycles`, imagination dreams) |
+| 18 | Multi-Speed Cognition | ✅ | §11 (four cadences) |
+| 19 | Self-Preservation Dynamics | ✅ | `cognitive_health` + `immune_events` + EWC → **§18.9** |
+| 20 | Hybrid Reasoning | ✅ | neural + symbolic + graph + causal + probabilistic → **§18.10** |
+| 21 | Cognitive Ecology (faculty agents) | 🟡 | faculties exist as modules; negotiating-agents framing = gap → **§18.11** |
+| 22 | Real-Time Neural Visualization | ✅ | §10 |
+
+**Tally:** 9 ✅, 13 🟡, 0 🔴. Every expanded module has a real seam; the 🟡s are
+*missing capabilities within built modules*, not absent modules.
+
+### §18.1 Cognitive Energy System — 🟡
+
+Energy already constrains cognition in **two** places, but not as one unified
+budget. (a) **Engine:** System 2 runs under a hard `SLOW_FRAME_BUDGET_MS = 2.5`
+and meta-learning only spends leftover budget — higher-priority work (System 1)
+literally suppresses lower-priority cognition each frame (`HybridCognitiveCore.step`).
+(b) **Server:** `core/organism.ts` debits an energy budget per task into
+`energy_usage`, with `cognitive_health.resource_balance` tracking it.
+**Gap:** these aren't a single ledger, and there's no *attention fatigue* curve
+that decays focus capacity with sustained load. **Fill:** a `cognition/energy.ts`
+that exposes one budget consumed by attention, reasoning depth, and prefetch, with
+a fatigue term feeding the §18.2 saliency score.
+
+### §18.2 Attention Engine (expanded formula) — 🟡
+
+The expanded brief's score adds `uncertainty` to the earlier four terms:
+`attention = novelty + goal_relevance + emotional_weight + uncertainty +
+survival_importance`. Every term has a source already — novelty
+(`noveltyDetector`), emotion (neuromod tone + affect arousal), uncertainty
+(`HybridCognitiveCore.computeUncertainty` free-energy term), survival
+(`cognitive_health`/`immune` load). **Gap (unchanged from §17):** no single scorer
+combines them to *gate* memory activation + reasoning depth + energy. This is the
+same proposed `attention/saliency.ts`, now with the 5th term.
+
+### §18.3 Neuroplasticity — ✅
+
+"Fire together, wire together" is literally implemented: dopamine-gated trace-based
+**STDP** on spiking edges (`AdvancedBrainCore` step §5; `STDP_LTP/LTD`, `TRACE_TAU`),
+weights bounded `[W_MIN, W_MAX]`. Pruning/strengthening of *durable* associations
+runs on `memory_relations.weight` + `accessPatternTracker`. **Metaplasticity**
+(plasticity of plasticity) is a BCM-style sliding threshold in
+`MetaLearningSystem` (job 3). Abstraction emergence → `semanticCluster` +
+`cognitive_abstractions`. Topology evolution → `core/evolution.ts`.
+
+### §18.4 Competing Thought Systems — 🟡
+
+Today the competition is **two-way**: System 1 (intuitive spiking) vs System 2
+(deliberate), resolved by the arbiter's uncertainty threshold (§5/§15). Within
+System 2, `ReasoningEngine` runs analogy/counterfactual/theory-of-mind operators
+but *aggregates* them rather than letting them compete. At the macro scale,
+`core/swarm.ts` + `organism_subbrains` coordinate specialized sub-brains.
+**Gap:** no N-way thought-cluster competition (exploration-vs-caution,
+short-vs-long-term) with a confidence/emotion/prediction-weighted resolver.
+**Fill:** promote the reasoning operators to scored, competing proposals resolved
+by a softmax over (confidence × emotional weight × survival relevance) — reusing
+the affect + criticality signals already on the bus.
+
+### §18.5 Curiosity-Driven Exploration — 🟡
+
+Curiosity is parameterized (`curiosityWeight`, `explorationTemp` in the genome,
+evolved by `MetaLearningSystem`) and drives the "reach for a distant association"
+creativity route in `ReasoningEngine`. Rising prediction uncertainty already
+raises System-2 engagement. **Gap:** the system doesn't *self-initiate* an
+exploration action (e.g. proactively scan an unindexed dir, or open a low-coverage
+memory cluster) when curiosity is high — it stays reactive. **Fill:** wire the
+curiosity signal to the proposed idle-cognition agent (§11) so high uncertainty
+schedules an exploratory `scan`/retrieval pass.
+
+### §18.6 Meta-Cognition — ✅
+
+`MetaLearningSystem` is the "thinking about thinking" engine: a composite **IQ**
+from six z-scored sub-scores (prediction accuracy, stability, problem-solving,
+adaptation speed, creativity, reasoning depth) plus a **held-out probe excluded
+from fitness** (anti-Goodhart self-honesty). Confidence estimation lives on every
+`ReasoningResult.confidence`; contradiction/coherence checking is the pipeline's
+`error` step (contradictions / missing-info / confidence JSON). Bias detection =
+the probe canary. Self-debugging seam = `evolution_audit` + benchmark gates.
+
+### §18.7 Temporal Cognition — 🟡
+
+Multi-scale time is real: ms (neural sub-steps) → seconds (frames) →
+minutes (background ticks) → session/lifetime (`continuity_snapshots`, IQ history).
+`memory_temporal_patterns` weights memories by hour-of-day; `twin` reasons over
+time-series; `crates/temporal-engine` (+ `computer-brain/crates/temporal-engine`)
+exist for richer temporal logic. **Gap:** "future-self simulation" and an explicit
+identity-evolution timeline aren't first-class — identity drift is recorded but not
+projected forward.
+
+### §18.8 Subconscious Processing — ✅
+
+The "below conscious awareness" tier is the set of **background ticks** that run
+without a prompt: `consolidationEngine` decay + spreading activation (the two
+`decayHandles` intervals in `index.ts`), `replayService` reactivation,
+`noveltyDetector`/anomaly scans, `semanticCluster` latent grouping. They influence
+"conscious" cognition indirectly by reshaping `importance`/`memory_relations`
+weights that the next retrieval reads. This is exactly the brief's subconscious
+model — it's simply already the background half of the system.
+
+### §18.9 Self-Preservation Dynamics — ✅
+
+Three layers protect coherence: (a) **knowledge** — EWC anti-catastrophic-forgetting
+in `MetaLearningSystem` (job 4) pulls important synapses back toward a checkpoint;
+(b) **memory/identity** — `cognitive_health` scores memory_integrity /
+identity_coherence / reasoning consistency, `immune_events` log + resolve threats,
+`organism` lifecycle can enter recovery; (c) **stability** — `BrainDynamics`
+homeostasis holds criticality near σ≈1 so cognition neither dies out nor seizes.
+Contradiction repair seam = the `error` step + immune response.
+
+### §18.10 Hybrid Reasoning — ✅
+
+The name `HybridCognitiveCore` is literal — it fuses five reasoning substrates,
+*not* just LLM tokens: **neural** (Izhikevich spiking System 1), **symbolic**
+(`ReasoningEngine` operators — deterministic, no LLM in-loop), **graph**
+(`memory_relations` traversal + spreading activation), **causal** (`imagination`
+transition simulation), and **probabilistic** (learned `ranker` + free-energy
+predictive coding). The LLM (`reasoning/pipeline.ts`) informs the brain over the
+bus but is one voice among five — satisfying "do not rely only on token prediction."
+
+### §18.11 Cognitive Ecology — 🟡
+
+The brief wants named faculty-agents (Memory / Emotion / Prediction / Reflection /
+Planning / Attention / Curiosity / Identity) that cooperate, compete, negotiate.
+**The faculties already exist as modules** — `MemorySystem` (Memory),
+`ReinforcementSystem` (Emotion), `PredictiveCodingEngine` (Prediction),
+`ReasoningEngine` (Reflection), `core/organism` (Planning), the attention pieces
+(Attention), the curiosity genome (Curiosity), `persistence`/`identity_profiles`
+(Identity). **Gap:** they're composed by *delegation* inside `HybridCognitiveCore`,
+not as autonomous agents that bid/negotiate over a shared blackboard. **Fill:**
+this is the same mechanism as §18.4 — give each faculty a scored proposal channel
+on `BrainEventBus`; the arbiter becomes the negotiation resolver. Low-risk because
+the faculties and the bus already exist; only the protocol is new.
+
+### §18.12 — The 20 output requirements → where answered
+
+| # | Output requirement | Section(s) |
+|---|---------------------|-----------|
+| 1 | Full architecture | §1 |
+| 2 | Folder structure | §2 |
+| 3 | Event-driven cognition framework | §7, §4(a) |
+| 4 | Database schema | §8 |
+| 5 | Agent orchestration system | §9, §18.11 |
+| 6 | Neural graph propagation logic | §6, §15 (CSR/STDP/spreading) |
+| 7 | Continuous cognition loops | §11, §4(a) |
+| 8 | Visualization engine | §10 |
+| 9 | API architecture | §13 |
+| 10 | Local-first execution | §14, Appendix A |
+| 11 | Distributed cognition system | §9 (civilization/swarm), §12 Tier 3 |
+| 12 | GPU optimization strategies | §12 Tier 4, §16 |
+| 13 | Concurrency models | §12, §16 (frame budget / timer ticks / WAL / worker offload) |
+| 14 | Memory management system | §6, §16 (buffers/pulse pool) |
+| 15 | Neuroplasticity algorithms | §15, §18.3 |
+| 16 | Dream simulation framework | §3 #10, §18.8 |
+| 17 | Meta-cognition systems | §18.6 |
+| 18 | Cognitive energy management | §18.1 |
+| 19 | Temporal reasoning framework | §18.7 |
+| 20 | Production-grade deployment plan | §12 |
+
+### §18.13 — New gaps folded into the §17 roadmap
+
+The expanded brief adds four gaps to the ledger; they cluster onto the existing
+phases (no new phase needed):
+
+| New gap | Module | Where it lands |
+|---------|--------|----------------|
+| Unified cognitive-energy ledger + attention fatigue | §18.1 | **Phase 1** (pairs with the saliency scorer) |
+| 5-term saliency (adds `uncertainty`) | §18.2 | **Phase 1** (the same `attention/saliency.ts`) |
+| N-way competing thought streams + negotiation protocol | §18.4 / §18.11 | **Phase 1–2** (one mechanism serves both; build on `BrainEventBus`) |
+| Curiosity self-initiation + future-self simulation | §18.5 / §18.7 | **Phase 1** (idle agent) / **Phase 3** (temporal) |
+
+**One mechanism unlocks three modules:** a scored-proposal protocol on
+`BrainEventBus` (faculties emit bids; the arbiter resolves by confidence × emotion
+× survival) simultaneously delivers Competing Thought Systems (§18.4), Cognitive
+Ecology (§18.11), and the negotiation half of Attention (§18.2). That's the
+highest-leverage single addition the expanded brief implies — and it reuses the
+bus, the affect signals, and the arbiter that already exist.
 
 ---
 
