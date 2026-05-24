@@ -10,6 +10,7 @@ import { UnifiedPanel } from "./components/UnifiedPanel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
 import { StatusBar } from "./components/StatusBar";
 import { VisionCortexPanel } from "./components/vision/VisionCortexPanel";
+import { CognitivePanel } from "./components/cognition/CognitivePanel";
 import { CompactLayout, FocusMode, CommandPalette, useCommandPalette } from "./components/brain-os";
 import { REGION_DEFINITIONS, BRAIN_ACTIONS } from "./data/regionDefinitions";
 import {
@@ -207,6 +208,9 @@ useEffect(() => {
 
   return (
     <main className="app-shell" data-layout={layout}>
+      {/* Hybrid-cognition HUD. Self-gates: renders only when a HybridCognitiveCore
+          is active (i.e. the app was opened with ?useHybrid=true), in any layout. */}
+      <CognitivePanel />
       {layout === "compact" && (
         <CompactLayout
           running={running}

@@ -13,6 +13,8 @@ import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
 import { generateNeuralGraph } from "../engine/neuralGraphGenerator";
 import { SignalSimulation } from "../engine/signalSimulation";
 import { SpikingEngine } from "../engine/SpikingEngine";
+import { HybridCognitiveCore } from "../engine/cognition/HybridCognitiveCore";
+import { isSpikingCapable } from "../engine/types";
 import {
   BrainVisualEffects,
   applyVisualEffectsToGraph,
@@ -27,7 +29,7 @@ import {
 // stays opt-in. Default false → the lightweight scripted SignalSimulation runs.
 // Opt in WITHOUT a rebuild by appending `?useSpiking=true` to the URL.
 const USE_SPIKING_ENGINE = false;
-type SimulationLike = SignalSimulation | SpikingEngine;
+type SimulationLike = SignalSimulation | SpikingEngine | HybridCognitiveCore;
 import { subscribeBrainBus } from "../engine/brainBus";
 import type { PerfPreset } from "../engine/performancePresets";
 import { PerformanceManager } from "../engine/PerformanceManager";
@@ -608,8 +610,11 @@ const renderFrame = () => {
           visualEffects.updateMembranePotential(simulation.membranePotentialNorm);
         }
         
-        // Update neuron-specific attributes if using SpikingEngine
-        if (simulation instanceof SpikingEngine) {
+        // Update neuron-specific attributes for any spiking-capable engine.
+        // Capability-detected (not `instanceof`) so a composed engine like
+        // HybridCognitiveCore — which wraps AdvancedBrainCore by delegation and is
+        // therefore NOT an instanceof SpikingEngine — still drives every visual.
+        if (isSpikingCapable(simulation)) {
           visualEffects.updateNeuronAttributes(
             simulation.neuronType,
             simulation.getBurstStatus?.(), // If available
@@ -789,14 +794,22 @@ const handlePointerClick = (event: PointerEvent) => {
     // Engine selection: the advanced AdvancedBrainCore (aliased as SpikingEngine)
     // is opt-in. Default stays SignalSimulation; append ?useSpiking=true to the
     // URL to drive the scene with the biologically-plausible engine live.
+    // The hybrid cognitive engine (System 1 spiking + System 2 reasoning + RL +
+    // meta-learning) is opt-in via ?useHybrid=true. It WRAPS AdvancedBrainCore, so
+    // it implies the spiking substrate and the advanced visual-effects pipeline.
+    const useHybridEngine =
+      typeof window !== "undefined" && window.location.search.includes("useHybrid=true");
     const useSpikingEngine =
       USE_SPIKING_ENGINE ||
+      useHybridEngine ||
       (typeof window !== "undefined" && window.location.search.includes("useSpiking=true"));
 
-    // Add spike raster container (if using the spiking engine)
-    if (useSpikingEngine && containerRef.current) {
-      containerRef.current.style.position = "relative";
-    }
+    // NOTE: do NOT force containerRef.style.position = "relative" here. The
+    // .brain-scene rule is `position: absolute; inset: 0`, which both fills the
+    // parent AND already establishes a containing block for absolutely-positioned
+    // debug overlays. Overriding it to "relative" drops the inset:0 sizing
+    // (relative + inset only offsets, never stretches), collapsing the container —
+    // and the canvas's height:100% — to zero. That was the spiking-only h:0 bug.
 
     const performanceManager = performanceManagerRef.current;
 const adjustedDensity = performanceManager
@@ -817,9 +830,14 @@ const adjustedDensity = performanceManager
     let simulation: SimulationLike;
     let visualEffects: BrainVisualEffects | null = null;
 
-    simulation = useSpikingEngine
-      ? new SpikingEngine(graph, selectedActionId)
-      : new SignalSimulation(graph, selectedActionId);
+    simulation = useHybridEngine
+      ? new HybridCognitiveCore(graph, selectedActionId, {
+          density: adjustedDensity,
+          seed: Math.round(adjustedDensity * 1000) + 19,
+        })
+      : useSpikingEngine
+        ? new SpikingEngine(graph, selectedActionId)
+        : new SignalSimulation(graph, selectedActionId);
 
     simulation.setRunning(simulationRunning);
     simulation.setSpeed(signalSpeed);
@@ -862,6 +880,13 @@ const adjustedDensity = performanceManager
       pathways: graph.pathways.length,
       regions: graph.regionOrder.length,
     });
+
+    // Dispose the simulation on rebuild/unmount. Matters for HybridCognitiveCore,
+    // which unsubscribes from the WS bus and flushes its learned snapshot here.
+    return () => {
+      const disposable = simulation as { dispose?: () => void };
+      if (typeof disposable.dispose === "function") disposable.dispose();
+    };
     // Intentionally only depend on neuronDensity (and the stable metrics setter):
     // action/speed/running/visibility changes are handled by the small effects
     // above so we don't rebuild the whole graph on every slider tick. Latest
