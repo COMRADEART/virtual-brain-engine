@@ -471,12 +471,19 @@ export class IzhikevichNeuronEngine {
       // Add external input if provided
       const I_external = externalInput ? externalInput[i] : 0;
       
+      // Voltage-dependent Mg²⁺ block of the NMDA receptor (Jahr & Stevens 1990,
+      // [Mg²⁺]=1 mM). At rest (−65 mV) the channel is ~94% blocked; it only opens
+      // as the cell depolarises. Without this gate NMDA behaves like a second,
+      // slowly-decaying AMPA and dominates the synaptic current, driving the whole
+      // network into permanent epileptic runaway (every neuron firing every step).
+      const mgBlock = 1 / (1 + Math.exp(-0.062 * this.v[i]) * 0.2805); // 1/3.57
+
       // Total synaptic current (conductance-based)
       const I_syn =
-        this.g_ampa[i] * (0 - this.v[i]) +          // AMPA: E_rev = 0 mV
-        this.g_nmda[i] * (0 - this.v[i]) +          // NMDA: E_rev = 0 mV
-        this.g_gaba_a[i] * (-70 - this.v[i]) +     // GABA_A: E_rev = -70 mV
-        this.g_gaba_b[i] * (-90 - this.v[i]);      // GABA_B: E_rev = -90 mV
+        this.g_ampa[i] * (0 - this.v[i]) +              // AMPA: E_rev = 0 mV
+        this.g_nmda[i] * mgBlock * (0 - this.v[i]) +    // NMDA: E_rev = 0 mV, Mg-gated
+        this.g_gaba_a[i] * (-70 - this.v[i]) +         // GABA_A: E_rev = -70 mV
+        this.g_gaba_b[i] * (-90 - this.v[i]);          // GABA_B: E_rev = -90 mV
 
       // Total input current
       const I_total = this.I[i] + I_external + I_syn;
@@ -488,6 +495,16 @@ export class IzhikevichNeuronEngine {
       // Euler integration
       this.v[i] += dv * this.dt;
       this.u[i] += du * this.dt;
+
+      // Numerical safety net. Explicit Euler on the stiff Izhikevich ODE can
+      // diverge under a strong transient (a single bad neuron then poisons every
+      // I_syn it projects to via g·(0−v), cascading). A positive blow-up is caught
+      // by the v≥30 spike reset below, but a negative runaway (v→−4000+) never is,
+      // so clamp anything non-finite or grossly sub-physiological back to reset.
+      if (!Number.isFinite(this.v[i]) || this.v[i] < -100) {
+        this.v[i] = this.c[i];
+        this.u[i] = this.b[i] * this.c[i];
+      }
 
       // Spike detection
       if (this.v[i] >= 30) {
