@@ -147,6 +147,34 @@ export interface BrainSimulation {
   readonly gammaPhase?: number;
 }
 
+/**
+ * The richer surface a spiking-capable engine (AdvancedBrainCore, or anything
+ * wrapping it like HybridCognitiveCore) exposes on top of BrainSimulation.
+ */
+export interface SpikingCapable extends BrainSimulation {
+  readonly neuronType: Int8Array;
+  readonly dopamine: number;
+  readonly acetylcholine: number;
+  readonly serotonin: number;
+  readonly norepinephrine: number;
+  readonly gammaPhase: number;
+  getBurstStatus(): Float32Array | null;
+  getMemoryTrace(): Float32Array | null;
+}
+
+/**
+ * Capability guard used by the renderer instead of `instanceof SpikingEngine`.
+ * A composed engine (HybridCognitiveCore wraps AdvancedBrainCore via delegation)
+ * is NOT an `instanceof` of the inner class, so the renderer must feature-detect.
+ * This mirrors the `"membranePotentialNorm" in sim` test already used alongside it.
+ */
+export function isSpikingCapable(sim: BrainSimulation): sim is SpikingCapable {
+  return (
+    "neuronType" in sim &&
+    typeof (sim as { getBurstStatus?: unknown }).getBurstStatus === "function"
+  );
+}
+
 export interface BrainMetrics {
   neurons: number;
   pathways: number;

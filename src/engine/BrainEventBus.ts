@@ -58,6 +58,15 @@ export interface BrainEventMap {
   "state:change": { name: string };
   /** Criticality / homeostasis telemetry: branching ratio σ (≈1 at criticality). */
   "dynamics:criticality": { branchingRatio: number; meanRate: number };
+  // ── Higher-cognition layer (HybridCognitiveCore and its subsystems) ──────────
+  /** Reinforcement: a TD/reward-prediction-error update with the resulting affect. */
+  "rl:rpe": { delta: number; value: number; valence: number; arousal: number };
+  /** Meta-learning: a fresh composite-IQ report at an episode boundary. */
+  "meta:iq": { value: number; components: Record<string, number>; probe: number };
+  /** Arbitration switched the controlling thinking system. */
+  "cognition:mode": { mode: "system1" | "system2" | "hybrid"; uncertainty: number };
+  /** System 2 emitted one reasoning step (for the introspection feed). */
+  "reason:step": { kind: string; explain: string; depth: number; confidence: number };
 }
 
 export type BrainEventName = keyof BrainEventMap;

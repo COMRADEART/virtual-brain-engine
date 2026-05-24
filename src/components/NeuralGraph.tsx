@@ -266,7 +266,7 @@ export class NeuralGraphRenderer {
     for (const regionMesh of this.regionMeshes) {
       const regionId = regionMesh.userData.regionId as BrainRegionId;
       const region = REGION_BY_ID[regionId];
-      const regionIndex = this.graph.regionOrder.indexOf(regionId);
+      const regionIndex = REGION_INDEX[regionId];
       const baseIntensity = regionIntensity[regionIndex] ?? 0;
       const flash = regionFlashIntensity[regionIndex] ?? 0;
       const isHippocampus = regionId === "hippocampus-l" || regionId === "hippocampus-r";

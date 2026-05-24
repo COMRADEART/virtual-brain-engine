@@ -7,7 +7,9 @@ import path from "node:path";
 const TARGET_URL = process.env.VERIFY_URL ?? "http://127.0.0.1:5173/";
 const OUT = path.resolve("artifacts/render-check.png");
 const log = (...a) => console.log("[shot]", ...a);
-setTimeout(() => { log("WATCHDOG timeout — forcing exit"); process.exit(2); }, 25000);
+const WATCHDOG_MS = Number(process.env.SHOT_WATCHDOG_MS ?? 25000);
+const RENDER_WAIT_MS = Number(process.env.SHOT_WAIT_MS ?? 8000);
+setTimeout(() => { log("WATCHDOG timeout — forcing exit"); process.exit(2); }, WATCHDOG_MS);
 
 const chromeCandidates = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -64,8 +66,9 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Log.enable");
 await send("Page.navigate", { url: TARGET_URL });
-log("navigated, waiting 8s for render…");
-await new Promise((r) => setTimeout(r, 8000));
+log(`navigated, waiting ${RENDER_WAIT_MS}ms for render…`);
+await new Promise((r) => setTimeout(r, RENDER_WAIT_MS));
+log("errors-so-far:", errors.length ? errors.slice(0, 8) : "none");
 
 // Main-thread liveness + canvas state (this evaluate runs on the page main
 // thread; if it returns promptly the thread is responsive).

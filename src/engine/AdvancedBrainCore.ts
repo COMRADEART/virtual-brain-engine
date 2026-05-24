@@ -39,6 +39,7 @@ import { PredictiveCodingEngine } from "./PredictiveCodingEngine";
 import { RealisticConnectome } from "./RealisticConnectome";
 import type { CognitiveState } from "./cognitiveStates";
 import type { LogicalRegionId } from "../../shared/pipeline";
+import type { NeuromodSnapshot } from "../../shared/brainSnapshot";
 import type {
   BrainActionId,
   BrainRegionId,
@@ -61,6 +62,15 @@ export interface ReplayEvent {
   timestamp: number | string;
 }
 
+// ── Fixed-step integration ────────────────────────────────────────────────────
+// The neural ODE runs FIXED_SUBSTEPS sub-millisecond steps per render frame with
+// the drive held constant across them. One 1 ms step per frame (the old path) left
+// every neuron permanently sub-threshold AND ~16× desynced from theta. A 0.5 ms
+// step is comfortably inside Euler's stability region for these parameters.
+const SUB_DT_MS = 0.5; // Izhikevich integration timestep (ms)
+const FIXED_SUBSTEPS = 8; // sub-steps per render frame → 4 ms sim-time/frame
+const SUB_DT_S = SUB_DT_MS / 1000; // per-substep dt in seconds (trace/STDP decay)
+
 // ── Drive scaling (in Izhikevich current units; RS cells fire tonically ~I=10) ─
 const TONIC_DRIVE = 1.2; // keeps the net from going fully silent
 const ACTION_DRIVE = 5.5; // current injected into the active action's regions
@@ -71,9 +81,9 @@ const REPLAY_SCALE = 5.0; // replay reactivation drive
 const MAX_DRIVE = 18; // hard ceiling per region
 
 // ── Synaptic conductance increments per spike (scaled by plastic weight) ──────
-const AMPA_GAIN = 0.9;
-const NMDA_GAIN = 0.25;
-const GABA_GAIN = 1.1;
+const AMPA_GAIN = 0.09;
+const NMDA_GAIN = 0.018;
+const GABA_GAIN = 2.6;
 
 // ── STDP ──────────────────────────────────────────────────────────────────
 const STDP_LTP = 0.012; // potentiation rate (pre-before-post)
@@ -122,6 +132,12 @@ export class AdvancedBrainCore implements BrainSimulation {
   /** +1 excitatory / −1 inhibitory, straight from the connectome (Dale). */
   readonly neuronType: Int8Array;
   private readonly burstStatus: Float32Array;
+  /** Per-neuron "fired this frame" flash (1 on spike, decays). Overlaid onto
+   *  membranePotentialNorm so a spike's +30 mV peak renders before the reset. */
+  private readonly firedFlash: Float32Array;
+  /** Reused per-frame list of unique neurons that spiked across this frame's
+   *  substeps (drives region activity, bursts, and pulse spawning). */
+  private readonly frameSpikes: number[] = [];
 
   // ── Scratch / precomputed (allocated once) ─────────────────────────────────
   private readonly R: number;
@@ -136,6 +152,14 @@ export class AdvancedBrainCore implements BrainSimulation {
   private readonly regionSpikeCount: Float32Array; // per region, this frame
   private readonly regionNeuronCount: Float32Array;
   private readonly traceX: Float32Array; // STDP eligibility trace per neuron
+  /** Per-(postsynaptic-)neuron metaplastic modulation of the STDP rate. Default
+   *  1.0 (identity). The MetaLearningSystem writes this to implement a BCM-style
+   *  sliding threshold (homeostatic metaplasticity). Read inside applyStdp. */
+  private readonly metaplastic: Float32Array;
+  /** Global STDP learning-rate multiplier set by the meta-learner. Default 1.0
+   *  (identity) so the engine's stabilised dynamics are unchanged unless a
+   *  HybridCognitiveCore opts in. Bounded by the caller. */
+  private plasticityScale = 1;
   private prevSpikes: readonly number[] = [];
   private nextPulseId = 1;
   private spawnAccumulator = 0;
@@ -172,12 +196,17 @@ export class AdvancedBrainCore implements BrainSimulation {
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
     this.membranePotentialNorm = new Float32Array(this.N);
     this.burstStatus = new Float32Array(this.N);
+    this.firedFlash = new Float32Array(this.N);
+
+    // Run the neuron engine at the sub-millisecond fixed step (Euler-stable).
+    this.izh.setTimestep(SUB_DT_MS);
 
     // 5) Scratch + precomputed lookups.
     this.regionDrive = new Float32Array(this.R);
     this.regionSpikeCount = new Float32Array(this.R);
     this.regionNeuronCount = new Float32Array(this.R);
     this.traceX = new Float32Array(this.N);
+    this.metaplastic = new Float32Array(this.N).fill(1);
     this.regionNeurons = Array.from({ length: this.R }, () => [] as number[]);
     this.pathwaysBySource = Array.from({ length: this.N }, () => [] as number[]);
     for (let i = 0; i < this.N; i++) {
@@ -273,6 +302,95 @@ export class AdvancedBrainCore implements BrainSimulation {
     this.neuromod.setLevel("acetylcholine", v);
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  //  Cognition seams — read/written by HybridCognitiveCore's subsystems. These
+  //  are additive and default to identity behaviour; they do NOT alter the
+  //  stabilised dynamics unless a wrapper deliberately drives them.
+  // ════════════════════════════════════════════════════════════════════════
+
+  /** Variational free energy from the predictive-coding hierarchy (surprise). */
+  getFreeEnergy(): number {
+    return this.predictive.getFreeEnergy();
+  }
+  /** Criticality score 0..1 (1 = poised at σ≈1). */
+  getCriticalityScore(): number {
+    return this.dynamics.getCriticalityScore();
+  }
+  /** Population mean firing fraction per step (homeostatic target ≈0.02). */
+  getMeanRate(): number {
+    return this.dynamics.getMeanRate();
+  }
+  /** Branching-ratio σ estimate from the homeostasis controller. */
+  getBranchingRatio(): number {
+    return this.dynamics.getBranchingRatio();
+  }
+  /** Top-down predicted activity for a region (by REGION_ORDER index). */
+  getRegionPrediction(regionIndex: number): number {
+    return this.predictive.getPrediction(regionIndex);
+  }
+  /** Signed prediction error for a region (by REGION_ORDER index). */
+  getRegionError(regionIndex: number): number {
+    return this.predictive.getPredictionError(regionIndex);
+  }
+  /** Bias a region's top-down prior — the System 2 → System 1 injection path. */
+  setExpectation(regionId: BrainRegionId, value: number): void {
+    this.predictive.setExpectation(regionId, value);
+  }
+  /** The plastic connectome weight vector (learned by STDP; the durable payload). */
+  getConnectomeWeights(): Float32Array {
+    return this.connectome.weight;
+  }
+  /** Per-neuron metaplastic rate array the meta-learner writes (BCM threshold). */
+  getMetaplasticArray(): Float32Array {
+    return this.metaplastic;
+  }
+
+  /**
+   * Apply a bounded, SAFE subset of meta-learned hyperparameters. Deliberately
+   * excludes the E:I synaptic gains: those stay fixed and the homeostatic
+   * controller regulates overall gain, so meta-tuning them is redundant and
+   * risks re-seizing the freshly-stabilised network.
+   */
+  applyMetaTuning(t: {
+    plasticityScale?: number;
+    dopamineBaseline?: number;
+    acetylcholineBaseline?: number;
+  }): void {
+    if (t.plasticityScale !== undefined) this.plasticityScale = clamp(t.plasticityScale, 0.25, 3);
+    if (t.dopamineBaseline !== undefined) this.neuromod.setBaseline("dopamine", t.dopamineBaseline);
+    if (t.acetylcholineBaseline !== undefined) {
+      this.neuromod.setBaseline("acetylcholine", t.acetylcholineBaseline);
+    }
+  }
+
+  /** Capture the durable core state (learned weights + tonic neuromodulators). */
+  serializeCore(): { connectomeWeights: Float32Array; neuromod: NeuromodSnapshot } {
+    return {
+      connectomeWeights: this.connectome.weight.slice(),
+      neuromod: {
+        dopamine: this.neuromod.dopamine,
+        acetylcholine: this.neuromod.acetylcholine,
+        serotonin: this.neuromod.serotonin,
+        norepinephrine: this.neuromod.norepinephrine,
+      },
+    };
+  }
+
+  /**
+   * Restore durable core state. Weights are copied only when the length matches
+   * (same topology); otherwise the restore is rejected and the caller keeps the
+   * freshly-built brain. Returns whether the weights were applied.
+   */
+  loadCoreState(state: { connectomeWeights: Float32Array; neuromod: NeuromodSnapshot }): boolean {
+    if (state.connectomeWeights.length !== this.connectome.weight.length) return false;
+    this.connectome.weight.set(state.connectomeWeights);
+    this.neuromod.setLevel("dopamine", state.neuromod.dopamine);
+    this.neuromod.setLevel("acetylcholine", state.neuromod.acetylcholine);
+    this.neuromod.setLevel("serotonin", state.neuromod.serotonin);
+    this.neuromod.setLevel("norepinephrine", state.neuromod.norepinephrine);
+    return true;
+  }
+
   /**
    * Apply a cognitive-state overlay (Focus / Recall / Creative …). It retunes the
    * neuromodulatory baselines and the oscillation band gains, and stores the
@@ -330,7 +448,8 @@ export class AdvancedBrainCore implements BrainSimulation {
     if (!this.running) return;
     const dt = Math.min(deltaSeconds, 0.05); // clamp huge frame gaps
 
-    // 1) Slow subsystems. Oscillation tempo scales with the user speed slider.
+    // 1) Slow subsystems advance ONCE per frame on real time (oscillation tempo
+    //    scales with the user speed slider).
     this.oscillations.update(dt * this.speed);
     this.neuromod.update(dt);
     const attention = Math.min(1, (this.neuromod.acetylcholine + this.neuromod.norepinephrine) * 0.7);
@@ -338,40 +457,60 @@ export class AdvancedBrainCore implements BrainSimulation {
     // feeds THIS frame's input (surprise → bottom-up boost → bursts).
     this.predictive.update(this.regionIntensity, attention, dt);
 
-    // 2) Assemble + inject per-region drive.
+    // 2) Assemble per-region drive once. It is held CONSTANT across the substeps —
+    //    a sustained current is what actually lets a neuron climb to threshold
+    //    (a single 1 ms kick that is then zeroed never does).
     this.computeDrive(elapsedSeconds);
     const homeostatic = this.dynamics.getHomeostaticGain();
-    for (let ri = 0; ri < this.R; ri++) {
-      const current = clamp(this.regionDrive[ri] * homeostatic, 0, MAX_DRIVE);
-      if (current > 0.001) this.izh.applyCurrent(this.regionNeurons[ri], current);
+
+    // 3) Fast neural dynamics: FIXED_SUBSTEPS sub-millisecond Izhikevich steps with
+    //    spike propagation + STDP each substep. Collect the frame's unique firers.
+    const frameSpikes = this.frameSpikes;
+    frameSpikes.length = 0;
+    let totalSpikes = 0;
+    for (let k = 0; k < FIXED_SUBSTEPS; k++) {
+      // Re-inject the drive every substep — izh.update() zeroes I after integrating.
+      for (let ri = 0; ri < this.R; ri++) {
+        const current = clamp(this.regionDrive[ri] * homeostatic, 0, MAX_DRIVE);
+        if (current > 0.001) this.izh.applyCurrent(this.regionNeurons[ri], current);
+      }
+      this.propagateSpikes();        // previous substep's spikes → CSR connectome
+      this.izh.update(null);         // one SUB_DT_MS integration step
+      const spikes = this.izh.getLastStepSpikes();
+      this.applyStdp(spikes, SUB_DT_S); // per-substep timing, NOT the frame dt
+      for (const i of spikes) {
+        if (this.firedFlash[i] < 1) frameSpikes.push(i); // unique within the frame
+        this.firedFlash[i] = 1;
+      }
+      totalSpikes += spikes.length;
+      this.prevSpikes = spikes;
     }
 
-    // 3) Propagate the previous step's spikes through the CSR connectome.
-    this.propagateSpikes();
-
-    // 4) Integrate one Izhikevich timestep, then collect the new spikes.
-    this.izh.update(null);
-    const spikes = this.izh.getLastStepSpikes();
-
-    // 5) Dopamine-gated STDP on the spiking edges only.
-    this.applyStdp(spikes, dt);
-
-    // 6) Cognition: tally region activity, drive memory, react to surprise.
-    this.updateRegionActivity(spikes, dt);
+    // 4) Cognition once per frame on real time. dynamics sees the mean per-substep
+    //    spike count so its activity/homeostasis target matches the old cadence.
+    this.updateRegionActivity(frameSpikes, dt);
     const hippo = 0.5 * (this.regionIntensity[REGION_INDEX["hippocampus-l"]] + this.regionIntensity[REGION_INDEX["hippocampus-r"]]);
     this.memory.update(dt, hippo, this.regionIntensity);
-    this.dynamics.update(spikes.length, dt);
+    this.dynamics.update(totalSpikes / FIXED_SUBSTEPS, dt);
     // High free energy = the world surprised us → noradrenergic arousal burst.
     if (this.predictive.getFreeEnergy() > 6) this.neuromod.pulse("norepinephrine", 0.12, "surprise");
 
-    // 7) Visual buffers.
+    // 5) Visual buffers once per frame. Overlay the fire flash: a neuron that
+    //    spiked this frame has already reset to c by now, so its post-reset voltage
+    //    would render dim — force its visual membrane to the firing colour, then
+    //    fade so spikes read as bright flashes rather than vanishing.
     this.izh.writeMembranePotentialsNormalized(this.membranePotentialNorm);
-    this.updateBursts(spikes, dt);
+    const flashDecay = Math.pow(0.02, dt); // ≈0.94/frame at 60 fps → ~0.15 s tail
+    const mem = this.membranePotentialNorm;
+    const flash = this.firedFlash;
+    for (let i = 0; i < this.N; i++) {
+      if (flash[i] > mem[i]) mem[i] = flash[i];
+      flash[i] *= flashDecay;
+    }
+    this.updateBursts(frameSpikes, dt);
     this.advancePulses(dt);
-    this.spawnPulses(spikes, dt);
+    this.spawnPulses(frameSpikes, dt);
     this._memoryIntensity = Math.max(this._memoryIntensity * Math.pow(0.92, dt), this.memory.isReplaying() ? 0.6 : 0);
-
-    this.prevSpikes = spikes;
   }
 
   // ── Drive assembly ──────────────────────────────────────────────────────────
@@ -443,11 +582,16 @@ export class AdvancedBrainCore implements BrainSimulation {
     for (let i = 0; i < this.N; i++) this.traceX[i] *= decay;
 
     if (spikes.length === 0) return;
-    const gain = this.neuromod.getPlasticityGain();
+    // Three-factor rate: Hebbian × neuromodulatory write-enable (dopamine-gated)
+    // × global meta-learned plasticity scale. The per-neuron metaplastic factor
+    // (BCM sliding threshold) is folded in below.
+    const gain = this.neuromod.getPlasticityGain() * this.plasticityScale;
     const { outStart, outTarget, inStart, inSyn, synSource, weight } = this.connectome;
     const sign = this.neuronType;
+    const meta = this.metaplastic;
 
     for (const i of spikes) {
+      const rate = gain * meta[i]; // metaplasticity is indexed by the spiking cell
       // LTP at the POSTsynaptic spike: strengthen excitatory inputs whose
       // presynaptic cell fired recently (pre-before-post). Needs incoming edges.
       const inS = inStart[i];
@@ -456,7 +600,7 @@ export class AdvancedBrainCore implements BrainSimulation {
         const s = inSyn[k];
         const pre = synSource[s];
         if (sign[pre] <= 0) continue; // only excitatory synapses are plastic here
-        const w = weight[s] + STDP_LTP * this.traceX[pre] * gain;
+        const w = weight[s] + STDP_LTP * this.traceX[pre] * rate;
         weight[s] = w > W_MAX ? W_MAX : w;
       }
       // LTD at the PREsynaptic spike: weaken this cell's outgoing excitatory
@@ -465,7 +609,7 @@ export class AdvancedBrainCore implements BrainSimulation {
         const os = outStart[i];
         const oe = outStart[i + 1];
         for (let s = os; s < oe; s++) {
-          const w = weight[s] - STDP_LTD * this.traceX[outTarget[s]] * gain;
+          const w = weight[s] - STDP_LTD * this.traceX[outTarget[s]] * rate;
           weight[s] = w < W_MIN ? W_MIN : w;
         }
       }

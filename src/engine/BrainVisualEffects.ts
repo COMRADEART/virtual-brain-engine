@@ -164,33 +164,6 @@ void main() {
   
   gl_FragColor = vec4(finalCol, clamp(alpha, 0.0, 1.0));
 }
-  return col;
-}
-
-void main() {
-  float m = vMembraneNorm;
-  vec3 baseCol = membraneColour(m);
-
-  // Fresnel rim glow — cells depolarise near the viewer
-  vec3 n = normalize(vNormal);
-  vec3 v = normalize(vViewPosition);
-  float rim = 1.0 - max(dot(n, v), 0.0);
-  rim = pow(rim, 2.2);
-
-  // Theta oscillation breathing: subtle periodic luminance pulse
-  float breathe = sin(uOscillationPhase) * 0.06 + 1.0;
-  float globalPulse = uGlobalActivity * 0.18 * breathe;
-
-  // Firing burst: bright emissive flare when m > 0.85
-  float firing = smoothstep(0.85, 1.0, m);
-  vec3 fireCol = vec3(1.0, 1.0, 0.6) * firing * 0.7;
-
-  vec3 finalCol = baseCol * (1.0 + rim * 0.45 + globalPulse) + fireCol;
-
-  // Additive: keep transparent in dim regions so background bleeds through
-  float alpha = 0.5 + rim * 0.3 + m * 0.3 + firing * 0.5;
-  gl_FragColor = vec4(finalCol, clamp(alpha, 0.0, 1.0));
-}
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -910,8 +883,8 @@ export class BrainVisualEffects {
     burstStatus: Float32Array | null,      // 0-1 for bursting neurons
     memoryTrace: Float32Array | null       // 0-1 memory engagement
   ): void {
-    // Update neuron type attribute
-    if (neuronType) {
+    // Update neuron type attribute (immutable after build → upload once).
+    if (neuronType && !this.neuronTypeUploaded) {
       const attr = this.neuronAttrGeometry?.getAttribute("neuronType") as THREE.BufferAttribute | undefined;
       if (attr) {
         const arr = attr.array as Float32Array;
@@ -921,6 +894,7 @@ export class BrainVisualEffects {
           arr[i] = neuronType[i] > 0 ? 1.0 : 0.0;
         }
         attr.needsUpdate = true;
+        this.neuronTypeUploaded = true;
       }
     }
     
@@ -1023,10 +997,12 @@ export class BrainVisualEffects {
       });
     }
     
-    // Dispose composer and passes
+    // Dispose composer and passes. Iterate a snapshot, not the live array:
+    // the previous while-loop spun forever whenever passes[0] was a kept pass
+    // (neuromodPass/filmGrainPass) — it skipped removal but the array never
+    // shrank, hanging the main thread under StrictMode's double-mount dispose.
     if (this.composer) {
-      while (this.composer.passes.length > 0) {
-        const pass = this.composer.passes[0];
+      for (const pass of [...this.composer.passes]) {
         if (pass !== this.neuromodPass && pass !== this.filmGrainPass) {
           this.composer.removePass(pass);
         }
@@ -1270,7 +1246,7 @@ private updatePulseTrails(_elapsed: number): void {
       const mat = this.regionMaterialMap.get(regionId);
       if (!mesh || !mat) continue;
 
-      const rIdx = this.graph.regionOrder.indexOf(regionId);
+      const rIdx = REGION_INDEX[regionId];
       const intensity = regionIntensity[rIdx] ?? 0;
 
       // Region-local phase offset
@@ -1496,11 +1472,14 @@ private updatePulseTrails(_elapsed: number): void {
   // Per-instance attribute geometry for the swapped neuron material (set by
   // applyVisualEffectsToGraph). Null until the material swap happens.
   private neuronAttrGeometry: THREE.BufferGeometry | null = null;
+  // neuronType is fixed at connectome-build time; upload it once, not per frame.
+  private neuronTypeUploaded = false;
 
   /** Attach the neuron InstancedMesh geometry whose instanced attributes the
    *  NEURON_VERT shader reads (membraneNorm/neuronType/burstStatus/memoryTrace). */
   attachNeuronGeometry(geometry: THREE.BufferGeometry): void {
     this.neuronAttrGeometry = geometry;
+    this.neuronTypeUploaded = false; // re-upload type for the newly attached geometry
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1593,6 +1572,12 @@ export function applyVisualEffectsToGraph(
   // burstStatus / memoryTrace), one float per neuron instance.
   const oldNeuron = (renderer as unknown as Record<string, unknown>).neuronMesh as THREE.InstancedMesh | undefined;
   if (oldNeuron) {
+    // NOTE: this material swap is currently decorative-only — the swapped-in
+    // membrane-heatmap ShaderMaterial does not visibly render (the neuron mesh's
+    // draw fires once then stops; see docs/IMPROVEMENT_PLAN.md "neuronMesh membrane
+    // path"). The live spiking visuals come from BrainVisualEffects.group
+    // (RegionBreathing glow + PulseTrails + NeurotransmitterParticles), which ARE
+    // driven by the (now stabilized) dynamics. Left in place pending that repair.
     oldNeuron.material = nm;
     const geo = oldNeuron.geometry;
     const count = oldNeuron.count;
