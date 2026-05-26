@@ -68,6 +68,11 @@ export class OllamaConnector implements Connector {
       model: opts.model ?? this.chatModel,
       messages,
       stream: false,
+      // Disable "thinking" mode. Reasoning models (qwen3, deepseek-r1, …) otherwise
+      // emit a long <think> block before answering, which (a) stalls indefinitely
+      // under `format:"json"` and (b) adds large latency to every pipeline step.
+      // Ignored by non-thinking models, so it's a safe default for a responsive brain.
+      think: false,
       options: opts.temperature !== undefined ? { temperature: opts.temperature } : undefined,
     };
     if (opts.format === "json") {
@@ -111,6 +116,7 @@ export class OllamaConnector implements Connector {
           model: opts.model ?? this.chatModel,
           messages,
           stream: true,
+          think: false, // see send(): keep reasoning models from stalling/adding latency
           options: opts.temperature !== undefined ? { temperature: opts.temperature } : undefined,
         }),
         signal: opts.signal,

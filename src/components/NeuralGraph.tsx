@@ -30,6 +30,12 @@ export class NeuralGraphRenderer {
   private readonly signalRegionColors: THREE.Color[];
   private readonly matrix = new THREE.Matrix4();
   private readonly color = new THREE.Color();
+  // Reused constants/scratch for the per-frame update loops — hoisted out so the
+  // hot paths (region/neuron color + LOD) don't allocate a Color/Vector3 per
+  // element per frame (GC churn at 60 Hz with thousands of neurons).
+  private readonly white = new THREE.Color("#ffffff");
+  private readonly black = new THREE.Color("#000000");
+  private readonly lodScratch = new THREE.Vector3();
   private readonly pulseScale = new THREE.Vector3();
   private readonly regionMaterials = new Map<BrainRegionId, THREE.MeshBasicMaterial>();
   private readonly pulseSamplePosition = new THREE.Vector3();
@@ -281,7 +287,7 @@ export class NeuralGraphRenderer {
 
       regionMesh.visible = visibility[regionId];
       material.opacity = selected ? 0.28 : 0.08 + intensity * 0.17 + flash * 0.12;
-      material.color.set(region.color).lerp(new THREE.Color("#ffffff"), Math.min(0.6, intensity * 0.45));
+      material.color.set(region.color).lerp(this.white, Math.min(0.6, intensity * 0.45));
 
       const pulse = selected ? Math.sin(elapsedSeconds * 4) * 0.025 : 0;
       const flashScale = 1 + flash * 0.08;
@@ -301,7 +307,7 @@ export class NeuralGraphRenderer {
     for (let index = 0; index < this.graph.nodes.length; index += 1) {
       const node = this.graph.nodes[index];
       if (!visibility[node.regionId]) {
-        this.neuronMesh.setColorAt(index, new THREE.Color("#000000"));
+        this.neuronMesh.setColorAt(index, this.black);
         continue;
       }
 
@@ -330,7 +336,7 @@ export class NeuralGraphRenderer {
       const visible = visibility[node.regionId];
       const lodScale = this.performanceManager.getNeuronLodScale(
         this.performanceManager.getNeuronLodLevel(
-          new THREE.Vector3(node.position[0], node.position[1], node.position[2])
+          this.lodScratch.set(node.position[0], node.position[1], node.position[2])
         )
       );
       this.writeNeuronMatrix(index, visible ? 1 : 0, lodScale);

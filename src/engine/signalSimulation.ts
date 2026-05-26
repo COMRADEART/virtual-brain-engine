@@ -9,8 +9,7 @@ import type {
   SignalPulse,
   SynapticPathway,
 } from "./types";
-import { getActionColor } from "../data/regionDefinitions";
-import type { ReplayEvent } from "../../server/src/memory/replayService";
+import type { ReplayEvent } from "../../shared/replay";
 
 const DEFAULT_MAX_PULSES = 260;
 
@@ -65,10 +64,13 @@ export class SignalSimulation {
   private maxPulses = DEFAULT_MAX_PULSES;
   private nextPulseId = 1;
   private spawnAccumulator = 0;
-  private actionStartTime = 0;
   private readonly random = mulberry32(381);
   private readonly eligiblePathways: SynapticPathway[] = [];
   private readonly eligibleWeights: number[] = [];
+  // Precomputed in rebuildEligiblePathways() (on construct/setAction/reset) so
+  // step() never allocates a Set or runs indexOf per frame.
+  private activeRegionSet: Set<BrainRegionId> = new Set();
+  private readonly activeRegionIndices: number[] = [];
   private readonly actionColors: Record<BrainActionId, string> = {
     "attentional-blink": "#a0d8f3",
     "eureka-moment": "#e7b3ff",
@@ -110,7 +112,6 @@ export class SignalSimulation {
   constructor(graph: NeuralGraph, actionId: BrainActionId) {
     this.graph = graph;
     this.actionId = actionId;
-    this.actionStartTime = Date.now();
     this.regionIntensity = new Float32Array(graph.regionOrder.length);
     this.regionFlashIntensity = new Float32Array(graph.regionOrder.length);
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
@@ -153,7 +154,7 @@ export class SignalSimulation {
     const pathway = weightedPick(this.eligiblePathways, this.eligibleWeights, this.random);
     if (!pathway) return;
 
-    const replayColor = `hsl(220, 90%, ${50 + Math.floor(Math.random() * 30)}%)`; // Blue-ish
+    const replayColor = `hsl(220, 90%, ${50 + Math.floor(this.random() * 30)}%)`; // Blue-ish (seeded for determinism)
     this.pulses.push({
       id: this.nextPulseId++,
       pathwayIndex: pathway.id,
@@ -207,7 +208,6 @@ export class SignalSimulation {
     }
 
     this.actionId = actionId;
-    this.actionStartTime = Date.now();
     this.pulses.length = 0;
     this.spawnAccumulator = 0;
     this.regionIntensity.fill(0);
@@ -217,8 +217,6 @@ export class SignalSimulation {
   }
   
   private initializeEmergentAction(): void {
-    const elapsedSeconds = (Date.now() - this.actionStartTime) / 1000;
-    
     switch (this.actionId) {
       case "attentional-blink":
         emergentActions.initAttentionalBlink(this);
@@ -281,11 +279,9 @@ export class SignalSimulation {
     this._memoryIntensity *= Math.pow(0.92, deltaSeconds);
 
     const action = ACTION_BY_ID[this.actionId];
-    const activeRegionSet = new Set(action.activeRegions);
 
-    for (const regionId of action.activeRegions) {
-      const regionIndex = this.graph.regionOrder.indexOf(regionId);
-      if (regionIndex >= 0 && this.running) {
+    if (this.running) {
+      for (const regionIndex of this.activeRegionIndices) {
         this.regionIntensity[regionIndex] = Math.max(
           this.regionIntensity[regionIndex],
           0.28 + Math.sin(elapsedSeconds * 4.5 + regionIndex) * 0.09,
@@ -310,7 +306,7 @@ export class SignalSimulation {
 
     this.spawnAccumulator += deltaSeconds * action.impulseRate * this.speed;
     while (this.spawnAccumulator >= 1) {
-      this.spawnPulse(activeRegionSet);
+      this.spawnPulse(this.activeRegionSet);
       this.spawnAccumulator -= 1;
     }
 
@@ -351,7 +347,15 @@ export class SignalSimulation {
     this.eligibleWeights.length = 0;
 
     const action = ACTION_BY_ID[this.actionId];
-    const activeRegionSet = new Set(action.activeRegions);
+    this.activeRegionSet = new Set(action.activeRegions);
+    const activeRegionSet = this.activeRegionSet;
+    // Resolve the active-region buffer indices once (same lookup step() used to
+    // run every frame). regionIntensity is indexed by graph.regionOrder.
+    this.activeRegionIndices.length = 0;
+    for (const regionId of action.activeRegions) {
+      const idx = this.graph.regionOrder.indexOf(regionId);
+      if (idx >= 0) this.activeRegionIndices.push(idx);
+    }
 
     for (const pathway of this.graph.pathways) {
       const sourceActive = activeRegionSet.has(pathway.sourceRegionId);
@@ -386,13 +390,6 @@ export class SignalSimulation {
     const fromRegionIndex = reverse ? pathway.targetRegionIndex : pathway.sourceRegionIndex;
     const fromRegionId = reverse ? pathway.targetRegionId : pathway.sourceRegionId;
 
-    // For emergent actions, use the action-specific color
-    const isEmergentAction = [
-      "attentional-blink", "eureka-moment", "fear-conditioning", 
-      "memory-reconsolidation", "decision-hesitation", "sensory-gating", 
-      "sleep-ripple"
-    ].includes(this.actionId);
-    
     const color = this.getActionColor();
     
     this.pulses.push({

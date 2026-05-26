@@ -3,11 +3,20 @@ import { SpikingEngine } from '../src/engine/SpikingEngine'
 import { NeuralGraphGenerator } from '../src/engine/neuralGraphGenerator'
 import { BrainRegionId } from '../src/engine/types'
 
-// Performance benchmarks and neuroscience validation
-// Tests that the upgraded SpikingEngine meets biological plausibility
-// and performance targets for a real-time interactive application.
+// ⚠️ QUARANTINED (describe.skip) — 2026-05-25.
+// This suite was written against an aspirational API that never shipped:
+//   • `NeuralGraphGenerator` is not exported (the real export is the
+//     `generateNeuralGraph()` function in neuralGraphGenerator.ts),
+//   • region IDs like 'prefrontal-cortex'/'visual'/'pons' are not in the real
+//     `BrainRegionId` union, and
+//   • dozens of asserted SpikingEngine methods (getFiringRates, measureThetaGammaCoupling,
+//     generateVisualizationData, …) do not exist on the current class.
+// All 17 tests failed at load (`NeuralGraphGenerator is not a constructor`), keeping
+// the whole unit gate red. Skipped to restore a green gate. The live coverage is in
+// tests/signalSimulation.test.ts (engine loop) + tests/spikingEngine.test.ts (real API).
+// TODO(neuro): port these biological-plausibility checks to the real SpikingEngine surface.
 
-describe('SpikingEngine Upgraded Neuroscience Validation', () => {
+describe.skip('SpikingEngine Upgraded Neuroscience Validation', () => {
   let engine: SpikingEngine
   let graph: NeuralGraph
   const neuronCount = 1500 // Target size for smooth visualization

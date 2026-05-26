@@ -65,6 +65,8 @@ async function main(): Promise<void> {
     cors({
       origin: [
         CONFIG.allowedOrigin,
+        "http://127.0.0.1:4173", // Vite preview (production build) — used by render verification
+        "http://localhost:4173",
         "tauri://localhost",
         "http://tauri.localhost",
         "https://tauri.localhost",

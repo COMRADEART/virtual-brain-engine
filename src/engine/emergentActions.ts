@@ -1,8 +1,6 @@
 // src/engine/emergentActions.ts
-import { ACTION_BY_ID, REGION_INDEX } from "./brainRegions";
-import type { BrainActionId, BrainRegionId } from "./types";
+import { REGION_INDEX } from "./brainRegions";
 import type { SignalSimulation } from "./signalSimulation";
-import { getActionColor } from "../data/regionDefinitions";
 
 // Neuroscientific BrainAction implementations demonstrating emergent behavior
 // Each action models real neural phenomena with observable cognitive correlates
@@ -23,8 +21,6 @@ import { getActionColor } from "../data/regionDefinitions";
  * - Thalamic gating signals visualized as dark blue pulses
  */
 export function initAttentionalBlink(sim: SignalSimulation, stimulusTiming: number = 0): void {
-  const action: BrainActionId = "attentional-blink";
-  const color = getActionColor(action);
   
   // Simulate LC-NE system activation from brainstem
   const brainstemIdx = REGION_INDEX["brainstem"];
@@ -64,8 +60,6 @@ export function initAttentionalBlink(sim: SignalSimulation, stimulusTiming: numb
  * - Dopaminergic green flashes in prefrontal cortex
  */
 export function initEurekaMoment(sim: SignalSimulation, delay: number = 500): void {
-  const action: BrainActionId = "eureka-moment";
-  const color = getActionColor(action);
   
   // Simulate gamma burst synchronization after delay
   setTimeout(() => {
@@ -105,8 +99,6 @@ export function initEurekaMoment(sim: SignalSimulation, delay: number = 500): vo
  * - Brainstem HPA axis activation
  */
 export function initFearConditioning(sim: SignalSimulation, conditionedStimulus: boolean = true): void {
-  const action: BrainActionId = "fear-conditioning";
-  const color = getActionColor(action);
   
   // Simulate thalamo-amygdalar fast pathway
   const thalamusL = REGION_INDEX["thalamus-l"];
@@ -152,8 +144,6 @@ export function initFearConditioning(sim: SignalSimulation, conditionedStimulus:
  * - Protein synthesis visualization as sustained glow
  */
 export function initMemoryReconsolidation(sim: SignalSimulation): void {
-  const action: BrainActionId = "memory-reconsolidation";
-  const color = getActionColor(action);
   
   // Hippocampal replay
   sim.flashRegions(["hippocampus-l", "hippocampus-r"], 0.85);
@@ -186,8 +176,6 @@ export function initMemoryReconsolidation(sim: SignalSimulation): void {
  * - Alpha desynchronization as diffuse network activation
  */
 export function initDecisionHesitation(sim: SignalSimulation): void {
-  const action: BrainActionId = "decision-hesitation";
-  const color = getActionColor(action);
   
   // Simulate competing basal ganglia pathways
   sim.flashRegions(["basal-ganglia-l", "basal-ganglia-r"], 0.8);
@@ -216,8 +204,6 @@ export function initDecisionHesitation(sim: SignalSimulation): void {
  * - Habituated pathways shown as reduced intensity
  */
 export function initSensoryGating(sim: SignalSimulation, stimulusCount: number = 3): void {
-  const action: BrainActionId = "sensory-gating";
-  const color = getActionColor(action);
   
   // Simulate thalamic reticular nucleus inhibition
   sim.flashRegions(["thalamus-l", "thalamus-r"], 0.6);
@@ -257,8 +243,6 @@ export function initSensoryGating(sim: SignalSimulation, stimulusCount: number =
  * - Coordinated timing between regions
  */
 export function initSleepRipple(sim: SignalSimulation, rippleCount: number = 5): void {
-  const action: BrainActionId = "sleep-ripple";
-  const color = getActionColor(action);
   
   // Simulate coordinated ripple events
   for (let i = 0; i < rippleCount; i++) {

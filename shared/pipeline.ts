@@ -20,17 +20,7 @@ import type {
   OrganismLifecycleState,
   OrganismSnapshot,
 } from "./organism";
-import type {
-  ScreenCapture,
-  VisualMemory,
-  VisualRegion,
-  VisualKnowledgeGraph,
-  VisualSearchResult,
-  VisualWorkflowState,
-  WindowInfo,
-  UIState,
-  BrainBusVisualMessage,
-} from "./vision";
+import type { BrainBusVisualMessage } from "./vision";
 
 export type LogicalRegionId =
   | "memory-core"

@@ -462,10 +462,15 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // persistence success; no-op when there were no citations.
   trainFromCitations(rankFeatures, citedIds);
   completePipelineRun(runId, finalAnswer);
-  onConversationMessage({
+  // Background consolidation (replay, novelty, prefetch). Best-effort and runs
+  // after the answer has streamed, so float it with a .catch() — an error here
+  // must never reject into the request handler or crash the process.
+  void onConversationMessage({
     lastMemories: Array.from(citedIds),
     projectName: projectName ?? null,
     query: req.prompt,
+  }).catch((err) => {
+    console.warn("[pipeline] background consolidation failed:", err);
   });
   try {
     broadcast({ type: "memory-count", count: getMemoryCount() });

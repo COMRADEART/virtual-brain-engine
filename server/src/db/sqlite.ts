@@ -57,10 +57,36 @@ export function openDb(): SqliteDatabase {
 interface Migration {
   id: number;
   name: string;
-  sql: string;
+  // A migration is either raw SQL or a guarded function. SQLite has no
+  // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so column-adds must use `run`
+  // with a PRAGMA-based existence check to stay idempotent across both brand-new
+  // DBs (where schema.sql already created the column) and pre-existing DBs.
+  sql?: string;
+  run?: (db: SqliteDatabase) => void;
 }
 
-const MIGRATIONS: Migration[] = [];
+function columnExists(db: SqliteDatabase, table: string, column: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    // schema.sql gained `memory_points.summary_id` after the column-less DBs
+    // shipped; CREATE TABLE IF NOT EXISTS never backfills it. The whole memory
+    // ML layer filters `WHERE summary_id IS NULL`, so without this column every
+    // consolidation/novelty/strength query throws "no such column: summary_id".
+    id: 1,
+    name: "0001-memory-points-summary-id",
+    run: (db) => {
+      if (!columnExists(db, "memory_points", "summary_id")) {
+        db.exec(
+          "ALTER TABLE memory_points ADD COLUMN summary_id TEXT REFERENCES memory_points(id) ON DELETE SET NULL",
+        );
+      }
+    },
+  },
+];
 
 function runMigrations(db: SqliteDatabase): void {
   const applied = new Set<string>(
@@ -71,7 +97,13 @@ function runMigrations(db: SqliteDatabase): void {
   for (const m of MIGRATIONS) {
     if (applied.has(m.name)) continue;
     try {
-      db.exec(m.sql);
+      if (m.run) {
+        m.run(db);
+      } else if (m.sql) {
+        db.exec(m.sql);
+      }
+      // Only record success once the migration body ran without throwing, so a
+      // transient failure retries on the next boot instead of being skipped.
       db.prepare("INSERT INTO schema_migrations (id, name, applied_at) VALUES (?, ?, ?)").run(
         m.id,
         m.name,

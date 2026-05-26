@@ -145,12 +145,12 @@ export function linkSummary(originalId: string, summaryId: string): void {
 export function getMemoryById(id: string): LifecycleMemory | null {
   const db = openDb();
   const row = db
-    .prepare<[string, string], LifecycleRow>(
+    .prepare<[string], LifecycleRow>(
       `SELECT mp.*,
               (SELECT COUNT(*) FROM memory_relations mr WHERE mr.to_id = mp.id AND mr.kind = 'cites') AS citation_count
        FROM memory_points mp WHERE mp.id = ?`,
     )
-    .get(id, id);
+    .get(id);
   return row ? rowToLifecycle(row) : null;
 }
 

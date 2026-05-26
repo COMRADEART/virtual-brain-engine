@@ -5,6 +5,14 @@ import os from "node:os";
 import path from "node:path";
 
 const TARGET_URL = process.env.VERIFY_URL ?? "http://127.0.0.1:5173/";
+// The default-engine gate runs under SwiftShader (`--disable-gpu`) so it works in
+// headless CI. The spiking/hybrid path uses EffectComposer + UnrealBloomPass +
+// custom shaders, which SwiftShader renders black — set VERIFY_GPU=1 (or pass
+// --gpu) to drop `--disable-gpu` and capture them on a real GPU/ANGLE.
+const USE_GPU = process.env.VERIFY_GPU === "1" || process.argv.includes("--gpu");
+// Post-reload settle time before sampling. The sparse spiking/hybrid engines warm
+// up slower than the default engine, so allow overriding via VERIFY_WAIT_MS.
+const RENDER_WAIT_MS = Number(process.env.VERIFY_WAIT_MS ?? 2600);
 const chromeCandidates = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -59,7 +67,7 @@ async function main() {
     chromePath,
     [
       "--headless=new",
-      "--disable-gpu",
+      ...(USE_GPU ? [] : ["--disable-gpu"]),
       "--disable-background-networking",
       "--disable-default-apps",
       "--disable-extensions",
@@ -114,7 +122,7 @@ async function main() {
     const reloadEvent = client.waitForEvent("Page.loadEventFired", 8000);
     await client.send("Page.reload", { ignoreCache: true });
     await reloadEvent;
-    await delay(2600);
+    await delay(RENDER_WAIT_MS);
 
     const result = await client.send("Runtime.evaluate", {
       awaitPromise: true,

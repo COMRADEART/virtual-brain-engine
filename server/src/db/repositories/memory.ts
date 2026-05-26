@@ -282,6 +282,45 @@ export function getMemoryCount(): number {
   return row.count;
 }
 
+export function getRelationCount(): number {
+  const db = openDb();
+  const row = db.prepare("SELECT COUNT(*) as count FROM memory_relations").get() as { count: number };
+  return row.count;
+}
+
+// Edges whose BOTH endpoints fall within the given node-id set — i.e. the
+// induced subgraph for a sampled node window. Used by the knowledge-graph view.
+export function listRelationsAmong(ids: string[]): MemoryRelation[] {
+  if (ids.length === 0) {
+    return [];
+  }
+  const db = openDb();
+  const placeholders = ids.map(() => "?").join(", ");
+  type Row = {
+    id: string;
+    from_id: string;
+    to_id: string;
+    kind: MemoryRelationKind;
+    weight: number;
+    created_at: string;
+  };
+  const rows = db
+    .prepare<string[], Row>(
+      `SELECT * FROM memory_relations
+       WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders})
+       ORDER BY created_at DESC LIMIT 400`,
+    )
+    .all(...ids, ...ids);
+  return rows.map((row) => ({
+    id: row.id,
+    fromId: row.from_id,
+    toId: row.to_id,
+    kind: row.kind,
+    weight: row.weight,
+    createdAt: row.created_at,
+  }));
+}
+
 export function deleteMemoryPoint(id: string): boolean {
   const db = openDb();
   const result = db.prepare("DELETE FROM memory_points WHERE id = ?").run(id);

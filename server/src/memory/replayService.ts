@@ -2,15 +2,11 @@ import { getMemoryById } from "./memoryLifecycle.js";
 import { strengthenPathway } from "./memoryStrength.js";
 import { getHotMemories, getRelatedMemories } from "./accessPatternTracker.js";
 import { broadcast } from "../ws/brainBus.js";
+import type { ReplayEvent } from "../../../shared/replay.js";
 
-// Replay event broadcast to frontend for neural animation
-export interface ReplayEvent {
-  type: "replay";
-  memoryIds: string[];
-  region: "hippocampus" | "neocortex";
-  thetaPhase: "peak" | "trough";
-  timestamp: string;
-}
+// ReplayEvent now lives in shared/ (consumed by the browser engine too).
+// Re-exported here so existing server-side imports keep working.
+export type { ReplayEvent };
 
 // Stats tracking replay efficacy
 export interface ReplayStats {

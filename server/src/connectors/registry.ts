@@ -111,6 +111,39 @@ function idForRuntime(runtime: DiscoveredRuntime): string {
   return `auto-${runtime.kind}`;
 }
 
+// Ollama lists embedding models (e.g. nomic-embed-text) alongside chat models,
+// and `/api/tags` order is arbitrary — so `models[0]` is unsafe as the chat model
+// (it may be an embed model or a multi-GB model that never finishes cold-loading).
+// Pick a real chat model: honor a still-valid prior/explicit choice, then the
+// configured default if it's actually installed, then a preferred small chat
+// family, then any non-embed model. This is the "auto-detect the model" half of
+// auto-detecting the runtime, and it auto-corrects a stale/invalid persisted model.
+const CHAT_MODEL_PREFERENCE = [
+  "llama3.2", "llama3.1", "llama3", "qwen2.5", "qwen3", "mistral", "phi", "gemma",
+];
+
+const isEmbedModel = (m: string): boolean => /embed/i.test(m);
+
+function pickChatModel(models: string[], existing: string | undefined): string | undefined {
+  if (models.length === 0) {
+    return existing;
+  }
+  if (existing && models.includes(existing) && !isEmbedModel(existing)) {
+    return existing;
+  }
+  if (models.includes(CONFIG.ollamaChatModel) && !isEmbedModel(CONFIG.ollamaChatModel)) {
+    return CONFIG.ollamaChatModel;
+  }
+  const chat = models.filter((m) => !isEmbedModel(m));
+  for (const pref of CHAT_MODEL_PREFERENCE) {
+    const hit = chat.find((m) => m.toLowerCase().startsWith(pref));
+    if (hit) {
+      return hit;
+    }
+  }
+  return chat[0] ?? models[0];
+}
+
 function labelForRuntime(runtime: DiscoveredRuntime): string {
   return `Local ${runtime.label}`;
 }
@@ -137,7 +170,7 @@ export async function reconcileDiscovered(): Promise<DiscoveredRuntime[]> {
     }
     const id = idForRuntime(runtime);
     const existing = getConnector(id);
-    const firstModel = runtime.models[0];
+    const chatModel = pickChatModel(runtime.models, existing?.model);
     // Ollama: include the embedding model from CONFIG if it's in the list.
     const embeddingModel =
       runtime.kind === "ollama"
@@ -148,7 +181,7 @@ export async function reconcileDiscovered(): Promise<DiscoveredRuntime[]> {
       name: labelForRuntime(runtime),
       kind: runtime.connectorKind,
       baseUrl: runtime.baseUrl,
-      model: existing?.model ?? firstModel,
+      model: chatModel,
       embeddingModel: existing?.embeddingModel ?? embeddingModel,
       enabled: existing?.enabled ?? true,
       isDefault: existing?.isDefault ?? false,

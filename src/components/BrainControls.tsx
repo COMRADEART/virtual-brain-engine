@@ -9,6 +9,7 @@ import type {
 import { ACTION_BY_ID } from "../engine/brainRegions";
 import type { LogicalRegionId } from "../../shared/pipeline";
 import { LOGICAL_REGION_MAP } from "../engine/logicalRegions";
+import { apiClient } from "../engine/apiClient";
 
 interface BrainControlsProps {
   simulation: BrainSimulation | null;
@@ -134,15 +135,29 @@ export const BrainControls: React.FC<BrainControlsProps> = ({
     onMemorySearch(searchQuery);
   };
 
-  // Generate placeholder memories (in real app, this would come from memory system)
+  // Load real recent memories from the backend memory store. The visualizer
+  // also runs standalone (no server), so failures degrade to the empty state
+  // rather than throwing — the "No memories found" branch handles it.
   useEffect(() => {
-    // Simulate some memories for demo
-    const demoMemories = [
-      { id: "mem1", content: "User discussed quantum computing principles", timestamp: Date.now() - 3600000 },
-      { id: "mem2", content: "Reviewed neural network architecture diagrams", timestamp: Date.now() - 7200000 },
-      { id: "mem3", content: "Planned weekend hiking trip to mountains", timestamp: Date.now() - 18000000 },
-    ];
-    setMemories(demoMemories);
+    let ignore = false;
+    void (async () => {
+      try {
+        const { memories: points } = await apiClient.recentMemories(12);
+        if (ignore) return;
+        setMemories(
+          points.map((m) => ({
+            id: m.id,
+            content: m.content,
+            timestamp: Date.parse(m.updatedAt || m.createdAt) || Date.now(),
+          })),
+        );
+      } catch {
+        if (!ignore) setMemories([]);
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   return (
