@@ -2,6 +2,7 @@ import { Router } from "express";
 import { isVectorAvailable, openDb } from "../db/sqlite.js";
 import { listConnectors } from "../db/repositories/connectors.js";
 import { countMemoryPoints } from "../db/repositories/memory.js";
+import { getDiagnosticCounts } from "../util/diagnostics.js";
 
 export const healthRouter = Router();
 
@@ -31,5 +32,7 @@ healthRouter.get("/health", (_req, res) => {
     memoryCount,
     connectors,
     locality: anyRemoteEnabled ? "remote" : "local",
+    // Per-source counts of previously-swallowed errors (empty when healthy).
+    diagnostics: getDiagnosticCounts(),
   });
 });

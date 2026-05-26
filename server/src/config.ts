@@ -64,11 +64,16 @@ function bool(envKey: string, fallback: boolean): boolean {
   return fallback;
 }
 
+// data/brain.sqlite by default. Both are env-overridable so hermetic
+// selfchecks/integration tests can point openDb() at a throwaway DB instead of
+// the developer's real store (see scripts/memory-selfcheck.ts).
+const DATA_DIR = str("BRAIN_DATA_DIR", resolve(REPO_ROOT, "data"));
+
 export const CONFIG: ServerConfig = {
   port: num("PORT", 8787),
   host: str("HOST", "127.0.0.1"),
-  dataDir: resolve(REPO_ROOT, "data"),
-  dbPath: resolve(REPO_ROOT, "data", "brain.sqlite"),
+  dataDir: DATA_DIR,
+  dbPath: str("BRAIN_DB_PATH", resolve(DATA_DIR, "brain.sqlite")),
   defaultScanRoot: str("DEFAULT_SCAN_ROOT", "C:\\Users\\allam\\projects"),
   ollamaBaseUrl: str("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
   ollamaChatModel: str("OLLAMA_CHAT_MODEL", "llama3.2:3b"),

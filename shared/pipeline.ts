@@ -91,6 +91,10 @@ export type BrainBusMessage =
   | { type: "connector"; connectorId: string; state: "idle" | "busy" | "unreachable" | "ok"; message?: string }
   | { type: "memory-count"; count: number }
   | { type: "consolidation"; detail: string; status: "start" | "complete" | "progress" }
+  // Generic diagnostic — surfaces a previously-swallowed error (a write that must
+  // not break its caller's flow) so it stops being silent. `source` is a stable
+  // call-site key; the server also keeps a per-source counter (see /api/health).
+  | { type: "diagnostic"; source: string; level: "warn" | "error"; message: string; timestamp: string }
   // --- Memory replay (hippocampal-neocortical consolidation) ---
   | { type: "replay"; memoryIds: string[]; region: "hippocampus" | "neocortex"; thetaPhase: "peak" | "trough"; timestamp: string }
   // --- Computer Brain agentic layer (brainCore.ts bridge) ---

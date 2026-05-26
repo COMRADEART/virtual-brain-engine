@@ -1,5 +1,12 @@
 // Glue between the pure LTR model and the pipeline. Owns the cached weight
 // state, the cold-start blend, prompt trimming, and the position-bias guard.
+//
+// DEFERRED (Phase 2B): a Personalized-PageRank feature over memory_relations,
+// seeded by the vector hits, fused as an extra rank feature. Deliberately not
+// built yet — the relation graph is near-empty (only `cites` edges accrue, one
+// per answered question), so PPR would contribute ~0 today. Activate when the
+// graph is connected enough to matter (target ≥ ~200 `cites` edges; check
+// `SELECT COUNT(*) FROM memory_relations WHERE kind='cites'`).
 
 import type { VectorSearchHit } from "../db/repositories/memory.js";
 import {

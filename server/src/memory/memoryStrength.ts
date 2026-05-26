@@ -1,4 +1,5 @@
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
+import { surfaceError } from "../util/diagnostics.js";
 
 export interface StrengthEvent {
   fromId: string;
@@ -83,10 +84,12 @@ export function updateMemoryStrength(
            updated_at = ?
        WHERE id = ?`,
     ).run(delta, new Date().toISOString(), id);
-  } catch {
-    // Swallowed: a strength write must never break the caller's pipeline.
-    // TODO: surface via the brain bus / a counter — this catch is what let
-    // the MIN_STRENGTH/MAX_STRENGTH SQL-identifier bug stay silent.
+  } catch (err) {
+    // A strength write must never break the caller's pipeline — but it is no
+    // longer silent: surfaceError logs + counts + (throttled) broadcasts it.
+    // This catch is what let the MIN_STRENGTH/MAX_STRENGTH SQL-identifier bug
+    // stay silent before.
+    surfaceError("memoryStrength.updateMemoryStrength", err);
   }
 }
 

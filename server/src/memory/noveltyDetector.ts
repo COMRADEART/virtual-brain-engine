@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import { insertRelation } from "../db/repositories/memory.js";
+import { surfaceError } from "../util/diagnostics.js";
 
 export interface NoveltyResult {
   isNovel: boolean;
@@ -209,8 +210,8 @@ export function applyNoveltyBoost(memoryId: string, noveltyScore: number): void 
        SET importance = MIN(1.0, importance + ?), updated_at = ?
        WHERE id = ?`,
     ).run(boost, new Date().toISOString(), memoryId);
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("noveltyDetector.applyNoveltyBoost", err);
   }
 }
 
@@ -226,8 +227,8 @@ export function applyRedundancyPenalty(
        SET importance = MAX(0.01, importance - ${REDUNDANCY_PENALTY}), updated_at = ?
        WHERE id IN (${placeholders})`,
     ).run(new Date().toISOString(), ...memoryIds);
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("noveltyDetector.applyRedundancyPenalty", err);
   }
 }
 
@@ -245,8 +246,8 @@ export function tagContradiction(memoryId: string, contradictoryWithId: string):
        WHERE id = ?`,
     ).run(metadata, new Date().toISOString(), memoryId);
     insertRelation(memoryId, contradictoryWithId, "contradicts", 0.9);
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("noveltyDetector.tagContradiction", err);
   }
 }
 

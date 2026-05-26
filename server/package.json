@@ -10,7 +10,8 @@
     "test": "tsx --test \"src/**/*.test.ts\"",
     "ranker:selfcheck": "tsx scripts/ranker-selfcheck.ts",
     "agents:selfcheck": "tsx scripts/agents-selfcheck.ts",
-    "twin:selfcheck": "tsx scripts/twin-selfcheck.ts"
+    "twin:selfcheck": "tsx scripts/twin-selfcheck.ts",
+    "memory:selfcheck": "tsx scripts/memory-selfcheck.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
