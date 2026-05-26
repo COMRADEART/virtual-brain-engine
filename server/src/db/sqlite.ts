@@ -86,7 +86,33 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Phase 3 — hierarchy. Pre-existing DBs predate the `level` column on
+    // cognitive_abstractions; without backfill, the recentAbstractions SELECT
+    // and the level-aware classifier path would throw "no such column: level".
+    // The default of 0 ("sensory") is deliberately the most conservative bucket
+    // — a re-dream tick promotes them to their real level via upsertAbstraction.
+    id: 2,
+    name: "0002-cognitive-abstractions-level",
+    run: (db) => {
+      if (!columnExists(db, "cognitive_abstractions", "level")) {
+        db.exec(
+          "ALTER TABLE cognitive_abstractions ADD COLUMN level INTEGER NOT NULL DEFAULT 0",
+        );
+        db.exec(
+          "CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_level ON cognitive_abstractions(level)",
+        );
+      }
+    },
+  },
 ];
+
+// Exported for the perception/memory selfchecks: they need to apply the
+// migration logic to a raw better-sqlite3 connection without going through
+// openDb()'s singleton (which can only point at one BRAIN_DB_PATH per process).
+export function applyMigrations(db: SqliteDatabase): void {
+  runMigrations(db);
+}
 
 function runMigrations(db: SqliteDatabase): void {
   const applied = new Set<string>(

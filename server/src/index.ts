@@ -25,6 +25,7 @@ import { imaginationRouter } from "./routes/imagination.js";
 import { evolutionRouter } from "./routes/evolution.js";
 import { organismRouter } from "./routes/organism.js";
 import { visionRouter } from "./vision/index.js";
+import { perceptionRouter } from "./perception/index.js";
 import { civilizationRouter, civilization, createLocalDescriptor } from "./routes/civilization.js";
 import { phase2Router } from "./routes/phase2.js";
 
@@ -81,7 +82,17 @@ async function main(): Promise<void> {
     }
     next();
   });
-  app.use(express.json({ limit: "1mb" }));
+  // Body parser. /api/perceive/* installs its OWN json() with a 20mb cap (see
+  // perception/index.ts) because audio + image base64 payloads routinely
+  // exceed this floor; we must let that route bypass the global parser, or
+  // its inner json() is a no-op (body-parser is idempotent). Path-aware shim
+  // keeps the 1mb safety floor explicit at this call site instead of hiding
+  // it inside reorder gymnastics.
+  const globalBodyParser = express.json({ limit: "1mb" });
+  app.use((req, res, next) => {
+    if (req.path.startsWith("/api/perceive/")) return next();
+    return globalBodyParser(req, res, next);
+  });
   app.use("/api", healthRouter);
   app.use("/api", memoryRouter);
   app.use("/api", scanRouter);
@@ -94,6 +105,7 @@ async function main(): Promise<void> {
   app.use("/api", evolutionRouter);
   app.use("/api", organismRouter);
   app.use("/api", visionRouter);
+  app.use("/api", perceptionRouter);
   app.use("/api", phase2Router);
   app.use("/api", civilizationRouter);
 

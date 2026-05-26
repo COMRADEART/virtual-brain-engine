@@ -28,6 +28,13 @@ import type {
   MemoryRelation,
   MemorySourceType,
 } from "../../shared/memory";
+import type {
+  CaptionRequest,
+  CaptionResult,
+  TranscribeRequest,
+  TranscribeResult,
+  WorkerStatus,
+} from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
 import type { SwarmConsensusRound, SwarmNodeDescriptor, SwarmSnapshot, SwarmTask } from "../../shared/swarm";
 import type { TwinView, SimulationResult } from "../../shared/twin";
@@ -435,6 +442,21 @@ export const apiClient = {
 
   imaginationDream(): Promise<{ abstractions: CognitiveAbstraction[]; snapshot: ImaginationSnapshot }> {
     return json(`/api/imagination/dream`, { method: "POST" });
+  },
+
+  // ----- Phase 3 perception sidecar -----------------------------------------
+  // probe is cheap (200ms timeout server-side). Safe to poll every 10s while a
+  // perception panel is open; not on mount.
+  perceptionStatus(): Promise<WorkerStatus> {
+    return json<WorkerStatus>(`/api/perceive/status`);
+  },
+
+  perceptionTranscribe(req: TranscribeRequest): Promise<TranscribeResult> {
+    return json(`/api/perceive/transcribe`, { method: "POST", body: JSON.stringify(req) });
+  },
+
+  perceptionCaption(req: CaptionRequest): Promise<CaptionResult> {
+    return json(`/api/perceive/caption`, { method: "POST", body: JSON.stringify(req) });
   },
 
   evolution(): Promise<EvolutionSnapshot> {

@@ -123,11 +123,28 @@ export interface PredictionReflection {
   createdAt: string;
 }
 
+/**
+ * Phase 3 — explicit 6-level abstraction ladder. The semantics live in
+ * server/src/core/abstractionLevels.ts; this enum is the wire-shape consumers
+ * can switch on without importing server code. Higher = more abstract.
+ */
+export type AbstractionLevel = 0 | 1 | 2 | 3 | 4 | 5;
+export const ABSTRACTION_LEVEL_LABELS: Record<AbstractionLevel, string> = {
+  0: "sensory",
+  1: "pattern",
+  2: "concept",
+  3: "schema",
+  4: "principle",
+  5: "philosophical",
+};
+
 export interface CognitiveAbstraction {
   id: string;
   concept: string;
   evidence: string[];
   confidence: number;
+  /** 0 sensory -> 5 philosophical. See ABSTRACTION_LEVEL_LABELS for the ladder. */
+  level: AbstractionLevel;
   createdAt: string;
   updatedAt: string;
 }

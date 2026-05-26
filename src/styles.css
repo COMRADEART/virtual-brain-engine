@@ -4955,3 +4955,207 @@ input[type="checkbox"] {
   border-color: var(--line);
   color: var(--text);
 }
+
+/* ---------- Phase 3 Perception panel (full layout overlay) ----------
+ * Private `.perception-*` namespace so styles can't cascade into the canvas
+ * overlay or the other panel surfaces. Positioned ABOVE the twin panel so
+ * collapsed both look like a stack on the right rail.
+ */
+.perception-panel {
+  position: absolute;
+  right: 16px;
+  bottom: 380px;
+  z-index: 6;
+  width: min(340px, calc(100vw - 32px));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(20, 30, 55, 0.92), rgba(8, 12, 24, 0.86)),
+    var(--panel);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(14px);
+  color: var(--text);
+  font-size: 0.78rem;
+  animation: perception-in 0.3s ease;
+}
+
+@keyframes perception-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.perception-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  color: #e0fbff;
+}
+.perception-head > span { flex: 0 0 auto; }
+
+.perception-status {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+}
+.perception-status-down     { color: #ff4757; }
+.perception-status-scaffold { color: var(--amber); }
+.perception-status-ready    { color: var(--green); }
+
+.perception-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--cyan);
+  cursor: pointer;
+}
+.perception-toggle:hover { background: rgba(0, 212, 255, 0.12); }
+
+.perception-body {
+  max-height: 56vh;
+  overflow-y: auto;
+  padding: 0 12px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.perception-hint {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+.perception-hint code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.68rem;
+}
+
+.perception-section { display: grid; gap: 6px; }
+.perception-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.perception-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.perception-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid var(--cyan);
+  border-radius: 6px;
+  color: var(--cyan);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.perception-btn:hover  { background: rgba(0, 212, 255, 0.2); }
+.perception-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.perception-btn-stop {
+  background: rgba(255, 71, 87, 0.12);
+  border-color: #ff4757;
+  color: #ff4757;
+}
+.perception-btn-stop:hover { background: rgba(255, 71, 87, 0.22); }
+
+.perception-pending {
+  font-size: 0.7rem;
+  color: var(--amber);
+  font-style: italic;
+}
+
+.perception-err {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 0.7rem;
+  color: #ff4757;
+}
+
+.perception-drop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-size: 0.72rem;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.perception-drop-over {
+  border-color: var(--cyan);
+  background: rgba(0, 212, 255, 0.08);
+  color: var(--cyan);
+}
+
+.perception-pick {
+  color: var(--cyan);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.perception-recent {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.perception-rec {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  gap: 6px;
+  padding: 5px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--cyan);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  align-items: baseline;
+}
+.perception-rec-caption { border-left-color: var(--amber); }
+.perception-rec-text {
+  color: var(--text);
+  word-break: break-word;
+}
+.perception-rec-meta {
+  color: var(--muted);
+  font-size: 0.65rem;
+  white-space: nowrap;
+}
+
+[data-theme="light"] .perception-panel {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--text);
+}

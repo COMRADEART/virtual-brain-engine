@@ -1,0 +1,24 @@
+# Heavy ML deps for the Phase 3 perception sidecar. Kept SEPARATE from the
+# base requirements.txt so the scaffold remains installable on machines that
+# don't need transcription/captioning — they get a working /healthz that just
+# reports models.whisper / models.caption as "unavailable", and the Node
+# server keeps running without these endpoints.
+#
+# Install on top of the base set:
+#   python -m venv .venv
+#   .\.venv\Scripts\Activate.ps1
+#   pip install -r requirements.txt -r requirements-ml.txt
+#
+# Sizes (rough):
+#   faster-whisper        ~5MB (model files download lazily on first call,
+#                                tiny.en is ~75MB)
+#   transformers + torch  ~700MB (CPU wheels) — BLIP base model ~990MB
+#                                downloaded on first /caption call
+#   pillow                ~3MB
+#
+# If you only want one of the two features, omit the other line.
+
+faster-whisper>=1.0.3
+transformers>=4.44.0
+torch>=2.2.0
+pillow>=10.0.0

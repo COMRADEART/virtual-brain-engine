@@ -283,10 +283,15 @@ CREATE TABLE IF NOT EXISTS cognitive_abstractions (
   concept     TEXT NOT NULL UNIQUE,
   evidence    TEXT NOT NULL,
   confidence  REAL NOT NULL,
+  -- Phase 3 hierarchy level (0..5, sensory -> philosophical). See
+  -- server/src/core/abstractionLevels.ts for the ladder. Existing DBs get this
+  -- backfilled via migration 0002.
+  level       INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_confidence ON cognitive_abstractions(confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_level ON cognitive_abstractions(level);
 
 -- COGNITIVE EVOLUTION ENGINE. Components are versioned cognitive structures:
 -- workflows, skills, reasoning strategies, memory models, planners, routing

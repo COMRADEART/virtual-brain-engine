@@ -98,7 +98,7 @@ each already present in the codebase:
 
 | # | Required module | Status | Primary implementation |
 |---|-----------------|--------|------------------------|
-| 1 | **Perception Layer** (multimodal, screen, OCR, files) | 🟡 Partial | `server/src/vision/{capture,uiDetector,visualMemory,visualKnowledgeGraph}.ts`, `scanner/` (files), `src/engine/speechInput.ts` (voice). Spec: `docs/MULTIMODAL_SENSORY_CORTEX_SPEC.md`. **Gap:** no live video/Whisper pipeline wired server-side. |
+| 1 | **Perception Layer** (multimodal, screen, OCR, files) | 🟡 Partial | `server/src/vision/{capture,uiDetector,visualMemory,visualKnowledgeGraph}.ts`, `scanner/` (files), `src/engine/speechInput.ts` (voice), **Phase 3 perception sidecar** `worker/` + `server/src/perception/` → `/api/perceive/transcribe` (faster-whisper) and `/api/perceive/caption` (BLIP). Spec: `docs/MULTIMODAL_SENSORY_CORTEX_SPEC.md`. **Remaining gap:** live video frame-rate capture pipeline (sidecar handles single-image captions today). |
 | 2 | **Attention Engine** (saliency, novelty, focus) | 🟡 Partial | `memory/noveltyDetector.ts`, neuromod-gated drive + `setExpectation`/`flashRegions` in `AdvancedBrainCore`, `FOCUS_STATE` in `cognitiveStates.ts`, reasoning bias in `HybridCognitiveCore`. **Gap:** no single saliency scorer combining the four prompt terms (see §15). |
 | 3 | **Associative Neural Memory** (graph, decay, emotional tags) | ✅ Built | `server/src/memory/*` + `db/repositories/memory.ts` + `memory_relations`/`memory_access_patterns`/`memory_clusters`. In-engine: `src/engine/MemorySystem.ts`. |
 | 4 | **Continuous Thought Loop** (idle cognition) | 🟡 Partial | `HybridCognitiveCore.step()` (per-frame), `agents/brainCore.ts`, `core/organism.ts` lifecycle, `consolidationEngine` decay ticks. **Gap:** no server-side autonomous "internal monologue" generator. |
@@ -108,10 +108,10 @@ each already present in the codebase:
 | 8 | **Self-Model / Identity Core** | ✅ Built | `identity_profiles`/`evolution_identity_traits` tables, `cognition/persistence.ts` (cross-session brain snapshot), `crates/brain-personality-engine`. |
 | 9 | **Neural Activity Visualization** | ✅ Built | The entire `src/components/` Three.js layer — `NeuralGraph.tsx`, `BrainScene.tsx`, `BrainVisualEffects.ts`. |
 | 10 | **Memory Consolidation / Sleep** | ✅ Built | `memory/consolidationEngine.ts`, `replayService.ts` (hippocampal replay), `dream_cycles` table, `imagination` dream abstractions. |
-| 11 | **Hierarchical Cognition** (abstraction levels) | 🟡 Partial | `memory/semanticCluster.ts`, `cognitive_abstractions` table, `ReasoningEngine` operators (analogy/counterfactual/ToM). **Gap:** no explicit 6-level sensory→philosophical ladder. |
+| 11 | **Hierarchical Cognition** (abstraction levels) | ✅ Built | `memory/semanticCluster.ts`, `cognitive_abstractions` table (with `level` column as of Phase 3, classifier in `core/abstractionLevels.ts`), `ReasoningEngine` operators (analogy/counterfactual/ToM). The 6-level sensory→philosophical ladder is now explicit; every `imagination.upsertAbstraction()` calls `classifyAbstractionLevel()` and persists the result (promote-only). |
 | 12 | **Autonomous Goal System** | ✅ Built | `core/organism.ts` (goals/lifecycle/energy/health), `goal_history` table, `core/evolution.ts`, `agents/schedulerAgent.ts`. |
 
-**Takeaway:** 7 of 12 modules are fully built, 5 are partial, **0 are missing**.
+**Takeaway:** 8 of 12 modules are fully built, 4 are partial, **0 are missing** (Phase 3 promoted #11 Hierarchical Cognition from 🟡 to ✅).
 The work is *filling named gaps and verifying*, not greenfield construction.
 
 ---
@@ -689,6 +689,16 @@ Hard real-time on the render thread is the central constraint:
   fused into the ranker; GRU upgrade for the twin sequence model.
 - **Phase 3 — Perception & hierarchy.** Wire `worker/` for Whisper/vision; add an
   explicit abstraction `level` to clusters/abstractions.
+  - **Status (2026-05-26):** scaffold landed. `worker/main.py` exposes
+    `POST /transcribe` (faster-whisper) + `POST /caption` (BLIP via transformers)
+    with lazy imports; heavy deps gated to `worker/requirements-ml.txt`. Server
+    forwards via `server/src/perception/{workerClient,index}.ts` →
+    `/api/perceive/{status,transcribe,caption}`. `cognitive_abstractions.level`
+    column added via 0002 migration; deterministic 6-level classifier in
+    `server/src/core/abstractionLevels.ts` runs in `imagination.upsertAbstraction()`
+    on every re-dream (promote-only). Gated by `npm run perception:selfcheck`
+    (hermetic — no worker required). The Python sidecar is OFF by default;
+    `/api/health.perception` reports `status:"down"` until it's started.
 - **Phase 4 — Scale (only on real need).** WebGPU/Worker for the spiking loop;
   civilization multi-node; HNSW only if `sqlite-vec` latency demands it.
 

@@ -3,7 +3,9 @@ import { openDb } from "../db/sqlite.js";
 import { getEventBus, nowIso, type BrainBus } from "./eventBus.js";
 import { getRecentSnapshots } from "../twin/repository.js";
 import { classifyAction, simulate, type SimHistory } from "../twin/simulationEngine.js";
+import { classifyAbstractionLevel } from "./abstractionLevels.js";
 import type {
+  AbstractionLevel,
   CognitiveAbstraction,
   ImaginationFuture,
   ImaginationFutureKind,
@@ -696,9 +698,9 @@ export class ImaginationEngine {
       return openDb()
         .prepare<
           [number],
-          { id: string; concept: string; evidence: string; confidence: number; created_at: string; updated_at: string }
+          { id: string; concept: string; evidence: string; confidence: number; level: number; created_at: string; updated_at: string }
         >(
-          `SELECT id, concept, evidence, confidence, created_at, updated_at
+          `SELECT id, concept, evidence, confidence, level, created_at, updated_at
            FROM cognitive_abstractions ORDER BY confidence DESC, updated_at DESC LIMIT ?`,
         )
         .all(Math.max(1, Math.min(100, limit)))
@@ -707,6 +709,7 @@ export class ImaginationEngine {
           concept: row.concept,
           evidence: safeStringArray(row.evidence),
           confidence: row.confidence,
+          level: clampLevel(row.level),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
         }));
@@ -719,26 +722,35 @@ export class ImaginationEngine {
     const db = openDb();
     const now = nowIso();
     const existing = db
-      .prepare<[string], { id: string; evidence: string; confidence: number; created_at: string }>(
-        `SELECT id, evidence, confidence, created_at FROM cognitive_abstractions WHERE concept = ?`,
+      .prepare<[string], { id: string; evidence: string; confidence: number; level: number; created_at: string }>(
+        `SELECT id, evidence, confidence, level, created_at FROM cognitive_abstractions WHERE concept = ?`,
       )
       .get(concept);
     const mergedEvidence = Array.from(new Set([...(existing ? safeStringArray(existing.evidence) : []), ...evidence])).slice(0, 12);
     const nextConfidence = clamp01(Math.max(existing?.confidence ?? 0, confidence) + mergedEvidence.length * 0.01);
     const id = existing?.id ?? `abstraction-${ulid()}`;
+    // Phase 3 — classify level. A re-dream can only promote, never demote: the
+    // user has already seen a higher-level reading and we don't want a
+    // shorter-evidence pass to silently regress it.
+    const classified = classifyAbstractionLevel(concept, mergedEvidence);
+    const level: AbstractionLevel = (
+      existing ? Math.max(clampLevel(existing.level), classified) : classified
+    ) as AbstractionLevel;
     db.prepare(
-      `INSERT INTO cognitive_abstractions (id, concept, evidence, confidence, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO cognitive_abstractions (id, concept, evidence, confidence, level, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(concept) DO UPDATE SET
          evidence = excluded.evidence,
          confidence = excluded.confidence,
+         level = excluded.level,
          updated_at = excluded.updated_at`,
-    ).run(id, concept, JSON.stringify(mergedEvidence), nextConfidence, existing?.created_at ?? now, now);
+    ).run(id, concept, JSON.stringify(mergedEvidence), nextConfidence, level, existing?.created_at ?? now, now);
     const abstraction = {
       id,
       concept,
       evidence: mergedEvidence,
       confidence: nextConfidence,
+      level,
       createdAt: existing?.created_at ?? now,
       updatedAt: now,
     };
@@ -772,6 +784,17 @@ function safeStringArray(json: string): string[] {
   } catch {
     return [];
   }
+}
+
+// Coerce the raw DB column (any integer) into the typed 0..5 ladder. A NULL
+// or out-of-range value floors to 0 ("sensory") — matching the migration
+// default and keeping callers from having to handle an unbounded number.
+function clampLevel(raw: number | null | undefined): AbstractionLevel {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 0;
+  const i = Math.round(raw);
+  if (i <= 0) return 0;
+  if (i >= 5) return 5;
+  return i as AbstractionLevel;
 }
 
 function inferConcepts(goals: string[]): Array<{ concept: string; evidence: string[]; confidence: number }> {

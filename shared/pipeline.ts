@@ -124,4 +124,7 @@ export type BrainBusMessage =
   | { type: "organism-lifecycle"; lifecycle: OrganismLifecycleState; reason: string; timestamp: string }
   | { type: "organism-immune-event"; event: ImmuneEvent; timestamp: string }
   // --- Vision (delegated to BrainBusVisualMessage) ---
-  | BrainBusVisualMessage;
+  | BrainBusVisualMessage
+  // --- Perception (Phase 3 worker sidecar) ---
+  // Truncated preview only — raw audio/image payloads never cross the bus.
+  | { type: "perception"; kind: "transcribe" | "caption"; preview: string; model: string; latencyMs: number; timestamp: string };
