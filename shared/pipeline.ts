@@ -127,4 +127,9 @@ export type BrainBusMessage =
   | BrainBusVisualMessage
   // --- Perception (Phase 3 worker sidecar) ---
   // Truncated preview only — raw audio/image payloads never cross the bus.
-  | { type: "perception"; kind: "transcribe" | "caption"; preview: string; model: string; latencyMs: number; timestamp: string };
+  | { type: "perception"; kind: "transcribe" | "caption"; preview: string; model: string; latencyMs: number; timestamp: string }
+  // --- Idle cognition (blueprint Phase 1 — IdleAgent) ---
+  // Emitted when the system has been quiet long enough AND the rate-limiter
+  // permits. Carries the memory the brain is re-surfacing; preview is truncated
+  // to <=200 chars so the bus never carries full memory bodies.
+  | { type: "idle-thought"; memoryId: string; preview: string; importance: number; reason: string; timestamp: string };

@@ -139,6 +139,18 @@ export type BrainEvent =
       kind: "organism-immune-event";
       event: ImmuneEvent;
       at: string;
+    }
+  | {
+      // Phase 1 (blueprint) — idle-cognition agent emits one of these when the
+      // system has been quiet for a while AND the rate-limiter permits. Carries
+      // a memory the brain is "re-surfacing" — frontend shows it in a dim
+      // ticker overlay so the system feels alive between prompts.
+      kind: "idle-thought";
+      memoryId: string;
+      preview: string;
+      importance: number;
+      reason: string;
+      at: string;
     };
 
 export type BrainEventKind = BrainEvent["kind"];

@@ -195,6 +195,190 @@ check("tokens() splits + lowercases + drops short", JSON.stringify(tokens("Foo B
 const allInRange = [...withCtx.saliencyById.values()].every((v) => v >= 0 && v <= 1);
 check("all saliency scores in [0,1] for the hit set", allInRange);
 
+// -----------------------------------------------------------------------------
+// (E) IdleAgent — fires only when quiet AND rate-limit permits; sample is
+//     weighted; events shape matches the bridge in brainCore.ts.
+// -----------------------------------------------------------------------------
+
+const { IdleAgent, IDLE_THRESHOLD_MS, MIN_THOUGHT_GAP_MS } = await import(
+  "../src/agents/idleAgent.js"
+);
+import type { Agent, AgentContext, AgentLifecycleState } from "../src/agents/Agent.js";
+import type { BrainEvent } from "../src/core/eventBus.js";
+import type { MemoryPoint } from "../../shared/memory.js";
+
+type AgentClass = typeof IdleAgent;
+
+// Build a self-contained test rig. We drive the clock manually and capture
+// every event the agent emits.
+function makeRig(initialNow: number, pool: MemoryPoint[], salCtx: SaliencyContext | null = null) {
+  let nowVal = initialNow;
+  const events: BrainEvent[] = [];
+  const ctx: AgentContext = {
+    bus: {
+      emit: (e: BrainEvent) => events.push(e),
+      on: () => () => {},
+      onAny: () => () => {},
+      removeAll: () => {},
+    } as unknown as AgentContext["bus"],
+    safety: {
+      permitAndAudit: () => true,
+      isAllowed: () => true,
+    } as unknown as AgentContext["safety"],
+    log: () => {},
+    setStatus: (_s: AgentLifecycleState) => {},
+  };
+  const agent: Agent = new IdleAgent({
+    sampler: () => pool,
+    saliencyProvider: () => salCtx,
+    random: () => 0.5,
+    now: () => nowVal,
+  });
+  agent.init(ctx);
+  return {
+    agent,
+    events,
+    advance(ms: number): void {
+      nowVal += ms;
+    },
+    fire(event: BrainEvent): void {
+      void agent.handleEvent(event);
+    },
+    nowVal: () => nowVal,
+  };
+}
+
+const now0 = 1_000_000_000;
+const samplePool: MemoryPoint[] = [
+  {
+    id: "high",
+    sourceType: "manual",
+    filePath: null,
+    projectName: null,
+    title: null,
+    content: "Recover brain engine after Rust crash workflow",
+    contentHash: "h1",
+    embeddingId: null,
+    importance: 0.9,
+    createdAt: new Date(now0).toISOString(),
+    updatedAt: new Date(now0).toISOString(),
+    metadata: null,
+    summaryId: null,
+  },
+  {
+    id: "low",
+    sourceType: "manual",
+    filePath: null,
+    projectName: null,
+    title: null,
+    content: "Photosynthesis in plants and chloroplasts",
+    contentHash: "h2",
+    embeddingId: null,
+    importance: 0.1,
+    createdAt: new Date(now0).toISOString(),
+    updatedAt: new Date(now0).toISOString(),
+    metadata: null,
+    summaryId: null,
+  },
+];
+
+// E.1 — Quiet < threshold: act() emits nothing.
+{
+  const rig = makeRig(now0, samplePool);
+  rig.advance(IDLE_THRESHOLD_MS / 2);
+  rig.agent.think();
+  await rig.agent.act();
+  check("IdleAgent: silent before IDLE_THRESHOLD_MS", rig.events.length === 0);
+}
+
+// E.2 — Quiet past threshold: act() emits exactly one idle-thought event.
+{
+  const rig = makeRig(now0, samplePool);
+  rig.advance(IDLE_THRESHOLD_MS + 1);
+  rig.agent.think();
+  await rig.agent.act();
+  check(
+    "IdleAgent: emits idle-thought after IDLE_THRESHOLD_MS",
+    rig.events.length === 1 && rig.events[0].kind === "idle-thought",
+    `events=${JSON.stringify(rig.events.map((e) => e.kind))}`,
+  );
+  const e = rig.events[0];
+  if (e.kind === "idle-thought") {
+    check(
+      "idle-thought event has memoryId/preview/importance/reason",
+      typeof e.memoryId === "string" &&
+        typeof e.preview === "string" &&
+        typeof e.importance === "number" &&
+        typeof e.reason === "string",
+    );
+  }
+}
+
+// E.3 — Rate limit: second cycle in the same window stays silent.
+{
+  const rig = makeRig(now0, samplePool);
+  rig.advance(IDLE_THRESHOLD_MS + 1);
+  rig.agent.think();
+  await rig.agent.act();
+  // first emit done; advance another IDLE_THRESHOLD (well under MIN_THOUGHT_GAP)
+  rig.advance(IDLE_THRESHOLD_MS + 1);
+  rig.agent.think();
+  await rig.agent.act();
+  check("IdleAgent: rate limit holds within MIN_THOUGHT_GAP_MS", rig.events.length === 1);
+  // After MIN_THOUGHT_GAP fully elapses, the next cycle CAN emit again.
+  rig.advance(MIN_THOUGHT_GAP_MS);
+  rig.agent.think();
+  await rig.agent.act();
+  check("IdleAgent: emits again past MIN_THOUGHT_GAP_MS", rig.events.length === 2);
+}
+
+// E.4 — Activity resets the clock: file-changed event makes the agent silent
+// again until IDLE_THRESHOLD_MS elapses from THAT moment.
+{
+  const rig = makeRig(now0, samplePool);
+  rig.advance(IDLE_THRESHOLD_MS + 1);
+  rig.fire({
+    kind: "file-changed",
+    path: "/tmp/x.ts",
+    change: "change",
+    projectName: "x",
+    at: new Date(rig.nowVal()).toISOString(),
+  });
+  rig.agent.think();
+  await rig.agent.act();
+  check("IdleAgent: file-changed resets the activity clock", rig.events.length === 0);
+}
+
+// E.5 — Weighted sampling: with random()=0.5, importance 0.9 should dominate
+// importance 0.1 over the pool. We tweak random to verify both branches.
+{
+  const agent1 = new IdleAgent({
+    sampler: () => samplePool,
+    saliencyProvider: () => null,
+    random: () => 0.0, // first bucket
+    now: () => now0,
+  });
+  const agent2 = new IdleAgent({
+    sampler: () => samplePool,
+    saliencyProvider: () => null,
+    random: () => 0.99, // last bucket
+    now: () => now0,
+  });
+  const pickFirst = agent1.weightedSample(samplePool);
+  const pickLast = agent2.weightedSample(samplePool);
+  check("weightedSample: r=0 picks first weighted bucket", pickFirst?.id === "high");
+  check("weightedSample: r=0.99 picks the last bucket", pickLast?.id === "low");
+}
+
+// E.6 — Empty pool: act emits nothing.
+{
+  const rig = makeRig(now0, []);
+  rig.advance(IDLE_THRESHOLD_MS + 1);
+  rig.agent.think();
+  await rig.agent.act();
+  check("IdleAgent: empty memory pool emits nothing", rig.events.length === 0);
+}
+
 const result = failures === 0 ? "PASS" : "FAIL";
 console.log(JSON.stringify({ failures, result }, null, 2));
 process.exit(failures === 0 ? 0 : 1);

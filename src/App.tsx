@@ -6,6 +6,7 @@ import { LogicalRegionIndicator } from "./components/LogicalRegionIndicator";
 import { PipelineOverlay } from "./components/PipelineOverlay";
 import { DigitalTwinPanel } from "./components/DigitalTwinPanel";
 import { PerceptionPanel } from "./components/PerceptionPanel";
+import { IdleThoughtTicker } from "./components/IdleThoughtTicker";
 import { RegionControls } from "./components/RegionControls";
 import { UnifiedPanel } from "./components/UnifiedPanel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
@@ -342,6 +343,7 @@ useEffect(() => {
             onCollapsedChange={setDigitalTwinCollapsed}
           />
           <PerceptionPanel />
+          <IdleThoughtTicker />
           <UnifiedPanel
             tab={unifiedTab}
             onTabChange={setUnifiedTab}

@@ -21,6 +21,7 @@ import { ObserverAgent } from "./observerAgent.js";
 import { SummaryAgent } from "./summaryAgent.js";
 import { SchedulerAgent } from "./schedulerAgent.js";
 import { SystemSensorAgent } from "./systemSensorAgent.js";
+import { IdleAgent } from "./idleAgent.js";
 
 // Runtime cadence. 60s keeps the LLM-backed SummaryAgent from running hotter
 // than the 4s observer burst window — activity accumulates, then one rollup.
@@ -151,6 +152,15 @@ function toWireMessage(event: BrainEvent): BrainBusMessage | null {
         event: event.event,
         timestamp: event.at,
       };
+    case "idle-thought":
+      return {
+        type: "idle-thought",
+        memoryId: event.memoryId,
+        preview: event.preview,
+        importance: event.importance,
+        reason: event.reason,
+        timestamp: event.at,
+      };
   }
 }
 
@@ -196,11 +206,30 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   runtime.register(new SummaryAgent());
   runtime.register(new SchedulerAgent());
   runtime.register(new SystemSensorAgent());
+  // IdleAgent — wires the organism singleton into the saliency-weighted sample
+  // so an idle thought leans toward goal-relevant memories when the organism
+  // has active goals. The wiring is lazy (call only when act() needs it) so a
+  // not-yet-awakened organism doesn't perturb the agent's init.
+  runtime.register(
+    new IdleAgent({
+      saliencyProvider: () => {
+        try {
+          return {
+            query: "",
+            activeGoals: organism.getActiveGoalTitles(8),
+            organismHealth: organism.getHealthScore(),
+          };
+        } catch {
+          return null;
+        }
+      },
+    }),
+  );
 
   await runtime.start();
   runtime.startCycle(AGENT_CYCLE_MS);
   console.log(
-    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, cognitive-swarm, imagination, evolution, organism)",
+    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism)",
   );
 
   return {
