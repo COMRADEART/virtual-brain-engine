@@ -23,6 +23,13 @@ import {
   zeroWeights,
   type RankFeatureInput,
 } from "./rankerModel.js";
+import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
+
+// Saliency blend weight. Additive on top of the existing (1-alpha)*heur +
+// alpha*learned score, then re-normalised. Small enough that the saliency
+// signal can move a tied pair but can't override a strong learned signal
+// (which has been trained on real citations). Tunable.
+const W_SALIENCY = 0.2;
 
 // Queries-with-citations before the learned model fully takes over from the
 // heuristic (alpha ramps 0 -> 1 linearly across this many).
@@ -76,17 +83,27 @@ export interface RankResult {
   featuresById: Map<string, number[]>;
   warm: boolean;
   alpha: number;
+  /** Per-memory saliency breakdown when a SaliencyContext was provided; else empty. */
+  saliencyById: Map<string, number>;
 }
 
 // Re-rank vector hits with the blended score. featuresById is kept so the
 // learning step can label/train over the exact feature vectors that produced
 // this ranking (the full candidate set, not just the trimmed prompt set).
-export function rankHits(hits: VectorSearchHit[]): RankResult {
+//
+// If saliencyCtx is provided, each hit also receives a per-memory saliency
+// signal (novelty + goal-relevance + emotion + survival, see
+// attention/saliency.ts) that's blended additively with the existing score.
+// The saliency layer is OPTIONAL — calling rankHits(hits) without a context
+// keeps the legacy behavior unchanged (no regression risk for the existing
+// ranker selfcheck or pipeline).
+export function rankHits(hits: VectorSearchHit[], saliencyCtx?: SaliencyContext): RankResult {
   const s = state();
   const now = Date.now();
   const alpha = Math.min(1, s.trainedCount / WARM_AT);
   const warm = s.trainedCount >= WARM_AT;
   const featuresById = new Map<string, number[]>();
+  const saliencyById = new Map<string, number>();
 
   const scored = hits.map((hit) => {
     const fi = featureInput(hit, now);
@@ -94,11 +111,21 @@ export function rankHits(hits: VectorSearchHit[]): RankResult {
     featuresById.set(hit.memory.id, x);
     const learned = predictProb(s.weights, x);
     const heur = heuristicScore(fi);
-    const score = (1 - alpha) * heur + alpha * learned;
+    const base = (1 - alpha) * heur + alpha * learned;
+    let score = base;
+    if (saliencyCtx) {
+      const sal = computeSaliency(
+        { id: hit.memory.id, content: hit.memory.content, importance: hit.memory.importance },
+        saliencyCtx,
+      );
+      saliencyById.set(hit.memory.id, sal.score);
+      // Re-normalise so adding the saliency channel keeps `score` in [0,1].
+      score = (base + W_SALIENCY * sal.score) / (1 + W_SALIENCY);
+    }
     return { ...hit, score };
   });
   scored.sort((a, b) => b.score - a.score);
-  return { ranked: scored, featuresById, warm, alpha };
+  return { ranked: scored, featuresById, warm, alpha, saliencyById };
 }
 
 // What the LLM actually sees. Cold start: everything (a regressed warm top-k

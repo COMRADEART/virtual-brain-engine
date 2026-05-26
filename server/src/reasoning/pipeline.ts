@@ -39,6 +39,28 @@ import {
 import { createHash } from "node:crypto";
 import { getCognitiveSwarm } from "../core/swarm.js";
 import { getImaginationEngine } from "../core/imagination.js";
+import { getPersistentOrganism } from "../core/organism.js";
+import type { SaliencyContext } from "../attention/saliency.js";
+import { surfaceError } from "../util/diagnostics.js";
+
+// Phase 1 (blueprint) — assemble the per-query SaliencyContext from the
+// organism singleton. Returns null if any of the cheap getters fails (the
+// pipeline still works without saliency; the ranker just falls back to its
+// pre-saliency blend). Wrapped in try/catch so the organism never becomes a
+// hard dependency of /api/ask.
+function buildSaliencyContext(query: string): SaliencyContext | null {
+  try {
+    const org = getPersistentOrganism();
+    return {
+      query,
+      activeGoals: org.getActiveGoalTitles(8),
+      organismHealth: org.getHealthScore(),
+    };
+  } catch (err) {
+    surfaceError("pipeline.buildSaliencyContext", err);
+    return null;
+  }
+}
 
 export interface AskRequest {
   prompt: string;
@@ -238,16 +260,24 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   let rankFeatures: Map<string, number[]> = new Map();
   let rankWarm = false;
   let rankAlpha = 0;
+  let saliencyApplied = false;
   const embedder = getEmbedder(connector);
   if (embedder?.embed) {
     try {
       const embedding = await embedder.embed(req.prompt);
       const raw = vectorSearch(embedding, 8);
-      const r = rankHits(raw);
+      // Assemble the saliency context cheaply. The organism singleton's
+      // public getters are the seam; both calls are bounded (~80 row scan +
+      // single SELECT). Wrap in try/catch so a misbehaving organism (e.g.
+      // never woke / empty DB) can never break retrieval — saliency is a
+      // refinement, not a critical-path dependency.
+      const saliencyCtx = buildSaliencyContext(req.prompt);
+      const r = rankHits(raw, saliencyCtx ?? undefined);
       memoryHits = r.ranked;
       rankFeatures = r.featuresById;
       rankWarm = r.warm;
       rankAlpha = r.alpha;
+      saliencyApplied = saliencyCtx !== null;
     } catch (err) {
       memoryError = err instanceof Error ? err.message : String(err);
     }
@@ -261,7 +291,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     filePath: hit.memory.filePath ?? undefined,
     score: hit.score,
   }));
-  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}`;
+  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}`;
   const memoryDetail = memoryError
     ? memoryError
     : embedder && embedder !== connector

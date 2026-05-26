@@ -99,7 +99,7 @@ each already present in the codebase:
 | # | Required module | Status | Primary implementation |
 |---|-----------------|--------|------------------------|
 | 1 | **Perception Layer** (multimodal, screen, OCR, files) | 🟡 Partial | `server/src/vision/{capture,uiDetector,visualMemory,visualKnowledgeGraph}.ts`, `scanner/` (files), `src/engine/speechInput.ts` (voice), **Phase 3 perception sidecar** `worker/` + `server/src/perception/` → `/api/perceive/transcribe` (faster-whisper) and `/api/perceive/caption` (BLIP). Spec: `docs/MULTIMODAL_SENSORY_CORTEX_SPEC.md`. **Remaining gap:** live video frame-rate capture pipeline (sidecar handles single-image captions today). |
-| 2 | **Attention Engine** (saliency, novelty, focus) | 🟡 Partial | `memory/noveltyDetector.ts`, neuromod-gated drive + `setExpectation`/`flashRegions` in `AdvancedBrainCore`, `FOCUS_STATE` in `cognitiveStates.ts`, reasoning bias in `HybridCognitiveCore`. **Gap:** no single saliency scorer combining the four prompt terms (see §15). |
+| 2 | **Attention Engine** (saliency, novelty, focus) | ✅ Built | `attention/saliency.ts` is the unified scorer (novelty + goal-relevance + emotion + survival, blend weights sum to 1, fused into `reasoning/ranker.ts` via optional `SaliencyContext`); built on top of `memory/noveltyDetector.ts`, neuromod-gated drive + `setExpectation`/`flashRegions` in `AdvancedBrainCore`, `FOCUS_STATE` in `cognitiveStates.ts`, reasoning bias in `HybridCognitiveCore`. |
 | 3 | **Associative Neural Memory** (graph, decay, emotional tags) | ✅ Built | `server/src/memory/*` + `db/repositories/memory.ts` + `memory_relations`/`memory_access_patterns`/`memory_clusters`. In-engine: `src/engine/MemorySystem.ts`. |
 | 4 | **Continuous Thought Loop** (idle cognition) | 🟡 Partial | `HybridCognitiveCore.step()` (per-frame), `agents/brainCore.ts`, `core/organism.ts` lifecycle, `consolidationEngine` decay ticks. **Gap:** no server-side autonomous "internal monologue" generator. |
 | 5 | **Emotional Computation** (weighting, not dialogue) | ✅ Built | `NeuromodulationSystem.ts` (DA/ACh/5-HT/NE), `ReinforcementSystem` affect (valence/arousal), `cognitiveStates.ts`. |
@@ -111,7 +111,7 @@ each already present in the codebase:
 | 11 | **Hierarchical Cognition** (abstraction levels) | ✅ Built | `memory/semanticCluster.ts`, `cognitive_abstractions` table (with `level` column as of Phase 3, classifier in `core/abstractionLevels.ts`), `ReasoningEngine` operators (analogy/counterfactual/ToM). The 6-level sensory→philosophical ladder is now explicit; every `imagination.upsertAbstraction()` calls `classifyAbstractionLevel()` and persists the result (promote-only). |
 | 12 | **Autonomous Goal System** | ✅ Built | `core/organism.ts` (goals/lifecycle/energy/health), `goal_history` table, `core/evolution.ts`, `agents/schedulerAgent.ts`. |
 
-**Takeaway:** 8 of 12 modules are fully built, 4 are partial, **0 are missing** (Phase 3 promoted #11 Hierarchical Cognition from 🟡 to ✅).
+**Takeaway:** 9 of 12 modules are fully built, 3 are partial, **0 are missing** (Phase 3 promoted #11 Hierarchical Cognition from 🟡 to ✅; the unified saliency layer promoted #2 Attention from 🟡 to ✅).
 The work is *filling named gaps and verifying*, not greenfield construction.
 
 ---
