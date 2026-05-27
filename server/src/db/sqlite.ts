@@ -105,6 +105,26 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Phase 3 (improvement plan §18.7) — temporal cognition / future-self.
+    // Adds a `timeline_role` column to cognitive_abstractions so each
+    // abstraction is anchored on a past/now/future axis. The classifier in
+    // core/abstractionLevels.ts assigns the role at upsert time; legacy rows
+    // default to "now" (most conservative — they're at-the-moment captures
+    // when their temporal role can't be inferred).
+    id: 3,
+    name: "0003-cognitive-abstractions-timeline-role",
+    run: (db) => {
+      if (!columnExists(db, "cognitive_abstractions", "timeline_role")) {
+        db.exec(
+          "ALTER TABLE cognitive_abstractions ADD COLUMN timeline_role TEXT NOT NULL DEFAULT 'now'",
+        );
+        db.exec(
+          "CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_timeline_role ON cognitive_abstractions(timeline_role)",
+        );
+      }
+    },
+  },
 ];
 
 // Exported for the perception/memory selfchecks: they need to apply the

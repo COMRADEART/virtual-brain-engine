@@ -132,4 +132,9 @@ export type BrainBusMessage =
   // Emitted when the system has been quiet long enough AND the rate-limiter
   // permits. Carries the memory the brain is re-surfacing; preview is truncated
   // to <=200 chars so the bus never carries full memory bodies.
-  | { type: "idle-thought"; memoryId: string; preview: string; importance: number; reason: string; timestamp: string };
+  | { type: "idle-thought"; memoryId: string; preview: string; importance: number; reason: string; timestamp: string }
+  // --- Exploration scheduling (Phase 3 — curiosity self-initiation, §18.5) ---
+  // Emitted by the idle agent in place of `idle-thought` when curiosity is high
+  // (engine uncertainty crosses a threshold). The `target` names what to
+  // explore (project name, memory cluster id, or "scan" for a fresh walk).
+  | { type: "exploration-scheduled"; target: string; curiosity: number; reason: string; timestamp: string };

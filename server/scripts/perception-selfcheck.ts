@@ -28,7 +28,9 @@ process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 process.env.PERCEPTION_WORKER_URL = "http://127.0.0.1:1";
 
 const { openDb, applyMigrations } = await import("../src/db/sqlite.js");
-const { classifyAbstractionLevel } = await import("../src/core/abstractionLevels.js");
+const { classifyAbstractionLevel, classifyTimelineRole, timelineRoleSet } = await import(
+  "../src/core/abstractionLevels.js"
+);
 const { probeWorker, transcribe, caption } = await import("../src/perception/workerClient.js");
 const { getDiagnosticCounts, resetDiagnostics } = await import("../src/util/diagnostics.js");
 const { ABSTRACTION_LEVEL_LABELS } = await import("../../shared/imagination.js");
@@ -57,6 +59,17 @@ const idx = db
   .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name = ?")
   .get("idx_cognitive_abstractions_level");
 check("idx_cognitive_abstractions_level index exists", !!idx);
+
+// Phase 3 (improvement plan §18.7) — timeline_role column on fresh DB.
+check("cognitive_abstractions has timeline_role column (fresh DB)", cols.includes("timeline_role"));
+const mig3 = db
+  .prepare("SELECT name FROM schema_migrations WHERE name = ?")
+  .get("0003-cognitive-abstractions-timeline-role");
+check("0003 migration recorded in schema_migrations", !!mig3);
+const idx3 = db
+  .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name = ?")
+  .get("idx_cognitive_abstractions_timeline_role");
+check("idx_cognitive_abstractions_timeline_role index exists", !!idx3);
 
 // (A.2) Backfill path: simulate a pre-existing DB that pre-dates the level
 // column. We build the legacy shape directly with better-sqlite3 (bypassing
@@ -110,7 +123,52 @@ const legacyColsTwice = (legacy.prepare("PRAGMA table_info(cognitive_abstraction
   .map((c) => c.name)
   .filter((n) => n === "level").length;
 check("applyMigrations() is idempotent (no duplicate level column)", legacyColsTwice === 1);
+
+// 0003 — timeline_role backfilled on the legacy DB.
+const legacyColsAfter3 = (legacy.prepare("PRAGMA table_info(cognitive_abstractions)").all() as Array<{ name: string }>).map(
+  (c) => c.name,
+);
+check("ALTER TABLE backfilled timeline_role column on legacy DB", legacyColsAfter3.includes("timeline_role"));
+const legacyTimelineRow = legacy
+  .prepare("SELECT id, timeline_role FROM cognitive_abstractions WHERE id = ?")
+  .get("legacy-1") as { id: string; timeline_role: string } | undefined;
+check(
+  "legacy row gets timeline_role='now' default",
+  !!legacyTimelineRow && legacyTimelineRow.timeline_role === "now",
+  legacyTimelineRow ? `timeline_role=${legacyTimelineRow.timeline_role}` : "row missing",
+);
+const legacyMig3 = legacy
+  .prepare("SELECT name FROM schema_migrations WHERE name = ?")
+  .get("0003-cognitive-abstractions-timeline-role");
+check("0003 migration recorded on legacy DB", !!legacyMig3);
+
 legacy.close();
+
+// Phase 3 — classifyTimelineRole pure-function cases.
+type TimelineCase = { concept: string; evidence: string[]; expected: "past" | "now" | "future" };
+const timelineCases: TimelineCase[] = [
+  { concept: "", evidence: [], expected: "now" }, // empty → now
+  { concept: "User used to ship Rust crates weekly", evidence: [], expected: "past" }, // 'used to'
+  { concept: "User plans to migrate to Tauri 3", evidence: [], expected: "future" }, // 'plans to'
+  { concept: "Current Tauri project structure", evidence: [], expected: "now" }, // no temporal token
+  { concept: "Roadmap: ship perception streaming next quarter", evidence: [], expected: "future" }, // roadmap+next quarter
+  { concept: "Previously the brain used SignalSimulation only", evidence: [], expected: "past" }, // previously
+];
+for (const c of timelineCases) {
+  const got = classifyTimelineRole(c.concept, c.evidence);
+  check(
+    `classifyTimelineRole("${c.concept.slice(0, 40)}...") -> ${c.expected}`,
+    got === c.expected,
+    `got=${got}`,
+  );
+}
+check(
+  "timelineRoleSet() exposes exactly 3 roles",
+  timelineRoleSet().length === 3 &&
+    timelineRoleSet().includes("past") &&
+    timelineRoleSet().includes("now") &&
+    timelineRoleSet().includes("future"),
+);
 
 // (A.3) classifier — representative cases. The classifier is deterministic; if
 // these break, the ladder definitions changed and the migration backfill

@@ -161,6 +161,14 @@ function toWireMessage(event: BrainEvent): BrainBusMessage | null {
         reason: event.reason,
         timestamp: event.at,
       };
+    case "exploration-scheduled":
+      return {
+        type: "exploration-scheduled",
+        target: event.target,
+        curiosity: event.curiosity,
+        reason: event.reason,
+        timestamp: event.at,
+      };
   }
 }
 

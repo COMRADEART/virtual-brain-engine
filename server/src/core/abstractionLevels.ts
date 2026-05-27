@@ -124,3 +124,69 @@ export function classifyAbstractionLevel(
 export function abstractionLevelLadder(): ReadonlyArray<AbstractionLevel> {
   return [0, 1, 2, 3, 4, 5];
 }
+
+// =============================================================================
+// Phase 3 (improvement plan §18.7) — temporal cognition / future-self.
+//
+// Each abstraction is also anchored on a past/now/future axis so the projection
+// engine (and the UI) can distinguish "this is what the user has been doing"
+// from "this is who the user is right now" from "this is where their behaviour
+// is heading." Like the level classifier, this is a deterministic regex lookup
+// with a conservative default — when nothing matches, the role is "now".
+
+export type TimelineRole = "past" | "now" | "future";
+
+const TIMELINE_TOKENS: Array<{ role: TimelineRole; terms: RegExp[] }> = [
+  {
+    // Past — verb forms in the perfect / preterite, retrospective adverbs.
+    role: "past",
+    terms: [
+      /\b(was|were|has been|had|previously|formerly|earlier|yesterday|last (?:week|month|year)|ago)\b/i,
+      /\b(used to|once|originally|historically|legacy|deprecated)\b/i,
+      /\b\w+ed\b/i, // generic preterite — broad but rare in pristine concept strings, mostly hits "shipped", "built", "fixed"
+    ],
+  },
+  {
+    // Future — modal will/going-to/should + planning vocabulary.
+    role: "future",
+    terms: [
+      /\b(will|shall|going to|gonna|plans? to|intends? to|aims? to|expects? to|likely to|tend(?:s)? to)\b/i,
+      /\b(soon|next (?:week|month|quarter|year)|upcoming|forecast(?:ed)?|projected|anticipated|predicted)\b/i,
+      /\b(roadmap|backlog|todo|planned|scheduled|target(?:ed)?)\b/i,
+    ],
+  },
+];
+
+/**
+ * Classify a concept's temporal role on the past/now/future axis.
+ *
+ * The classifier prefers "future" over "past" when both signals fire (forward
+ * projection is the more actionable bucket for the projection engine). When
+ * neither fires, the role is "now" — at-the-moment captures are the most
+ * common shape coming out of dream() / imagination upserts.
+ *
+ * @param concept   the abstraction concept string
+ * @param evidence  supporting evidence joined into the haystack
+ * @returns         TimelineRole — past | now | future
+ */
+export function classifyTimelineRole(
+  concept: string,
+  evidence: ReadonlyArray<string> = [],
+): TimelineRole {
+  if (!concept || concept.trim().length === 0) return "now";
+  const haystack = [concept, ...evidence].join(" \n ");
+  // Future first — a "will fix the bug we shipped last week" is forward-leaning.
+  for (const rung of TIMELINE_TOKENS) {
+    for (const term of rung.terms) {
+      if (term.test(haystack)) {
+        return rung.role;
+      }
+    }
+  }
+  return "now";
+}
+
+/** Selfcheck helper — every timeline role, for iteration. */
+export function timelineRoleSet(): ReadonlyArray<TimelineRole> {
+  return ["past", "now", "future"];
+}

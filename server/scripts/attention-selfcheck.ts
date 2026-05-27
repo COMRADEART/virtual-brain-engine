@@ -54,7 +54,7 @@ const s2 = computeSaliency(mem, ctx);
 check("computeSaliency is deterministic", s1.score === s2.score, `s1=${s1.score} s2=${s2.score}`);
 check("score in [0,1]", s1.score >= 0 && s1.score <= 1, `score=${s1.score}`);
 check("breakdown components all in [0,1]",
-  [s1.novelty, s1.goalRelevance, s1.emotion, s1.survival].every((v) => v >= 0 && v <= 1),
+  [s1.novelty, s1.goalRelevance, s1.emotion, s1.survival, s1.uncertainty].every((v) => v >= 0 && v <= 1),
   JSON.stringify(s1),
 );
 
@@ -111,6 +111,88 @@ check(
 const storedNov = new Map<string, number>([["m-1", 1.0]]);
 const sStored = computeSaliency(mem, { ...ctx, storedNoveltyById: storedNov }).novelty;
 check("storedNoveltyById path is used when present", sStored === 1.0, `got=${sStored}`);
+
+// -----------------------------------------------------------------------------
+// (B.5) Uncertainty (the 5th term — blueprint §18.2).
+// -----------------------------------------------------------------------------
+
+// (B.5.a) Backward-compat: when uncertainty is omitted from the context, the
+// term is 0. Same memory + ctx as the legacy test above => the legacy bound
+// (deterministic + [0,1]) still holds; here we assert the term itself is 0.
+check(
+  "uncertainty term defaults to 0 when context omits it",
+  computeSaliency(mem, ctx).uncertainty === 0,
+  `got=${computeSaliency(mem, ctx).uncertainty}`,
+);
+
+// (B.5.b) Context-level scalar uncertainty raises the score.
+const ctxNoUnc: SaliencyContext = { ...ctx, uncertainty: 0 };
+const ctxHighUnc: SaliencyContext = { ...ctx, uncertainty: 1 };
+const sLow = computeSaliency(mem, ctxNoUnc);
+const sHigh = computeSaliency(mem, ctxHighUnc);
+check(
+  "uncertainty: high context scalar raises score over zero scalar",
+  sHigh.score > sLow.score,
+  `low=${sLow.score.toFixed(4)} high=${sHigh.score.toFixed(4)}`,
+);
+check(
+  "uncertainty: scalar is clamped to [0,1] and reaches 1 at ctx.uncertainty=1",
+  sHigh.uncertainty === 1,
+  `got=${sHigh.uncertainty}`,
+);
+
+// (B.5.c) Per-memory override wins over the context-level scalar.
+const ctxMixed: SaliencyContext = {
+  ...ctx,
+  uncertainty: 0.2, // context-level baseline
+  uncertaintyById: new Map<string, number>([["m-1", 0.95]]),
+};
+const sMixed = computeSaliency(mem, ctxMixed);
+check(
+  "uncertaintyById overrides context-level uncertainty",
+  Math.abs(sMixed.uncertainty - 0.95) < 1e-9,
+  `got=${sMixed.uncertainty}`,
+);
+
+// (B.5.d) Per-memory override is per-id: a memory not in the map falls back to
+// the context-level scalar (NOT to 0).
+const memOther: SaliencyMemory = { id: "m-other", content: mem.content, importance: mem.importance };
+const sOther = computeSaliency(memOther, ctxMixed);
+check(
+  "uncertaintyById fallback to context-level uncertainty when id absent",
+  Math.abs(sOther.uncertainty - 0.2) < 1e-9,
+  `got=${sOther.uncertainty}`,
+);
+
+// (B.5.e) Relative ordering across hits is preserved when uncertainty differs:
+// a more-uncertain memory ranks higher than an otherwise-identical less-
+// uncertain one (proving the term moves the score the right way).
+const memA: SaliencyMemory = { id: "ua", content: "Generic doc content for ordering test", importance: 0.5 };
+const memB: SaliencyMemory = { id: "ub", content: "Generic doc content for ordering test", importance: 0.5 };
+const ctxOrder: SaliencyContext = {
+  query: "doc content",
+  activeGoals: [],
+  organismHealth: 0.9, // survival = 0 so it can't confound
+  uncertaintyById: new Map<string, number>([
+    ["ua", 0.1],
+    ["ub", 0.9],
+  ]),
+};
+const sA = computeSaliency(memA, ctxOrder);
+const sB = computeSaliency(memB, ctxOrder);
+check(
+  "uncertainty: more-uncertain memory ranks higher when other terms match",
+  sB.score > sA.score,
+  `A=${sA.score.toFixed(4)} B=${sB.score.toFixed(4)}`,
+);
+
+// (B.5.f) Weights still sum to 1.0 after rebalancing for the 5th term — already
+// asserted at the top, but re-state explicitly here for the regression record.
+check(
+  "weight closure preserved after adding W_UNCERTAINTY",
+  Math.abs(SALIENCY_WEIGHT_SUM - 1.0) < 1e-9,
+  `sum=${SALIENCY_WEIGHT_SUM}`,
+);
 
 // -----------------------------------------------------------------------------
 // (C) Ranker integration — score changes when SaliencyContext is supplied.
@@ -377,6 +459,121 @@ const samplePool: MemoryPoint[] = [
   rig.agent.think();
   await rig.agent.act();
   check("IdleAgent: empty memory pool emits nothing", rig.events.length === 0);
+}
+
+// -----------------------------------------------------------------------------
+// (F) IdleAgent — Phase 3 curiosity self-initiation (§18.5).
+// -----------------------------------------------------------------------------
+
+// Local rig variant that accepts a curiosity provider; the default rig in
+// section (E) wires `curiosityProvider: () => null`, exercising the
+// backward-compat path.
+function makeCuriosityRig(initialNow: number, pool: MemoryPoint[], curiosity: number | null) {
+  let nowVal = initialNow;
+  const events: BrainEvent[] = [];
+  const ctx: AgentContext = {
+    bus: {
+      emit: (e: BrainEvent) => events.push(e),
+      on: () => () => {},
+      onAny: () => () => {},
+      removeAll: () => {},
+    } as unknown as AgentContext["bus"],
+    safety: {
+      permitAndAudit: () => true,
+      isAllowed: () => true,
+    } as unknown as AgentContext["safety"],
+    log: () => {},
+    setStatus: (_s: AgentLifecycleState) => {},
+  };
+  const agent: Agent = new IdleAgent({
+    sampler: () => pool,
+    saliencyProvider: () => null,
+    curiosityProvider: () => curiosity,
+    random: () => 0.5,
+    now: () => nowVal,
+  });
+  agent.init(ctx);
+  return {
+    agent,
+    events,
+    advance(ms: number): void {
+      nowVal += ms;
+    },
+  };
+}
+
+// F.1 — Low curiosity (or null) preserves the legacy idle-thought emit.
+{
+  const rig = makeCuriosityRig(now0, samplePool, 0.3);
+  rig.advance(IDLE_THRESHOLD_MS + 1);
+  rig.agent.think();
+  await rig.agent.act();
+  check(
+    "IdleAgent: low curiosity emits idle-thought (legacy path preserved)",
+    rig.events.length === 1 && rig.events[0].kind === "idle-thought",
+    `kind=${rig.events[0]?.kind}`,
+  );
+}
+
+// F.2 — High curiosity (>= threshold) switches the emit to exploration-scheduled.
+{
+  const rig = makeCuriosityRig(now0, samplePool, 0.9);
+  rig.advance(IDLE_THRESHOLD_MS + 1);
+  rig.agent.think();
+  await rig.agent.act();
+  check(
+    "IdleAgent: high curiosity emits exploration-scheduled",
+    rig.events.length === 1 && rig.events[0].kind === "exploration-scheduled",
+    `kind=${rig.events[0]?.kind}`,
+  );
+  const e = rig.events[0];
+  if (e.kind === "exploration-scheduled") {
+    check(
+      "exploration-scheduled event has target/curiosity/reason",
+      typeof e.target === "string" &&
+        typeof e.curiosity === "number" &&
+        e.curiosity >= 0.7 &&
+        typeof e.reason === "string",
+    );
+  }
+}
+
+// F.3 — curiosityProvider that throws is silently absorbed (no emit failure).
+{
+  let nowVal = now0;
+  const events: BrainEvent[] = [];
+  const ctx: AgentContext = {
+    bus: {
+      emit: (e: BrainEvent) => events.push(e),
+      on: () => () => {},
+      onAny: () => () => {},
+      removeAll: () => {},
+    } as unknown as AgentContext["bus"],
+    safety: {
+      permitAndAudit: () => true,
+      isAllowed: () => true,
+    } as unknown as AgentContext["safety"],
+    log: () => {},
+    setStatus: (_s: AgentLifecycleState) => {},
+  };
+  const agent: Agent = new IdleAgent({
+    sampler: () => samplePool,
+    saliencyProvider: () => null,
+    curiosityProvider: () => {
+      throw new Error("curiosity provider broken");
+    },
+    random: () => 0.5,
+    now: () => nowVal,
+  });
+  agent.init(ctx);
+  nowVal += IDLE_THRESHOLD_MS + 1;
+  agent.think();
+  await agent.act();
+  check(
+    "IdleAgent: throwing curiosity provider does not break emit",
+    events.length === 1 && events[0].kind === "idle-thought",
+    `kind=${events[0]?.kind}`,
+  );
 }
 
 const result = failures === 0 ? "PASS" : "FAIL";

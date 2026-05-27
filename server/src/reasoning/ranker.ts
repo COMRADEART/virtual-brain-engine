@@ -1,14 +1,15 @@
 // Glue between the pure LTR model and the pipeline. Owns the cached weight
 // state, the cold-start blend, prompt trimming, and the position-bias guard.
 //
-// DEFERRED (Phase 2B): a Personalized-PageRank feature over memory_relations,
-// seeded by the vector hits, fused as an extra rank feature. Deliberately not
-// built yet — the relation graph is near-empty (only `cites` edges accrue, one
-// per answered question), so PPR would contribute ~0 today. Activate when the
-// graph is connected enough to matter (target ≥ ~200 `cites` edges; check
-// `SELECT COUNT(*) FROM memory_relations WHERE kind='cites'`).
+// Phase 2 (blueprint §3 / §6 / §17) — Personalized-PageRank over
+// memory_relations is now fused as an OPTIONAL additive feature alongside
+// saliency. It is gated by a density check (`isGraphDenseEnough`) so on a
+// fresh DB with near-empty relations it contributes 0 and the ranker behaves
+// as it did before. As the graph fills (cites edges, semantic-cluster edges,
+// access-pattern co-edges), PPR begins to shift rankings.
 
 import type { VectorSearchHit } from "../db/repositories/memory.js";
+import type { MemoryRelation } from "../../../shared/memory.js";
 import {
   loadRankerState,
   saveRankerState,
@@ -24,12 +25,27 @@ import {
   type RankFeatureInput,
 } from "./rankerModel.js";
 import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
+import {
+  isGraphDenseEnough,
+  personalisedPageRank,
+  type GraphTraversalOptions,
+} from "../memory/graphTraversal.js";
 
 // Saliency blend weight. Additive on top of the existing (1-alpha)*heur +
 // alpha*learned score, then re-normalised. Small enough that the saliency
 // signal can move a tied pair but can't override a strong learned signal
 // (which has been trained on real citations). Tunable.
 const W_SALIENCY = 0.2;
+
+// Graph (PPR) blend weight. Smaller than saliency because PPR is itself a
+// noisy signal on a young graph — but non-zero so a strongly-connected hit
+// can edge ahead of a vec-close-but-isolated one. Tunable.
+const W_GRAPH = 0.15;
+
+// Minimum relation count before PPR is allowed to influence ranking. Below
+// this the graph has too few edges for the random walk to mean anything; the
+// PPR feature stays 0 and the ranker behaves as it did pre-Phase-2.
+const PPR_MIN_RELATIONS = 50;
 
 // Queries-with-citations before the learned model fully takes over from the
 // heuristic (alpha ramps 0 -> 1 linearly across this many).
@@ -78,6 +94,23 @@ function featureInput(hit: VectorSearchHit, now: number): RankFeatureInput {
   };
 }
 
+/**
+ * Optional graph-traversal context. When supplied, PPR is computed over the
+ * provided relations using the vec scores as the restart distribution; the
+ * result is blended into the ranker score (see W_GRAPH).
+ *
+ * The caller is responsible for fetching `relations` (typically via
+ * `listRelationsAmong(hits.map(h=>h.memory.id))`) — this keeps the ranker
+ * itself dependency-inverted and unit-testable.
+ */
+export interface GraphContext {
+  relations: ReadonlyArray<MemoryRelation>;
+  /** Total relation count in the DB — used for the density gate. */
+  totalRelations: number;
+  /** Optional PPR tuning forwarded to the resolver. */
+  options?: GraphTraversalOptions;
+}
+
 export interface RankResult {
   ranked: VectorSearchHit[];
   featuresById: Map<string, number[]>;
@@ -85,6 +118,8 @@ export interface RankResult {
   alpha: number;
   /** Per-memory saliency breakdown when a SaliencyContext was provided; else empty. */
   saliencyById: Map<string, number>;
+  /** Per-memory PPR score when a GraphContext was provided AND the graph is dense enough. */
+  graphScoreById: Map<string, number>;
 }
 
 // Re-rank vector hits with the blended score. featuresById is kept so the
@@ -97,13 +132,45 @@ export interface RankResult {
 // The saliency layer is OPTIONAL — calling rankHits(hits) without a context
 // keeps the legacy behavior unchanged (no regression risk for the existing
 // ranker selfcheck or pipeline).
-export function rankHits(hits: VectorSearchHit[], saliencyCtx?: SaliencyContext): RankResult {
+export function rankHits(
+  hits: VectorSearchHit[],
+  saliencyCtx?: SaliencyContext,
+  graphCtx?: GraphContext,
+): RankResult {
   const s = state();
   const now = Date.now();
   const alpha = Math.min(1, s.trainedCount / WARM_AT);
   const warm = s.trainedCount >= WARM_AT;
   const featuresById = new Map<string, number[]>();
   const saliencyById = new Map<string, number>();
+  const graphScoreById = new Map<string, number>();
+
+  // PPR is computed once over the candidate set when the graph is dense
+  // enough; per-hit lookup is O(1) below. If the gate fails (sparse graph
+  // or no context supplied) we leave graphScoreById empty and W_GRAPH * 0 = 0
+  // — i.e. the ranker reproduces its pre-PPR behaviour.
+  const usePPR =
+    graphCtx !== undefined &&
+    isGraphDenseEnough(graphCtx.totalRelations, PPR_MIN_RELATIONS) &&
+    graphCtx.relations.length > 0;
+  if (usePPR) {
+    const seedWeights = new Map<string, number>();
+    for (const h of hits) seedWeights.set(h.memory.id, h.score);
+    const ppr = personalisedPageRank(graphCtx.relations, seedWeights, graphCtx.options);
+    if (ppr.hasEdges) {
+      // Normalise PPR scores to [0,1] across the hit set so they blend
+      // commensurate with vec/heuristic/learned/saliency.
+      let maxPpr = 0;
+      for (const h of hits) {
+        const v = ppr.scoreById.get(h.memory.id) ?? 0;
+        if (v > maxPpr) maxPpr = v;
+      }
+      const denom = maxPpr > 0 ? maxPpr : 1;
+      for (const h of hits) {
+        graphScoreById.set(h.memory.id, (ppr.scoreById.get(h.memory.id) ?? 0) / denom);
+      }
+    }
+  }
 
   const scored = hits.map((hit) => {
     const fi = featureInput(hit, now);
@@ -112,20 +179,28 @@ export function rankHits(hits: VectorSearchHit[], saliencyCtx?: SaliencyContext)
     const learned = predictProb(s.weights, x);
     const heur = heuristicScore(fi);
     const base = (1 - alpha) * heur + alpha * learned;
-    let score = base;
+
+    let blendNumer = base;
+    let blendDenom = 1;
     if (saliencyCtx) {
       const sal = computeSaliency(
         { id: hit.memory.id, content: hit.memory.content, importance: hit.memory.importance },
         saliencyCtx,
       );
       saliencyById.set(hit.memory.id, sal.score);
-      // Re-normalise so adding the saliency channel keeps `score` in [0,1].
-      score = (base + W_SALIENCY * sal.score) / (1 + W_SALIENCY);
+      blendNumer += W_SALIENCY * sal.score;
+      blendDenom += W_SALIENCY;
     }
+    const graphScore = graphScoreById.get(hit.memory.id);
+    if (typeof graphScore === "number") {
+      blendNumer += W_GRAPH * graphScore;
+      blendDenom += W_GRAPH;
+    }
+    const score = blendNumer / blendDenom;
     return { ...hit, score };
   });
   scored.sort((a, b) => b.score - a.score);
-  return { ranked: scored, featuresById, warm, alpha, saliencyById };
+  return { ranked: scored, featuresById, warm, alpha, saliencyById, graphScoreById };
 }
 
 // What the LLM actually sees. Cold start: everything (a regressed warm top-k

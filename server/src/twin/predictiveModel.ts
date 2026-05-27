@@ -6,6 +6,16 @@
 // "Memory is the past, world state is the present, the Digital Twin is
 // predicted reality." This module is the "predicted" part for resource trends
 // and workflow failure likelihood.
+//
+// DEFERRED (blueprint §3 #6 / improvement plan Phase 2): a small GRU sequence
+// model would beat OLS on non-stationary patterns (oscillating loads, periodic
+// spikes). Blueprint flags this as a *minor* gap because the current OLS
+// fit is good for the dominant use case — 5–15 min horizons on slowly-moving
+// system metrics. The seam to add it later is `predictMetrics()` below: branch
+// on `process.env.TWIN_USE_GRU === "1"` to a `gruForecast()` path, keep the
+// OLS path as fallback. Training infrastructure (BPTT + Adam) would be a
+// separate `twin/gru.ts` module. Skipped this session to invest in higher-
+// leverage gaps (Phase 3 perception streaming, Phase 4 renderer 20k unlock).
 
 import type { TwinSnapshot, TwinPrediction } from "../../../shared/twin.js";
 

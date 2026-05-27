@@ -39,6 +39,14 @@ export const IDLE_THRESHOLD_MS = 90_000; // 1.5 minutes of quiet before "idle".
 export const MIN_THOUGHT_GAP_MS = 300_000; // 5 minutes minimum between thoughts.
 export const SAMPLE_POOL_SIZE = 20; // how many recent memories to sample from.
 
+// Phase 3 (improvement plan §18.5) — curiosity self-initiation threshold.
+// When the curiosity provider reports a value ≥ this, the agent fires an
+// `exploration-scheduled` event instead of (or alongside) the normal idle
+// thought. Tuned so a 0.7+ "I'm pretty uncertain about something here" reading
+// from the engine is enough to schedule an exploration without being so eager
+// that mild uncertainty triggers it.
+export const CURIOSITY_EXPLORE_THRESHOLD = 0.7;
+
 /** Memory sampler — production wires to listRecentMemories; tests stub. */
 export type IdleMemorySampler = () => MemoryPoint[];
 
@@ -49,12 +57,23 @@ export type IdleMemorySampler = () => MemoryPoint[];
  */
 export type IdleSaliencyProvider = () => SaliencyContext | null;
 
+/**
+ * Optional curiosity provider. Returns a [0,1] scalar from the engine's
+ * uncertainty signal (HybridCognitiveCore.computeUncertainty()) carried over
+ * the bus. Returning null (or throwing) opts out — agent emits idle-thought
+ * as usual. Returning a value ≥ CURIOSITY_EXPLORE_THRESHOLD switches the emit
+ * to `exploration-scheduled` carrying a target (a sampled cluster / project /
+ * "scan") for the next subsystem to act on.
+ */
+export type IdleCuriosityProvider = () => number | null;
+
 /** Random in [0,1). Injected for deterministic tests. */
 export type IdleRandom = () => number;
 
 export interface IdleAgentDeps {
   sampler?: IdleMemorySampler;
   saliencyProvider?: IdleSaliencyProvider;
+  curiosityProvider?: IdleCuriosityProvider;
   random?: IdleRandom;
   /** Override the "now" clock for tests. */
   now?: () => number;
@@ -68,12 +87,14 @@ export class IdleAgent implements Agent {
 
   private readonly sampler: IdleMemorySampler;
   private readonly saliencyProvider: IdleSaliencyProvider;
+  private readonly curiosityProvider: IdleCuriosityProvider;
   private readonly random: IdleRandom;
   private readonly now: () => number;
 
   constructor(deps: IdleAgentDeps = {}) {
     this.sampler = deps.sampler ?? (() => listRecentMemories(SAMPLE_POOL_SIZE));
     this.saliencyProvider = deps.saliencyProvider ?? (() => null);
+    this.curiosityProvider = deps.curiosityProvider ?? (() => null);
     this.random = deps.random ?? Math.random;
     this.now = deps.now ?? (() => Date.now());
     this.lastActivityAt = this.now();
@@ -126,6 +147,34 @@ export class IdleAgent implements Agent {
     this.lastThoughtAt = this.now();
     this.ready = false;
 
+    // Phase 3 — read the curiosity signal AFTER sampling, BEFORE emit. When
+    // it crosses the threshold, switch the emit to exploration-scheduled and
+    // use the chosen memory's project (or "scan") as the exploration target.
+    // The choice still feeds into target selection so the exploration is
+    // grounded in something the system has recent context for.
+    const curiosity = (() => {
+      try {
+        const v = this.curiosityProvider();
+        return typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+      } catch {
+        return 0;
+      }
+    })();
+
+    const at = new Date(this.now()).toISOString();
+    if (curiosity >= CURIOSITY_EXPLORE_THRESHOLD) {
+      const target = choice.projectName ?? "scan";
+      this.ctx.bus.emit({
+        kind: "exploration-scheduled",
+        target,
+        curiosity,
+        reason: `curiosity ${curiosity.toFixed(2)} ≥ ${CURIOSITY_EXPLORE_THRESHOLD} → explore ${target}`,
+        at,
+      });
+      this.ctx.log(`exploration scheduled: target=${target} curiosity=${curiosity.toFixed(2)}`);
+      return;
+    }
+
     const preview = choice.content.length > 200 ? `${choice.content.slice(0, 197)}...` : choice.content;
     const reason = this.lastReason ?? "high-importance recall";
     this.ctx.bus.emit({
@@ -134,7 +183,7 @@ export class IdleAgent implements Agent {
       preview,
       importance: choice.importance,
       reason,
-      at: new Date(this.now()).toISOString(),
+      at,
     });
     this.ctx.log(`idle thought: ${preview.slice(0, 80)} (reason: ${reason})`);
   }

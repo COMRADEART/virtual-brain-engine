@@ -151,6 +151,18 @@ export type BrainEvent =
       importance: number;
       reason: string;
       at: string;
+    }
+  | {
+      // Phase 3 (improvement plan §18.5) — curiosity self-initiation. When the
+      // engine reports high curiosity (system-wide uncertainty about an under-
+      // explored area), the idle agent fires this variant *instead* of the
+      // normal idle-thought. The carried `target` names what to explore — a
+      // memory cluster id, a project name, or "scan" for a fresh file walk.
+      kind: "exploration-scheduled";
+      target: string;
+      curiosity: number;
+      reason: string;
+      at: string;
     };
 
 export type BrainEventKind = BrainEvent["kind"];

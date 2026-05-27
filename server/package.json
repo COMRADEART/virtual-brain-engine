@@ -13,7 +13,8 @@
     "twin:selfcheck": "tsx scripts/twin-selfcheck.ts",
     "memory:selfcheck": "tsx scripts/memory-selfcheck.ts",
     "perception:selfcheck": "tsx scripts/perception-selfcheck.ts",
-    "attention:selfcheck": "tsx scripts/attention-selfcheck.ts"
+    "attention:selfcheck": "tsx scripts/attention-selfcheck.ts",
+    "graph:selfcheck": "tsx scripts/graph-selfcheck.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
