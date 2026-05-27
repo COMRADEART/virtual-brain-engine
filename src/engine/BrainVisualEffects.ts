@@ -33,6 +33,9 @@ attribute float membraneNorm;
 attribute float neuronType;       // 1=excitatory, -1=inhibitory
 attribute float burstStatus;     // 0=normal, 1=bursting
 attribute float memoryTrace;     // 0-1 memory engagement
+// Phase 4 (improvement plan §1B): per-instance visibility/LOD multiplier.
+// Default 1.0 if absent — written by NeuralGraphRenderer.updateAScaleLOD.
+attribute float aScale;
 varying float vMembraneNorm;
 varying float vNeuronType;
 varying float vBurstStatus;
@@ -47,7 +50,7 @@ void main() {
   vMemoryTrace = memoryTrace;
   vNormal = normalMatrix * normal;
 
-  vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position * aScale, 1.0);
   vViewPosition = -mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -1588,6 +1591,17 @@ export function applyVisualEffectsToGraph(
           new THREE.InstancedBufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage),
         );
       }
+    }
+    // Phase 4 (improvement plan §1B): NEURON_VERT now reads `aScale`. The
+    // renderer attaches it in shader mode; if it's missing (legacy renderer
+    // upgraded mid-flight) default to 1.0 so existing visuals don't collapse.
+    if (!geo.getAttribute("aScale")) {
+      const aScale = new Float32Array(count);
+      aScale.fill(1);
+      geo.setAttribute(
+        "aScale",
+        new THREE.InstancedBufferAttribute(aScale, 1).setUsage(THREE.DynamicDrawUsage),
+      );
     }
     effects.attachNeuronGeometry(geo);
   }

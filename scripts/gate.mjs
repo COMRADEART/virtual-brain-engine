@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Phase 0 — green-build composite gate.
 //
-// Runs frontend typecheck, server typecheck, and the six selfchecks
-// (ranker, agents, twin, memory, perception, attention) as ISOLATED
+// Runs frontend typecheck, server typecheck, and the eight selfchecks
+// (ranker, agents, twin, memory, perception, attention, graph, worldmodel)
+// as ISOLATED
 // subprocesses so a Windows libuv shutdown abort in one selfcheck cannot
 // kill the chain via `&&` short-circuit. Each step's PASS/FAIL is judged by
 // looking for explicit success markers in stdout AS WELL AS the exit code —
@@ -34,6 +35,7 @@ const steps = [
   { label: "perception selfcheck", args: ["--prefix", "server", "run", "perception:selfcheck"] },
   { label: "attention selfcheck",  args: ["--prefix", "server", "run", "attention:selfcheck"] },
   { label: "graph selfcheck",      args: ["--prefix", "server", "run", "graph:selfcheck"] },
+  { label: "worldmodel selfcheck", args: ["--prefix", "server", "run", "worldmodel:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
 ];
 

@@ -42,7 +42,7 @@ export interface ImaginationStep {
 }
 
 export interface MemoryInfluence {
-  source: "memory" | "twin" | "workflow-history" | "swarm" | "heuristic";
+  source: "memory" | "twin" | "workflow-history" | "swarm" | "heuristic" | "causal-map";
   label: string;
   weight: number;
   detail: string;

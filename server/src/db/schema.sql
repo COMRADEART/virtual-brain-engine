@@ -574,6 +574,30 @@ CREATE TABLE IF NOT EXISTS visual_workflow_states (
 CREATE INDEX IF NOT EXISTS idx_workflow_states_name      ON visual_workflow_states(name);
 CREATE INDEX IF NOT EXISTS idx_workflow_states_frequency ON visual_workflow_states(frequency DESC);
 
+-- Causal world model (blueprint §3 #7) — explicit cause→effect map keyed on
+-- action classes (twin/simulationEngine.classifyAction) and outcome labels.
+-- Populated from imagination.reflect() observations; consumed by
+-- imagination.imagine() to bias risk priors with empirical history.
+--
+-- Semantics: each row is a (cause, effect) pair. `observations` = number of
+-- times we've seen the cause class. `occurrences` = number of those times
+-- the effect followed. `strength` = Laplace-smoothed P(effect | cause).
+-- `confidence` = exponential saturation on observation count.
+CREATE TABLE IF NOT EXISTS causal_links (
+  id                TEXT PRIMARY KEY,
+  cause_class       TEXT NOT NULL,
+  effect_class      TEXT NOT NULL,
+  observations      INTEGER NOT NULL DEFAULT 0,
+  occurrences       INTEGER NOT NULL DEFAULT 0,
+  strength          REAL    NOT NULL DEFAULT 0,
+  confidence        REAL    NOT NULL DEFAULT 0,
+  last_observed_at  TEXT    NOT NULL,
+  source            TEXT    NOT NULL DEFAULT 'imagination-reflection',
+  UNIQUE(cause_class, effect_class)
+);
+CREATE INDEX IF NOT EXISTS idx_causal_links_cause  ON causal_links(cause_class);
+CREATE INDEX IF NOT EXISTS idx_causal_links_effect ON causal_links(effect_class);
+
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INTEGER PRIMARY KEY,

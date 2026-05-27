@@ -12,6 +12,7 @@ import { UnifiedPanel } from "./components/UnifiedPanel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
 import { StatusBar } from "./components/StatusBar";
 import { VisionCortexPanel } from "./components/vision/VisionCortexPanel";
+import { BrainLegendHUD } from "./components/cognition/BrainLegendHUD";
 import { CognitivePanel } from "./components/cognition/CognitivePanel";
 import { CompactLayout, FocusMode, CommandPalette, useCommandPalette } from "./components/brain-os";
 import { REGION_DEFINITIONS, BRAIN_ACTIONS } from "./data/regionDefinitions";
@@ -45,9 +46,12 @@ const [selectedActionId, setSelectedActionId] = useState<BrainActionId>("attenti
 const [showEmergentControls, setShowEmergentControls] = useState(true);
   
   // Phase 2 Panel States
+  // Phase 4 (improvement plan §11): UnifiedPanel defaults to collapsed so the
+  // 3D scene is the centerpiece on first load. The user opens panels they need
+  // via the CommandPalette / tab icons; the previous default buried the scene.
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useState(true);
   const [unifiedTab, setUnifiedTab] = useState<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("ask");
-  const [unifiedCollapsed, setUnifiedCollapsed] = useState(false);
+  const [unifiedCollapsed, setUnifiedCollapsed] = useState(true);
 
   const [shellTransparent, setShellTransparent] = useState(true);
   const [signalSpeed, setSignalSpeed] = useState(1.3);
@@ -213,6 +217,7 @@ useEffect(() => {
       {/* Hybrid-cognition HUD. Self-gates: renders only when a HybridCognitiveCore
           is active (i.e. the app was opened with ?useHybrid=true), in any layout. */}
       <CognitivePanel />
+      <BrainLegendHUD />
       {layout === "compact" && (
         <CompactLayout
           running={running}

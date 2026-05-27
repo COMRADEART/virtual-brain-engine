@@ -4,6 +4,12 @@ import { getEventBus, nowIso, type BrainBus } from "./eventBus.js";
 import { getRecentSnapshots } from "../twin/repository.js";
 import { classifyAction, simulate, type SimHistory } from "../twin/simulationEngine.js";
 import { classifyAbstractionLevel } from "./abstractionLevels.js";
+import {
+  MIN_USABLE_CONFIDENCE,
+  extractEffectsFromReflection,
+  predictEffects,
+  recordObservation,
+} from "./causalMap.js";
 import type {
   AbstractionLevel,
   CognitiveAbstraction,
@@ -135,6 +141,38 @@ function memoryReliability(influences: MemoryInfluence[]): number {
   const memory = influences.filter((influence) => influence.source === "memory");
   if (memory.length === 0) return 0.34;
   return clamp01(memory.reduce((sum, influence) => sum + influence.weight, 0) / Math.max(1, memory.length));
+}
+
+interface CausalInfluenceResult {
+  blendedRisk: number;
+  influence: MemoryInfluence;
+}
+
+// Bayesian-ish blend between the per-call heuristic risk and the smoothed
+// empirical failure rate from causal_links. Returns null when no usable
+// signal exists (DB miss, never-observed cause, or sub-threshold confidence)
+// — caller falls back to the heuristic risk unchanged.
+function readCausalInfluence(causeClass: string, heuristicRisk: number): CausalInfluenceResult | null {
+  try {
+    const forecast = predictEffects(causeClass);
+    if (forecast.expectedFailureRate === null) return null;
+    if (forecast.failureConfidence < MIN_USABLE_CONFIDENCE) return null;
+    const weight = Math.min(0.5, forecast.failureConfidence);
+    const blendedRisk = clamp01(heuristicRisk * (1 - weight) + forecast.expectedFailureRate * weight);
+    const failureLink = forecast.effects.find((effect) => effect.effectClass === "failure");
+    const obsCount = failureLink?.observations ?? 0;
+    return {
+      blendedRisk,
+      influence: {
+        source: "causal-map",
+        label: `causal world model (${causeClass})`,
+        weight: clamp01(forecast.failureConfidence),
+        detail: `Historical P(failure|${causeClass}) = ${Math.round(forecast.expectedFailureRate * 100)}% over ${obsCount} observation${obsCount === 1 ? "" : "s"}; blended risk ${Math.round(heuristicRisk * 100)}% → ${Math.round(blendedRisk * 100)}%.`,
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 function sideEffectsFor(kind: ImaginationFutureKind, category: string, risk: number): ImaginationSideEffects {
@@ -368,6 +406,16 @@ export class ImaginationEngine {
     }
 
     const base = simulate(action, getRecentSnapshots(60), historyFor(action));
+
+    // Causal world model (blueprint #7): blend empirical P(failure|cause) into
+    // the heuristic risk prior. Weight = failureConfidence capped at 0.5 — we
+    // never let history fully override the per-call digital-twin simulation,
+    // and below MIN_USABLE_CONFIDENCE the empirical term contributes nothing
+    // (≈ first observation in). Pure read; safe to fail silently.
+    const causeClass = classifyAction(action);
+    const causalInfluence = readCausalInfluence(causeClass, base.riskScore);
+    const effectiveBaseRisk = causalInfluence ? causalInfluence.blendedRisk : base.riskScore;
+
     const influences: MemoryInfluence[] = [
       {
         source: "twin",
@@ -381,12 +429,13 @@ export class ImaginationEngine {
         weight: clamp01(1 - base.riskScore * 0.6),
         detail: base.conflicts.length > 0 ? base.conflicts.join("; ") : "No matching recent failure pattern.",
       },
+      ...(causalInfluence ? [causalInfluence.influence] : []),
       ...memoryInfluences(action),
     ];
     const branchKinds: ImaginationFutureKind[] = ["fast", "safe", "rollback", "sandbox", "defer"];
     const futures = branchKinds
       .slice(0, Math.max(3, Math.min(MAX_BRANCHES, input.branchCount ?? 4)))
-      .map((kind) => buildFuture(kind, action, base.riskScore, base.estimatedRuntimeMs, base.conflicts, influences));
+      .map((kind) => buildFuture(kind, action, effectiveBaseRisk, base.estimatedRuntimeMs, base.conflicts, influences));
     const recommendation = recommend(futures);
     const sessionId = `imag-${ulid()}`;
     const session: ImaginationSession = {
@@ -447,6 +496,28 @@ export class ImaginationEngine {
       actualDurationMs: input.actualDurationMs,
       sideEffects: input.sideEffects,
     });
+
+    // Causal world model (blueprint #7): close the predict→observe→update
+    // loop. Every reflection feeds five (cause, effect) increments — one
+    // per effect class — so per-effect probabilities stay calibrated rather
+    // than biased toward 1.0 (which would happen if only the firing effect
+    // were recorded). Best-effort; never block the reflection on DB failure.
+    try {
+      const causeClass = classifyAction(session.action);
+      const dependencyChanges = input.sideEffects?.dependencyChanges ?? 0;
+      const observations = extractEffectsFromReflection({
+        ok: input.ok,
+        actualRisk,
+        accuracy,
+        dependencyChanges,
+      });
+      for (const { effectClass, occurred } of observations) {
+        recordObservation({ causeClass, effectClass, occurred });
+      }
+    } catch (err) {
+      console.warn("[imagination] causal observation failed:", err);
+    }
+
     this.persistTimeline({
       id: `imag-tl-${ulid()}`,
       sessionId: session.id,

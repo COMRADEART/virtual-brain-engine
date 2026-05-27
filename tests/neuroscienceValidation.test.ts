@@ -1,379 +1,288 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { SpikingEngine } from '../src/engine/SpikingEngine'
-import { NeuralGraphGenerator } from '../src/engine/neuralGraphGenerator'
-import { BrainRegionId } from '../src/engine/types'
+// Biological-plausibility coverage for AdvancedBrainCore (alias: SpikingEngine).
+//
+// Ported 2026-05-27 from the original aspirational suite that asserted methods
+// the engine never implemented (`getFiringRates`, `setGlobalAcetylcholine`,
+// `measureThetaGammaCoupling`, …) and region IDs that aren't in the real
+// `BrainRegionId` union ('prefrontal-cortex', 'visual', 'pons'). The whole
+// suite had been `describe.skip`'d to keep the gate green. The TODO in the
+// header asked for a port to the real surface — this is that port.
+//
+// What we keep: the original test buckets (Biological Plausibility / Cognitive
+// Dynamics / Neuromodulation / Performance / Visualization / Emergent Behaviors)
+// and the test count (~17 — one test per real-API behaviour worth gating).
+// What we drop: every claim that depended on an unimplemented method or on a
+// specific firing-rate magnitude. Magnitudes belong in `scripts/diag-probe.mjs`,
+// not in unit tests — they're sensitive to E:I gain retunes and would re-break
+// every time the dynamics get touched.
 
-// ⚠️ QUARANTINED (describe.skip) — 2026-05-25.
-// This suite was written against an aspirational API that never shipped:
-//   • `NeuralGraphGenerator` is not exported (the real export is the
-//     `generateNeuralGraph()` function in neuralGraphGenerator.ts),
-//   • region IDs like 'prefrontal-cortex'/'visual'/'pons' are not in the real
-//     `BrainRegionId` union, and
-//   • dozens of asserted SpikingEngine methods (getFiringRates, measureThetaGammaCoupling,
-//     generateVisualizationData, …) do not exist on the current class.
-// All 17 tests failed at load (`NeuralGraphGenerator is not a constructor`), keeping
-// the whole unit gate red. Skipped to restore a green gate. The live coverage is in
-// tests/signalSimulation.test.ts (engine loop) + tests/spikingEngine.test.ts (real API).
-// TODO(neuro): port these biological-plausibility checks to the real SpikingEngine surface.
+import { describe, it, expect, beforeEach } from "vitest";
+import { generateNeuralGraph } from "../src/engine/neuralGraphGenerator";
+import { SpikingEngine, type ReplayEvent } from "../src/engine/SpikingEngine";
+import { isSpikingCapable } from "../src/engine/types";
+import {
+  FOCUS_STATE,
+  RECALL_MEMORY_STATE,
+  CREATIVE_THINKING_STATE,
+} from "../src/engine/cognitiveStates";
+import type { NeuralGraph } from "../src/engine/types";
 
-describe.skip('SpikingEngine Upgraded Neuroscience Validation', () => {
-  let engine: SpikingEngine
-  let graph: NeuralGraph
-  const neuronCount = 1500 // Target size for smooth visualization
-  const regionNeurons: Record<BrainRegionId, number> = {
-    'prefrontal-cortex': 300,
-    'hippocampus-l': 150,
-    'hippocampus-r': 150,
-    'temporal': 200,
-    'parietal': 150,
-    'visual': 100,
-    'auditory': 80,
-    'motor': 90,
-    'somatosensory': 80,
-    'basal-ganglia': 60,
-    'thalamus': 60,
-    'amygdala-l': 30,
-    'amygdala-r': 30,
-    'hypothalamus': 20,
-    'gyrus-cinguli': 40,
-    'cerebellum': 50,
-    'pons': 30,
-    'medulla': 20,
-    'insular-cortex': 30,
-    'orbital-frontal-cortex': 30,
-//    'brainstem': 0 // Virtual region
+const FIXED_DELTA = 1 / 60;
+
+function buildGraph(): NeuralGraph {
+  // 0.2 density seeds ~1400 neurons in the standard rich-club connectome,
+  // matching the 1500-neuron target the original suite used.
+  return generateNeuralGraph({ density: 0.2, seed: 19 });
+}
+
+function stepFor(engine: SpikingEngine, steps: number): void {
+  let elapsed = 0;
+  for (let i = 0; i < steps; i += 1) {
+    elapsed += FIXED_DELTA;
+    engine.step(FIXED_DELTA, elapsed);
   }
-  
+}
+
+describe("AdvancedBrainCore neuroscience validation", () => {
+  let engine: SpikingEngine;
+  let graph: NeuralGraph;
+
   beforeEach(() => {
-    // Generate biologically-plausible neural graph
-    const assignments: BrainRegionId[] = []
-    for (const [regionId, count] of Object.entries(regionNeurons)) {
-      for (let i = 0; i < count; i++) assignments.push(regionId as BrainRegionId)
-    }
-    
-    const generator = new NeuralGraphGenerator(neuronCount)
-    graph = generator.generateGraph(assignments, 19) // Fixed seed
-    
-    engine = new SpikingEngine(graph, 'rest')
-  })
+    graph = buildGraph();
+    engine = new SpikingEngine(graph, "see-object");
+  });
 
-  // Test physiological realism
-  describe('Biological Plausibility', () => {
-    it('should maintain 80/20 excitatory/inhibitory ratio', () => {
-      const neuronCount = engine.getNeuronCount()
-      const excCount = engine.getExcitatoryNeuronCount()
-      const inhCount = neuronCount - excCount
-      
-      const excRatio = excCount / neuronCount
-      expect(excRatio).toBeGreaterThan(0.75)
-      expect(excRatio).toBeLessThan(0.85)
-      // Inhibitory neurons should be ~20%
-      expect(inhCount / neuronCount).toBeGreaterThan(0.15)
-      expect(inhCount / neuronCount).toBeLessThan(0.25)
-    })
-    
-    it('should produce realistic firing rates', () => {
-      // Baseline activity
-      for (let i = 0; i < 100; i++) {
-        engine.step(0.002) // 2ms timestep
+  describe("Biological Plausibility", () => {
+    it("maintains a ~80/20 excitatory/inhibitory ratio via neuronType", () => {
+      let exc = 0;
+      let inh = 0;
+      for (let i = 0; i < engine.neuronType.length; i += 1) {
+        if (engine.neuronType[i] > 0) exc += 1;
+        else if (engine.neuronType[i] < 0) inh += 1;
       }
-      
-      // Measure firing rates across regions
-      const rates = engine.getFiringRates()
-      const globalRate = rates.global
-      
-      // Cortical neurons typically fire at 1-8 Hz
-      expect(globalRate).toBeGreaterThan(0.5) // Hz
-      expect(globalRate).toBeLessThan(20.0) // Upper bound
-      
-      // Region-specific rates should be reasonable
-      expect(rates.byRegion.get('hippocampus-l')!).toBeLessThan(15.0)
-      expect(rates.byRegion.get('prefrontal-cortex')!).toBeLessThan(12.0)
-    })
-    
-    it('should show theta-gamma coupling signatures', () => {
-      // Set hippocampus-like state
-      engine.setGlobalThetaGain(0.8)
-      engine.setGlobalGammaGain(1.2)
-      
-      const measures = []
-      for (let i = 0; i < 250; i++) {
-        engine.step(0.005) // 5ms timesteps
-        measures.push(engine.measureThetaGammaCoupling('hippocampus-l'))
-      }
-      
-      // Should show non-zero coupling
-      const avgCoupling = measures.reduce((sum, val) => sum + val.thetaGammaCoupling, 0) / measures.length
-      expect(avgCoupling).toBeGreaterThan(0.05) // Non-trivial coupling
-    })
+      const total = exc + inh;
+      expect(total).toBeGreaterThan(0);
+      const excRatio = exc / total;
+      expect(excRatio).toBeGreaterThan(0.7);
+      expect(excRatio).toBeLessThan(0.9);
+    });
 
-    it('should demonstrate E/I balance and critical dynamics', () => {
-      // Measure avalanche statistics
-      const avalancheSizes: number[] = []
-      let current = 0
-      for (let i = 0; i < 500; i++) {
-        engine.step(0.002)
-        const spiking = engine.getRecentSpikes().reduce((sum, val) => sum + (val ? 1 : 0), 0)
-        
-        if (spiking > 0) {
-          current += spiking
-        } else if (current > 0) {
-          avalancheSizes.push(current)
-          current = 0
+    it("keeps mean firing rate finite and physiologically bounded after burn-in", () => {
+      stepFor(engine, 120);
+      const meanRate = engine.getMeanRate();
+      expect(Number.isFinite(meanRate)).toBe(true);
+      // Homeostat target ≈ 0.02 (2%) per step; allow a generous envelope so
+      // E:I retunes don't break the gate.
+      expect(meanRate).toBeGreaterThanOrEqual(0);
+      expect(meanRate).toBeLessThan(0.6);
+    });
+
+    it("advances theta and gamma oscillator phases over time", () => {
+      const theta0 = engine.thetaPhase;
+      const gamma0 = engine.gammaPhase;
+      // Avoid an integer number of full rotations: theta=6 Hz × gamma=45 Hz
+      // would both wrap exactly to 0 after a whole-second multiple at the
+      // 1/60 s step. 31 steps × 1/60 s ≈ 0.517 s — guaranteed non-period.
+      stepFor(engine, 31);
+      const theta1 = engine.thetaPhase;
+      const gamma1 = engine.gammaPhase;
+      expect(Number.isFinite(theta1) && Number.isFinite(gamma1)).toBe(true);
+      // Wrapped to [0, 2π) — both phases should be in range and at least one
+      // must visibly move.
+      expect(theta1).toBeGreaterThanOrEqual(0);
+      expect(theta1).toBeLessThan(2 * Math.PI);
+      expect(gamma1).toBeGreaterThanOrEqual(0);
+      expect(gamma1).toBeLessThan(2 * Math.PI);
+      expect(theta1 !== theta0 || gamma1 !== gamma0).toBe(true);
+    });
+
+    it("keeps criticality + branching-ratio finite and non-negative", () => {
+      stepFor(engine, 180);
+      const crit = engine.getCriticalityScore();
+      const branch = engine.getBranchingRatio();
+      expect(Number.isFinite(crit)).toBe(true);
+      expect(crit).toBeGreaterThanOrEqual(0);
+      expect(crit).toBeLessThanOrEqual(1);
+      expect(Number.isFinite(branch)).toBe(true);
+      expect(branch).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe("Cognitive Dynamics", () => {
+    it("acetylcholine setpoint propagates through setAcetylcholine()", () => {
+      const baseline = engine.acetylcholine;
+      engine.setAcetylcholine(0.9);
+      // setLevel writes immediately; one step lets any rounding/clamping settle.
+      stepFor(engine, 1);
+      const elevated = engine.acetylcholine;
+      expect(elevated).toBeGreaterThan(baseline);
+    });
+
+    it("dopamine setpoint propagates through setDopamine()", () => {
+      engine.setDopamine(0.05);
+      stepFor(engine, 1);
+      const low = engine.dopamine;
+      engine.setDopamine(0.9);
+      stepFor(engine, 1);
+      const high = engine.dopamine;
+      expect(high).toBeGreaterThan(low);
+    });
+
+    it("memory trace getter survives a triggerMemoryReplay() invocation", () => {
+      stepFor(engine, 30);
+      // Must not throw and must return either null or a correctly sized array.
+      expect(() => engine.triggerMemoryReplay()).not.toThrow();
+      stepFor(engine, 5);
+      const trace = engine.getMemoryTrace();
+      if (trace !== null) {
+        expect(trace).toBeInstanceOf(Float32Array);
+        expect(trace.length).toBe(graph.nodes.length);
+        for (let i = 0; i < trace.length; i += 1) {
+          expect(Number.isFinite(trace[i])).toBe(true);
         }
       }
-      
-      // Should show power-law distribution (hallmark of criticality)
-      const smallAvals = avalancheSizes.filter(s => s <= 5).length
-      const mediumAvals = avalancheSizes.filter(s => s > 5 && s <= 20).length
-      const largeAvals = avalancheSizes.filter(s => s > 20).length
-      
-      // Power-law characteristic: more small events than large
-      expect(smallAvals).toBeGreaterThan(mediumAvals)
-      expect(mediumAvals).toBeGreaterThanOrEqual(largeAvals)
-    })
-  })
+    });
+  });
 
-  // Test cognitive dynamics
-  describe('Cognitive Dynamics', () => {
-    it('should show acetylcholine-driven attentional modulation', () => {
-      // Low ACh baseline
-      engine.setGlobalAcetylcholine(0.1)
-      const baselineAttention = engine.getAttentionIndex()
-      
-      // High ACh
-      engine.setGlobalAcetylcholine(0.9)
-      const highAChAttention = engine.getAttentionIndex()
-      
-      // Attention should increase with ACh
-      expect(highAChAttention).toBeGreaterThan(baselineAttention)
-      // Alpha desynchronization should occur
-      expect(engine.getAlphaPower()).toBeLessThan(0.3)
-    })
-    
-    it('should demonstrate dopaminergic plasticity modulation', () => {
-      // Measure plasticity at different DA levels
-      engine.setGlobalDopamine(0.1)
-      const lowDAPlasticity = engine.measurePlasticityChange()
-      
-      engine.setGlobalDopamine(0.8)
-      const highDAPlasticity = engine.measurePlasticityChange()
-      
-      // Higher dopamine should increase plasticity
-      expect(highDAPlasticity).toBeGreaterThan(lowDAPlasticity)
-    })
-    
-    it('should simulate memory consolidation dynamics', () => {
-      // Encode episodic memory
-      engine.reinforceMemoryTrace('event-domain', ['hippocampus-l', 'prefrontal-cortex'], 0.9)
-      const initHippStrength = engine.getMemoryTraceStrength('hippocampus-l', 'event-domain')
-      
-      // Simulate consolidation period
-      engine.setGlobalAcetylcholine(0.3) // Low ACh (sleep-like)
-      for (let i = 0; i < 50; i++) {
-        engine.step(0.05) // 50ms steps
+  describe("Neuromodulation System", () => {
+    it("exposes all four neuromodulators as finite non-negative scalars", () => {
+      stepFor(engine, 5);
+      for (const level of [
+        engine.dopamine,
+        engine.acetylcholine,
+        engine.serotonin,
+        engine.norepinephrine,
+      ]) {
+        expect(Number.isFinite(level)).toBe(true);
+        expect(level).toBeGreaterThanOrEqual(0);
       }
-      
-      const finalHippStrength = engine.getMemoryTraceStrength('hippocampus-l', 'event-domain')
-      const neocortexStrength = engine.getMemoryTraceStrength('temporal', 'event-domain')
-      
-      // Should show systems consolidation
-      expect(finalHippStrength).toBeLessThan(initHippStrength) // Decay in hippocampus
-      expect(neocortexStrength).toBeGreaterThan(0.1) // Growth in neocortex
-    })
-  })
+    });
 
-  // Test neuromodulation
-  describe('Neuromodulation System', () => {
-    it('should implement volume transmission with realistic kinetics', () => {
-      // Initial dopamine = baseline
-      const baseline = engine.getGlobalDopamine()
-      expect(baseline).toBeCloseTo(0.2, 1)
-      
-      // Inject reward signal
-      engine.applyRewardFeedback(0.8)
-      const phasic = engine.getGlobalDopamine()
-      expect(phasic).toBeGreaterThan(baseline + 0.3)
-      
-      // Should decay back toward baseline
-      const decayDopamine = []
-      for (let i = 0; i < 20; i++) {
-        engine.step(0.1) // 100ms time constant
-        decayDopamine.push(engine.getGlobalDopamine())
-      }
-      
-      // Should be approaching baseline
-      expect(decayDopamine[decayDopamine.length - 1]).toBeLessThan(phasic)
-      expect(decayDopamine[decayDopamine.length - 1]).toBeGreaterThan(baseline)
-    })
-    
-    it('should regionally differentiate neuromodulator responses', () => {
-      // Prefrontal cortex should show high D1 sensitivity
-      const prefrontalDA = engine.getRegionNeuromodulatorSensitivity('prefrontal-cortex', 'DA')
-      // Hippocampus should show high ACh sensitivity
-      const hippocampalACh = engine.getRegionNeuromodulatorSensitivity('hippocampus-l', 'ACh')
-      
-      // Prefrontal >> Hippocampus for DA
-      expect(prefrontalDA).toBeGreaterThan(0.4)
-      // Hippocampus >> Prefrontal for ACh
-      expect(hippocampalACh).toBeGreaterThan(prefrontalDA)
-    })
-  })
+    it("sensory injection drives a visible ACh pulse without unbounded growth", () => {
+      engine.setAcetylcholine(0.2);
+      stepFor(engine, 1);
+      const beforePulse = engine.acetylcholine;
+      // injectSensoryText pulses ACh by +0.1 (see AdvancedBrainCore.injectSensoryText).
+      engine.injectSensoryText("an unfamiliar pattern arrives in the input stream", true);
+      stepFor(engine, 1);
+      const pulsed = engine.acetylcholine;
+      // The pulse must visibly raise the level above the pre-pulse value.
+      expect(pulsed).toBeGreaterThan(beforePulse);
+      // After many further steps the system stays bounded (no runaway).
+      // ACh tracks a baseline that may exceed the seeded 0.2, so we don't
+      // assert monotonic decay — only that the level stays finite and within
+      // a physiological envelope.
+      stepFor(engine, 120);
+      const settled = engine.acetylcholine;
+      expect(Number.isFinite(settled)).toBe(true);
+      expect(settled).toBeGreaterThanOrEqual(0);
+      expect(settled).toBeLessThan(2);
+    });
+  });
 
-  // Test performance
-  describe('Performance Benchmarks', () => {
-    it('should achieve 55-60 FPS with 1500 neurons', () => {
-      const startTime = performance.now()
-      let totalSteps = 0
-      
-      // Simulate ~1 second of real time
-      while (performance.now() - startTime < 1000) {
-        engine.step(0.0167) // ~60 FPS timestep
-        totalSteps++
+  describe("Performance / Stability", () => {
+    it("survives a 600-step burn-in without producing NaN in any buffer", () => {
+      stepFor(engine, 600);
+      for (let i = 0; i < engine.regionIntensity.length; i += 1) {
+        expect(Number.isFinite(engine.regionIntensity[i])).toBe(true);
       }
-      
-      const duration = performance.now() - startTime
-      const fps = totalSteps / (duration / 1000)
-      
-      // Should achieve >30 FPS for interactive experience
-      expect(fps).toBeGreaterThan(30)
-      // Stretch goal: Should be on target for 55-60 FPS
-      console.log(`Performance: ${fps.toFixed(1)} FPS`) // For visibility
-      if (fps < 50) {
-        console.warn(`Note: Current performance ${fps.toFixed(1)} FPS below target 55-60 range`)
+      for (let i = 0; i < engine.pathwayIntensity.length; i += 1) {
+        expect(Number.isFinite(engine.pathwayIntensity[i])).toBe(true);
       }
-    })
-    
-    it('should handle memory consolidation without framerate disruption', () => {
-      const startTime = performance.now()
-      const timings = []
-      
-      // Enable consolidation
-      engine.setGlobalAcetylcholine(0.3) // Low ACh (sleep)
-      engine.setMemoryIntensity(0.7) // Active consolidation
-      
-      for (let i = 0; i < 50; i++) {
-        const stepStart = performance.now()
-        engine.step(0.02) // Nominal framerate
-        const stepTime = performance.now() - stepStart
-        timings.push(stepTime)
-      }
-      
-      const avgStepTime = timings.reduce((sum, val) => sum + val, 0) / timings.length
-      const under16ms = timings.filter(t => t <= 16.7).length // Target for 60 FPS
-      
-      // Majority of frames should remain smooth
-      expect(under16ms / timings.length).toBeGreaterThan(0.8)
-      console.log(`Consolidation performance: Avg step ${avgStepTime.toFixed(2)}ms`)
-    })
-  })
+    });
 
-  // Test visualization compatibility
-  describe('Visualization Integration', () => {
-    it('should provide comprehensive visual channels', () => {
-      const visData = engine.generateVisualizationData()
-      
-      // Validate visualization schema
-      expect(visData.spikeRaster.length).toBeGreaterThan(0)
-      expect(visData.membranePotentials.length).toBe(engine.getNeuronCount())
-      expect(visData.regionColors.length).toBeGreaterThan(15)
-      expect(visData.neuromodulatorLevels).toHaveProperty('DA')
-      expect(visData.neuromodulatorLevels).toHaveProperty('ACh')
-      expect(visData.oscillations.theta.PFC).toBeDefined()
-      expect(visData.memoryTraces.workingMemory.length).toBeGreaterThanOrEqual(0)
-      expect(visData.burstMarkers).toBeDefined()
-    })
-    
-    it('should reflect cognitive processes in visualization', () => {
-      // Baseline
-      let visData = engine.generateVisualizationData()
-      const baselineDA = visData.neuromodulatorLevels.DA.prefrontal
-      
-      // Simulate reward
-      engine.applyRewardFeedback(0.8)
-      visData = engine.generateVisualizationData()
-      const rewardDA = visData.neuromodulatorLevels.DA.prefrontal
-      
-      // Dopamine visualization should increase
-      expect(rewardDA).toBeGreaterThan(baselineDA)
-      expect(rewardDA - baselineDA).toBeGreaterThan(0.3)
-    })
-    
-    it('should differentiate excitatory vs inhibitory visual signatures', () => {
-      const visData = engine.generateVisualizationData()
-      const excRaster = visData.excitatoryRaster
-      const inhRaster = visData.inhibitoryRaster
-      
-      // Should show different patterns
-      expect(excRaster.length).toBe(visData.spikeRaster.length)
-      expect(inhRaster.length).toBe(visData.spikeRaster.length)
-      
-      // Should be distinguishable
-      const excSpikes = excRaster.reduce((sum, val) => sum + val, 0)
-      const inhSpikes = inhRaster.reduce((sum, val) => sum + val, 0)
-      expect(excSpikes).toBeGreaterThan(ihnSpikes) // More excitatory spikes
-    })
-  })
-
-  // Test emergent behaviors
-  describe('Emergent Cognitive Behaviors', () => {
-    it('should demonstrate attentional blink', () => {
-      // Set focused state
-      engine.applyCognitiveState('focused-attention')
-      
-      // Simulate sequential stimuli
-      engine.applyExternalInput('visual', 0.8)
-      for (let i = 0; i < 10; i++) engine.step(0.005) // ~50ms lag
-      engine.applyExternalInput('visual', 0.8)
-      
-      // Second stimulus should produce attenuated prefrontal response
-      const stimulus2Neglect = engine.getRecentNeuralActivity('prefrontal-cortex', 50)
-      expect(stimulus2Neglect).toBeLessThan(0.15) // Should show attentional blink
-    })
-    
-    it('should simulate default mode network activation', () => {
-      // Set mind-wandering state
-      engine.applyCognitiveState('mind-wandering')
-      
-      // Measure DMN regions
-      const dmnActivity = [
-        engine.getRecentNeuralActivity('gyrus-cinguli', 100),
-        engine.getRecentNeuralActivity('prefrontal-cortex', 100) // Medial PFC
-      ].reduce((sum, val) => sum + val, 0) / 2
-      
-      // Task-positive network should be low
-      const tpnActivity = [
-        engine.getRecentNeuralActivity('parietal', 100),
-        engine.getRecentNeuralActivity('prefrontal-cortex', 100) // Dorsolateral
-      ].reduce((sum, val) => sum + val, 0) / 2
-      
-      // DMN > TPN during mind-wandering
-      expect(dmnActivity).toBeGreaterThan(tpnActivity)
-    })
-    
-    it('should simulate sleep-related hippocampal replay', () => {
-      // Encode strong memory trace
-      engine.reinforceMemoryTrace('sleep-event', ['hippocampus-l', 'prefrontal-cortex'], 0.95)
-      engine.setMemoryIntensity(0.6)
-      
-      // Simulate sleep
-      engine.applyCognitiveState('resting')
-      engine.setGlobalAcetylcholine(0.1) // Low ACh = sleep
-      
-      let replayCount = 0
-      const replayTimesteps = []
-      for (let i = 0; i < 200; i++) {
-        engine.step(0.010)
-        if (engine.getMemoryReplayCount('sleep-event') > replayCount) {
-          replayCount = engine.getMemoryReplayCount('sleep-event')
-          replayTimesteps.push(i)
+    it("connectome weights remain finite under STDP for 600 steps", () => {
+      stepFor(engine, 600);
+      const weights = engine.getConnectomeWeights();
+      expect(weights).toBeInstanceOf(Float32Array);
+      let allFinite = true;
+      for (let i = 0; i < weights.length; i += 1) {
+        if (!Number.isFinite(weights[i])) {
+          allFinite = false;
+          break;
         }
       }
-      
-      // Should show replay events during sleep
-      expect(replayCount).toBeGreaterThan(2)
-      // Timing should be irregular (biological realism)
-      expect(new Set(replayTimesteps.map(t => t % 100)).size).toBeGreaterThan(5)
-    })
-  })
-})
+      expect(allFinite).toBe(true);
+    });
+  });
+
+  describe("Visualization Integration", () => {
+    it("neuronType length matches graph.nodes.length (E/I raster compatible)", () => {
+      expect(engine.neuronType.length).toBe(graph.nodes.length);
+    });
+
+    it("burstStatus and memoryTrace, when non-null, are correctly sized Float32Arrays", () => {
+      stepFor(engine, 30);
+      const burst = engine.getBurstStatus();
+      const trace = engine.getMemoryTrace();
+      if (burst !== null) {
+        expect(burst).toBeInstanceOf(Float32Array);
+        expect(burst.length).toBe(graph.nodes.length);
+      }
+      if (trace !== null) {
+        expect(trace).toBeInstanceOf(Float32Array);
+        expect(trace.length).toBe(graph.nodes.length);
+      }
+      // At least the renderer-facing capability check the BrainScene relies on.
+      expect(isSpikingCapable(engine)).toBe(true);
+    });
+
+    it("regionIntensity stays in [0,1] after long burn-in", () => {
+      stepFor(engine, 300);
+      for (let i = 0; i < engine.regionIntensity.length; i += 1) {
+        expect(engine.regionIntensity[i]).toBeGreaterThanOrEqual(0);
+        expect(engine.regionIntensity[i]).toBeLessThanOrEqual(1);
+      }
+    });
+  });
+
+  describe("Emergent Cognitive Behaviors", () => {
+    it("applyCognitiveState(FOCUS_STATE / RECALL / CREATIVE) keeps the engine finite", () => {
+      for (const state of [FOCUS_STATE, RECALL_MEMORY_STATE, CREATIVE_THINKING_STATE]) {
+        engine.applyCognitiveState(state);
+        stepFor(engine, 30);
+        expect(Number.isFinite(engine.getFreeEnergy())).toBe(true);
+        expect(Number.isFinite(engine.dopamine)).toBe(true);
+      }
+    });
+
+    it("handleReplayEvent(hippocampus) drives a memory trace + ACh pulse", () => {
+      stepFor(engine, 30);
+      const beforeACh = engine.acetylcholine;
+      const event: ReplayEvent = {
+        type: "replay",
+        memoryIds: ["m-1", "m-2"],
+        region: "hippocampus",
+        thetaPhase: "peak",
+        timestamp: new Date().toISOString(),
+      };
+      engine.handleReplayEvent(event);
+      stepFor(engine, 5);
+      const trace = engine.getMemoryTrace();
+      expect(trace).not.toBeNull();
+      // ACh should have been pulsed up by the replay (volume-transmission +0.15).
+      expect(engine.acetylcholine).toBeGreaterThan(beforeACh);
+    });
+
+    it("serializeCore() → loadCoreState() preserves connectome weights bit-exactly", () => {
+      stepFor(engine, 60); // let STDP move the weights off the seed values
+      const snapshot = engine.serializeCore();
+      const beforeReload = engine.getConnectomeWeights().slice();
+
+      // Take a fresh engine and load the snapshot into it.
+      const fresh = new SpikingEngine(buildGraph(), "see-object");
+      const ok = fresh.loadCoreState(snapshot);
+      expect(ok).toBe(true);
+      const afterReload = fresh.getConnectomeWeights();
+
+      expect(afterReload.length).toBe(beforeReload.length);
+      let bitExact = true;
+      for (let i = 0; i < beforeReload.length; i += 1) {
+        if (afterReload[i] !== beforeReload[i]) {
+          bitExact = false;
+          break;
+        }
+      }
+      expect(bitExact).toBe(true);
+    });
+  });
+});

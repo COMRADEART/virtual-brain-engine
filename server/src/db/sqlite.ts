@@ -70,6 +70,13 @@ function columnExists(db: SqliteDatabase, table: string, column: string): boolea
   return cols.some((c) => c.name === column);
 }
 
+function tableExists(db: SqliteDatabase, table: string): boolean {
+  const row = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name = ?`)
+    .get(table) as { name: string } | undefined;
+  return Boolean(row);
+}
+
 const MIGRATIONS: Migration[] = [
   {
     // schema.sql gained `memory_points.summary_id` after the column-less DBs
@@ -121,6 +128,38 @@ const MIGRATIONS: Migration[] = [
         );
         db.exec(
           "CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_timeline_role ON cognitive_abstractions(timeline_role)",
+        );
+      }
+    },
+  },
+  {
+    // Blueprint #7 (causal world model) — explicit action-class → outcome-class
+    // ledger. Backfills the `causal_links` table on DBs created before
+    // schema.sql gained it. The schema CREATE IF NOT EXISTS handles fresh DBs;
+    // this run() is the no-op-for-fresh / create-on-legacy path.
+    id: 4,
+    name: "0004-causal-links",
+    run: (db) => {
+      if (!tableExists(db, "causal_links")) {
+        db.exec(`
+          CREATE TABLE causal_links (
+            id                TEXT PRIMARY KEY,
+            cause_class       TEXT NOT NULL,
+            effect_class      TEXT NOT NULL,
+            observations      INTEGER NOT NULL DEFAULT 0,
+            occurrences       INTEGER NOT NULL DEFAULT 0,
+            strength          REAL    NOT NULL DEFAULT 0,
+            confidence        REAL    NOT NULL DEFAULT 0,
+            last_observed_at  TEXT    NOT NULL,
+            source            TEXT    NOT NULL DEFAULT 'imagination-reflection',
+            UNIQUE(cause_class, effect_class)
+          );
+        `);
+        db.exec(
+          "CREATE INDEX IF NOT EXISTS idx_causal_links_cause  ON causal_links(cause_class)",
+        );
+        db.exec(
+          "CREATE INDEX IF NOT EXISTS idx_causal_links_effect ON causal_links(effect_class)",
         );
       }
     },

@@ -820,8 +820,15 @@ const adjustedDensity = performanceManager
       seed: Math.round(adjustedDensity * 1000) + 19,
     });
     
-    // Create renderer and simulation
-    const graphRenderer = new NeuralGraphRenderer(graph, performanceManagerRef.current);
+    // Create renderer and simulation. Phase 4 (improvement plan §1B): when the
+    // spiking/hybrid engine is selected, BrainVisualEffects will swap in a
+    // shader material that reads its own per-instance attributes — so the
+    // renderer can short-circuit its expensive per-frame instanceColor +
+    // instanceMatrix rewrites in `update()`. Flagging it at construction lets
+    // the geometry build with the matching `aScale` attribute.
+    const graphRenderer = new NeuralGraphRenderer(graph, performanceManagerRef.current, {
+      colorMode: useSpikingEngine ? "shader" : "legacy",
+    });
     graphRenderer.applyRegionVisibility(visibilityRef.current);
     graphRendererRef.current = graphRenderer;
     scene.add(graphRenderer.group);

@@ -104,14 +104,14 @@ each already present in the codebase:
 | 4 | **Continuous Thought Loop** (idle cognition) | ✅ Built | `HybridCognitiveCore.step()` (per-frame), `agents/brainCore.ts`, `agents/idleAgent.ts` (server-side internal-monologue: emits `idle-thought` bus events when quiet ≥90s + rate-limited to ≥5min between emissions; samples memories weighted by importance × saliency), `core/organism.ts` lifecycle, `consolidationEngine` decay ticks. Frontend renders the dim bottom-center `IdleThoughtTicker` overlay. |
 | 5 | **Emotional Computation** (weighting, not dialogue) | ✅ Built | `NeuromodulationSystem.ts` (DA/ACh/5-HT/NE), `ReinforcementSystem` affect (valence/arousal), `cognitiveStates.ts`. |
 | 6 | **Predictive Cognition** (prediction error minimization) | ✅ Built | `PredictiveCodingEngine.ts` (free energy), `twin/predictiveModel.ts`, `memory/predictivePrefetch.ts`, `core/imagination.ts` (simulation trees). |
-| 7 | **World Model** (self/user/environment, causal) | 🟡 Partial | `twin/` (environment+self), `organism_world_model` table, `personality-engine` crate. **Gap:** explicit causal-map structure is implicit, not first-class. |
+| 7 | **World Model** (self/user/environment, causal) | ✅ Built | `twin/` (environment+self), `organism_world_model` table, `personality-engine` crate, and `core/causalMap.ts` — explicit cause→effect ledger keyed on action classes (`classifyAction()`) with Laplace-smoothed `strength = P(effect\|cause)` and exponential-saturating confidence. Populated from `imagination.reflect()` (every reflection emits one observation per effect class — success/failure/high-risk/deps-changed/prediction-divergent) and consumed by `imagination.imagine()`, which blends the empirical failure prior into base risk once `failureConfidence ≥ MIN_USABLE_CONFIDENCE` and surfaces a `causal-map` `MemoryInfluence` in the chain. Persisted in `causal_links` (migration 0004); gated by `npm --prefix server run worldmodel:selfcheck`. |
 | 8 | **Self-Model / Identity Core** | ✅ Built | `identity_profiles`/`evolution_identity_traits` tables, `cognition/persistence.ts` (cross-session brain snapshot), `crates/brain-personality-engine`. |
 | 9 | **Neural Activity Visualization** | ✅ Built | The entire `src/components/` Three.js layer — `NeuralGraph.tsx`, `BrainScene.tsx`, `BrainVisualEffects.ts`. |
 | 10 | **Memory Consolidation / Sleep** | ✅ Built | `memory/consolidationEngine.ts`, `replayService.ts` (hippocampal replay), `dream_cycles` table, `imagination` dream abstractions. |
 | 11 | **Hierarchical Cognition** (abstraction levels) | ✅ Built | `memory/semanticCluster.ts`, `cognitive_abstractions` table (with `level` column as of Phase 3, classifier in `core/abstractionLevels.ts`), `ReasoningEngine` operators (analogy/counterfactual/ToM). The 6-level sensory→philosophical ladder is now explicit; every `imagination.upsertAbstraction()` calls `classifyAbstractionLevel()` and persists the result (promote-only). |
 | 12 | **Autonomous Goal System** | ✅ Built | `core/organism.ts` (goals/lifecycle/energy/health), `goal_history` table, `core/evolution.ts`, `agents/schedulerAgent.ts`. |
 
-**Takeaway:** 10 of 12 modules are fully built, 2 are partial, **0 are missing** (Phase 3 promoted #11 Hierarchical Cognition from 🟡 to ✅; the unified saliency layer promoted #2 Attention from 🟡 to ✅; IdleAgent + ticker promoted #4 Continuous Thought Loop from 🟡 to ✅). Remaining 🟡: #1 Perception (live video gap) and #7 World Model (causal map implicit).
+**Takeaway:** 11 of 12 modules are fully built, 1 is partial, **0 are missing** (Phase 3 promoted #11 Hierarchical Cognition from 🟡 to ✅; the unified saliency layer promoted #2 Attention from 🟡 to ✅; IdleAgent + ticker promoted #4 Continuous Thought Loop from 🟡 to ✅; the explicit `core/causalMap.ts` ledger promoted #7 World Model from 🟡 to ✅). Remaining 🟡: #1 Perception (live video gap — sidecar still handles single-image captions only).
 The work is *filling named gaps and verifying*, not greenfield construction.
 
 ---
@@ -237,10 +237,20 @@ For each: **intent → where → status → the one gap that matters.**
    forecasts system metrics. **Gap (minor):** twin forecaster is statistical, not a
    recurrent/transformer sequence model.
 
-7. **World Model** — 🟡 `twin/` is the environment+self model; `organism_world_model`
+7. **World Model** — ✅ `twin/` is the environment+self model; `organism_world_model`
    table holds user habits / project evolution / installed tools / trends;
-   `personality-engine` crate models the user. **Gap:** causal maps are implicit
-   (imagination's transition model) rather than a queryable causal graph.
+   `personality-engine` crate models the user. The explicit causal map landed
+   in `core/causalMap.ts` + `causal_links` (migration 0004): each row is a
+   (cause_class, effect_class) pair with Laplace-smoothed strength and
+   exponential-saturating confidence. `imagination.reflect()` is the observation
+   seam — every reflection emits five independent (cause, effect) observations
+   so per-effect probabilities stay calibrated rather than biased toward 1.0.
+   `imagination.imagine()` is the consumer: `predictEffects(classifyAction(action))`
+   yields an empirical failure prior that is blended into the heuristic
+   `base.riskScore` once `failureConfidence ≥ MIN_USABLE_CONFIDENCE` (weight
+   capped at 0.5 so per-call digital-twin simulation is never fully overridden).
+   The blend is surfaced as a `causal-map` `MemoryInfluence`. Gated by
+   `worldmodel:selfcheck` — hermetic, drives a temp DB via `BRAIN_DB_PATH`.
 
 8. **Self-Model / Identity Core** — ✅ Persistent across sessions. In-engine learned
    state (connectome weights, neuromod tone, value function, genome, IQ history,
