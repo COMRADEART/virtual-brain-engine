@@ -106,10 +106,15 @@ const MIGRATIONS: Migration[] = [
         db.exec(
           "ALTER TABLE cognitive_abstractions ADD COLUMN level INTEGER NOT NULL DEFAULT 0",
         );
-        db.exec(
-          "CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_level ON cognitive_abstractions(level)",
-        );
       }
+      // Index creation is unconditional + idempotent so it covers BOTH a fresh
+      // DB (the column came from schema.sql's CREATE TABLE, so the ALTER above is
+      // skipped) and a legacy DB (the column came from the ALTER). It must live
+      // here rather than in schema.sql: schema.sql is re-exec'd before migrations
+      // on every boot, so a bare index on `level` there crashes pre-Phase-3 DBs.
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_level ON cognitive_abstractions(level)",
+      );
     },
   },
   {

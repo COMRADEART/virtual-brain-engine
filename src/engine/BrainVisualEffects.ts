@@ -461,6 +461,15 @@ const NEUROMOD_SHADER = {
     uniform float uTime;
     varying vec2 vUv;
 
+    // GLSL has no function hoisting — rand() MUST be defined before main() uses
+    // it. It used to live after main(), which fails to compile; because this is a
+    // full-screen post-process pass in the composer chain, an invalid program
+    // blacked out the entire spiking-engine render (verify:canvas: activePixels 0,
+    // "useProgram: program not valid"). Keep this above main().
+    float rand(vec2 co) {
+      return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
     void main() {
       vec4 col = texture2D(tDiffuse, vUv);
       float luminance = dot(col.rgb, vec3(0.299, 0.587, 0.114));
@@ -508,10 +517,6 @@ const NEUROMOD_SHADER = {
       result += vec3(sparkle);
 
       gl_FragColor = vec4(result, col.a);
-    }
-    
-    float rand(vec2 co) {
-      return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
     }
   `,
 };

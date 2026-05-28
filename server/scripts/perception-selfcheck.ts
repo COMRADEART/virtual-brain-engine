@@ -13,7 +13,7 @@
 //
 // Run: npm --prefix server run perception:selfcheck
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
@@ -143,6 +143,58 @@ const legacyMig3 = legacy
 check("0003 migration recorded on legacy DB", !!legacyMig3);
 
 legacy.close();
+
+// (A.2b) Boot-sequence regression — the failure the isolated applyMigrations()
+// test above CANNOT see. A real boot (openDb) runs the FULL schema.sql against
+// the existing DB *before* migrations: exec(schema) → runMigrations. If
+// schema.sql carries a bare index on a column that only a later migration adds
+// (the `level` index regression), exec(schema) throws "no such column: level"
+// and the server never boots — yet applyMigrations() alone stays green, which is
+// exactly why the green gate shipped a dead server. Replay that exact sequence:
+// pre-create ONLY the regressed (level-less) cognitive_abstractions, let
+// schema.sql build every other table fresh, assert the schema re-exec is clean,
+// then assert migrations still backfill the column without losing the row.
+const bootDb = new BetterSqlite3(join(tmp, "bootseq.sqlite"));
+bootDb.exec(
+  `CREATE TABLE cognitive_abstractions (
+     id TEXT PRIMARY KEY, concept TEXT NOT NULL UNIQUE, evidence TEXT NOT NULL,
+     confidence REAL NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+   );`,
+);
+bootDb
+  .prepare(
+    `INSERT INTO cognitive_abstractions (id, concept, evidence, confidence, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  .run("boot-1", "boot concept", "[]", 0.5, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+
+const schemaSql = readFileSync(new URL("../src/db/schema.sql", import.meta.url), "utf8");
+let schemaReplayOk = true;
+let schemaReplayErr = "";
+try {
+  bootDb.exec(schemaSql); // exactly the openDb() exec(schema) step, on a pre-`level` DB
+} catch (e) {
+  schemaReplayOk = false;
+  schemaReplayErr = e instanceof Error ? e.message : String(e);
+}
+check(
+  "schema.sql re-exec on pre-`level` DB does not throw (server-boot crash regression)",
+  schemaReplayOk,
+  schemaReplayErr,
+);
+
+if (schemaReplayOk) {
+  applyMigrations(bootDb); // the runMigrations() step that follows exec(schema)
+  const bootCols = (
+    bootDb.prepare("PRAGMA table_info(cognitive_abstractions)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  check("boot sequence backfills level column (schema -> migrations)", bootCols.includes("level"));
+  const bootRow = bootDb
+    .prepare("SELECT level FROM cognitive_abstractions WHERE id = ?")
+    .get("boot-1") as { level: number } | undefined;
+  check("pre-existing row survived the boot sequence", !!bootRow && bootRow.level === 0);
+}
+bootDb.close();
 
 // Phase 3 — classifyTimelineRole pure-function cases.
 type TimelineCase = { concept: string; evidence: string[]; expected: "past" | "now" | "future" };

@@ -291,7 +291,11 @@ CREATE TABLE IF NOT EXISTS cognitive_abstractions (
   updated_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_confidence ON cognitive_abstractions(confidence DESC);
-CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_level ON cognitive_abstractions(level);
+-- NOTE: the index on `level` is created by migration 0002, NOT here. schema.sql
+-- is re-exec'd on every boot *before* migrations run (see openDb in sqlite.ts).
+-- On a DB that predates the `level` column, a bare `... (level)` index here
+-- throws "no such column: level" at exec(schema) and the server never boots.
+-- The migration creates the index right after it guarantees the column exists.
 
 -- COGNITIVE EVOLUTION ENGINE. Components are versioned cognitive structures:
 -- workflows, skills, reasoning strategies, memory models, planners, routing
