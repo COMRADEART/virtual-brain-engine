@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Phase 0 — green-build composite gate.
 //
-// Runs frontend typecheck, server typecheck, and the eight selfchecks
-// (ranker, agents, twin, memory, perception, attention, graph, worldmodel)
-// as ISOLATED
+// Runs frontend typecheck, server typecheck, the eight selfchecks
+// (ranker, agents, twin, memory, perception, attention, graph, worldmodel),
+// the frontend unit tests, and a server smoke that BOOTS the real server and
+// sweeps every GET endpoint (the runtime check the gate used to lack — it is
+// how a dead-on-boot server shipped green). All run as ISOLATED
 // subprocesses so a Windows libuv shutdown abort in one selfcheck cannot
 // kill the chain via `&&` short-circuit. Each step's PASS/FAIL is judged by
 // looking for explicit success markers in stdout AS WELL AS the exit code —
@@ -37,6 +39,10 @@ const steps = [
   { label: "graph selfcheck",      args: ["--prefix", "server", "run", "graph:selfcheck"] },
   { label: "worldmodel selfcheck", args: ["--prefix", "server", "run", "worldmodel:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
+  // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
+  // so the fast static checks fail first. No LLM required (the /api/ask pipeline
+  // is covered manually by `npm run ask:smoke`).
+  { label: "server smoke",         args: ["run", "server:smoke"] },
 ];
 
 if (!existsSync(resolve(repoRoot, "package.json"))) {

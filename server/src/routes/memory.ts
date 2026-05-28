@@ -102,9 +102,16 @@ memoryRouter.delete("/memory/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-memoryRouter.post("/memory/consolidate", async (req, res) => {
-  const result = await runConsolidationCycle();
-  res.json(result);
+memoryRouter.post("/memory/consolidate", async (_req, res) => {
+  // Guard the async body: an uncaught throw here became an unhandled rejection
+  // that crashed the entire server process (Express 4 does not catch async
+  // route errors). Surface it as a 500 instead.
+  try {
+    const result = await runConsolidationCycle();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 memoryRouter.get("/memory/lifecycle/stats", (_req, res) => {

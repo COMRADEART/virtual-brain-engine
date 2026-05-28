@@ -23,7 +23,10 @@ visionRouter.post("/vision/capture", async (_req, res) => {
     const capture = await captureScreen();
 
     if (!capture.success) {
-      return res.status(500).json({ error: capture.error || "Capture failed" });
+      // 501, not 500: screen capture is not implemented on the Node server — it
+      // lives in the Tauri desktop shell (src-tauri/src/screen_capture.rs). A 500
+      // falsely signals a server fault for an intentionally desktop-only op.
+      return res.status(501).json({ error: capture.error || "Capture not available on the Node server" });
     }
 
     const windowInfo = await getActiveWindowInfo();
@@ -101,7 +104,8 @@ visionRouter.post("/vision/capture/region", async (req, res) => {
     const capture = await captureRegion(x, y, width, height);
 
     if (!capture.success) {
-      return res.status(500).json({ error: capture.error || "Region capture failed" });
+      // 501 (not 500): region capture is desktop-only (Tauri); see /vision/capture.
+      return res.status(501).json({ error: capture.error || "Region capture not available on the Node server" });
     }
 
     const windowInfo = await getActiveWindowInfo();
@@ -289,7 +293,9 @@ visionRouter.post("/vision/config", async (req, res) => {
     const saved = await saveVisionConfig(config);
 
     if (!saved) {
-      return res.status(500).json({ error: "Failed to save vision config" });
+      // 501: vision config persistence is desktop-only — Tauri reads/writes
+      // vision_config.json; the Node saveVisionConfig is a stub that returns false.
+      return res.status(501).json({ error: "Vision config persistence is only available in the Tauri desktop shell" });
     }
 
     broadcast({ type: "vision-enabled", enabled: config.enabled });

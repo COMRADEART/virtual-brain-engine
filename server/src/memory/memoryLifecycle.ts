@@ -156,15 +156,19 @@ export function getMemoryById(id: string): LifecycleMemory | null {
 
 export function getActiveProjectNames(): string[] {
   const db = openDb();
+  // No bind parameters: the 30-day window is a SQL literal and LIMIT is fixed.
+  // Passing an arg here ("last 30 days") threw "RangeError: Too many parameter
+  // values were provided" and — via the unguarded /memory/consolidate route —
+  // crashed the whole server process.
   const rows = db
-    .prepare<[string], { project_name: string }>(
+    .prepare<[], { project_name: string }>(
       `SELECT DISTINCT project_name FROM memory_points
        WHERE project_name IS NOT NULL
          AND datetime(updated_at) > datetime('now', '-30 days')
        ORDER BY updated_at DESC
        LIMIT 20`,
     )
-    .all("last 30 days");
+    .all();
   return rows.map((r: { project_name: string }) => r.project_name).filter(Boolean) as string[];
 }
 
