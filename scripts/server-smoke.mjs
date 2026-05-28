@@ -17,6 +17,9 @@
 
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const PORT = process.env.SMOKE_PORT ?? "8799";
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -153,13 +156,32 @@ function assert(cond, msg) {
 }
 
 async function main() {
-  console.log(`[server:smoke] booting server on :${PORT} via start:server (watch-free)…`);
+  // Hermetic by default: point the child at a throwaway DB + data dir so a gate
+  // run never mutates the real data/brain.sqlite (mirrors memory:selfcheck) and
+  // behaves the same on a fresh checkout / CI. Respect a caller-set override.
+  const tmp = mkdtempSync(join(tmpdir(), "brain-serversmoke-"));
+  const childEnv = {
+    ...process.env,
+    PORT,
+    HOST: "127.0.0.1",
+    BRAIN_DATA_DIR: process.env.BRAIN_DATA_DIR ?? tmp,
+    BRAIN_DB_PATH: process.env.BRAIN_DB_PATH ?? join(tmp, "smoke.sqlite"),
+  };
+
+  console.log(`[server:smoke] booting server on :${PORT} via start:server (watch-free, temp DB)…`);
+  // Capture the child's stdout/stderr rather than inheriting it: scripts/gate.mjs
+  // scans THIS process's stdout for FAIL markers, and a nondeterministic server
+  // log line could otherwise spuriously trip it. The captured log is printed
+  // only if the smoke fails.
+  let childLog = "";
   const child = spawn(NPM_CMD, ["run", "start:server"], {
-    stdio: ["ignore", "inherit", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
     shell: IS_WINDOWS,
     detached: !IS_WINDOWS,
-    env: { ...process.env, PORT, HOST: "127.0.0.1" },
+    env: childEnv,
   });
+  child.stdout?.on("data", (c) => { childLog += c; });
+  child.stderr?.on("data", (c) => { childLog += c; });
 
   let failed = false;
   try {
@@ -204,6 +226,10 @@ async function main() {
     console.error("[server:smoke] FAILED:", err instanceof Error ? err.message : err);
     // Explicit marker so scripts/gate.mjs FAILURE_RX flags it regardless of exit.
     console.error('[server:smoke] "result": "FAIL"');
+    if (childLog.trim()) {
+      console.error("[server:smoke] ---- captured server log (boot/runtime) ----");
+      console.error(childLog.trim());
+    }
   } finally {
     console.log("[server:smoke] shutting down server…");
     await killTree(child);
