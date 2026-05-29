@@ -111,12 +111,18 @@ export function createSummaryMemory(
   const db = openDb();
   const id = ulid();
   const now = new Date().toISOString();
+  // summary_id must be NULL on the summary row itself: it is the consolidated
+  // memory, not a memory that has been summarised away. Binding the new `id`
+  // here (the old behaviour) made the summary self-referential, so every
+  // `WHERE summary_id IS NULL` query (retrieval, consolidation, decay)
+  // silently excluded it. The original row is pointed at this summary
+  // separately via linkSummary(originalId, summary.id).
   db.prepare(
     `INSERT INTO memory_points
        (id, source_type, file_path, project_name, title, content, content_hash,
         embedding_id, importance, created_at, updated_at, metadata, summary_id)
      SELECT ?, source_type, file_path, ?, title, ?, content_hash,
-            NULL, ?, ?, ?, metadata, ?
+            NULL, ?, ?, ?, metadata, NULL
        FROM memory_points WHERE id = ?`,
   ).run(
     id,
@@ -125,7 +131,6 @@ export function createSummaryMemory(
     summaryImportance,
     now,
     now,
-    id,
     originalId,
   );
   const row = db

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import { ulid } from "ulid";
+import { surfaceError } from "../util/diagnostics.js";
 
 export interface TopicCluster {
   clusterId: string;
@@ -169,8 +170,8 @@ export function updateClusterForMemory(
          VALUES (?, ?, ?, 1, 0.5, 0.8, ?, ?)`,
       ).run(id, topic, JSON.stringify(ids), now, now);
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("semanticCluster.updateClusterForMemory", err);
   }
 }
 
@@ -258,14 +259,20 @@ export function mergeClusters(
     const avgStrength = (source.strength + target.strength) / 2;
     const avgCoherence = (source.coherence + target.coherence) / 2;
     const now = new Date().toISOString();
-    db.prepare(
-      `UPDATE memory_clusters
-       SET memory_ids = ?, memory_count = ?, strength = ?, coherence = ?, last_updated = ?
-       WHERE id = ?`,
-    ).run(JSON.stringify(mergedIds), mergedIds.length, avgStrength, avgCoherence, now, targetId);
-    db.prepare(`DELETE FROM memory_clusters WHERE id = ?`).run(sourceId);
-  } catch {
-    // ignore
+    // The UPDATE (fold source into target) and DELETE (drop source) must be
+    // atomic — if the DELETE failed after the UPDATE, both clusters would
+    // claim the merged ids. Wrap them in a transaction so a mid-merge throw
+    // rolls back instead of leaving the cluster graph inconsistent.
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE memory_clusters
+         SET memory_ids = ?, memory_count = ?, strength = ?, coherence = ?, last_updated = ?
+         WHERE id = ?`,
+      ).run(JSON.stringify(mergedIds), mergedIds.length, avgStrength, avgCoherence, now, targetId);
+      db.prepare(`DELETE FROM memory_clusters WHERE id = ?`).run(sourceId);
+    })();
+  } catch (err) {
+    surfaceError("semanticCluster.mergeClusters", err);
   }
 }
 

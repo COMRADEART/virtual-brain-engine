@@ -389,8 +389,11 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
         confidence: typeof parsed.confidence === "number" ? parsed.confidence : errorReport.confidence,
       };
     }
-  } catch {
-    // Soft-fail: error step is advisory.
+  } catch (err) {
+    // Soft-fail: the error step is advisory, so we keep the default
+    // errorReport and let the pipeline continue — but surface it so a broken
+    // connector or malformed JSON doesn't masquerade as "no issues found".
+    surfaceError("pipeline.errorStep", err);
   }
   emitAll(
     makeEvent(cid, runId, "error", "complete", {
@@ -504,8 +507,10 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   });
   try {
     broadcast({ type: "memory-count", count: getMemoryCount() });
-  } catch {
-    // best-effort
+  } catch (err) {
+    // Best-effort broadcast — but a failing getMemoryCount() is the first sign
+    // the SQLite handle is in a bad state, so don't swallow it entirely.
+    console.warn("[pipeline] memory-count broadcast failed:", err);
   }
   emitAll(
     makeEvent(cid, runId, "learning", "complete", {

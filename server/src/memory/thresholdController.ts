@@ -211,8 +211,8 @@ function persistThresholds(t: AdaptiveThresholds): void {
     db.prepare(
       `INSERT OR REPLACE INTO brain_metadata (key, value) VALUES ('adaptive_thresholds', ?)`,
     ).run(encoded);
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn("[thresholdController] persist failed:", err);
   }
 }
 
@@ -236,10 +236,11 @@ export function loadThresholds(
         return parsed;
       }
     }
-  } catch {
-    // Swallowed: threshold load is best-effort, falls back to defaults.
-    // This catch is what hid the spurious .get() bind arg against a
+  } catch (err) {
+    // Threshold load is best-effort, falls back to defaults — but no longer
+    // silent. This catch is what hid the spurious .get() bind arg against a
     // zero-placeholder query — see thresholdController.test.ts.
+    console.warn("[thresholdController] load failed, using defaults:", err);
   }
   return { ...DEFAULT_THRESHOLDS };
 }

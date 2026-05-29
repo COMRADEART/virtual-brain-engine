@@ -55,6 +55,7 @@ export class NeuralGraphRenderer {
   private readonly black = new THREE.Color("#000000");
   private readonly lodScratch = new THREE.Vector3();
   private readonly pulseScale = new THREE.Vector3();
+  private readonly neuronPosition = new THREE.Vector3();
   private readonly regionMaterials = new Map<BrainRegionId, THREE.MeshBasicMaterial>();
   private readonly pulseSamplePosition = new THREE.Vector3();
   private readonly pulseScratch: [number, number, number] = [0, 0, 0];
@@ -309,7 +310,7 @@ export class NeuralGraphRenderer {
     const scaleValue = node.size * visibilityScale * lodScale;
     const scale = visibilityScale > 0 ? this.pulseScale.set(scaleValue, scaleValue, scaleValue) : INVISIBLE_SCALE;
     this.matrix.compose(
-      new THREE.Vector3(position[0], position[1], position[2]),
+      this.neuronPosition.set(position[0], position[1], position[2]),
       IDENTITY_QUATERNION,
       scale,
     );

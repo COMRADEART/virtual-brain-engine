@@ -1,4 +1,5 @@
 import { openDb } from "../db/sqlite.js";
+import { mkdirSync, existsSync, unlinkSync } from "node:fs";
 import type {
   VisualMemory,
   VisualRegion,
@@ -17,9 +18,11 @@ function getVisualDir(): string {
 }
 
 function ensureVisualDir(): void {
+  // `require` is not defined in this ESM module ("type": "module"), so the
+  // previous require("fs") threw ReferenceError on the first capture.
   const dir = getVisualDir();
-  require("fs").mkdirSync(dir, { recursive: true });
-  require("fs").mkdirSync(`${dir}/thumbnails`, { recursive: true });
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(`${dir}/thumbnails`, { recursive: true });
 }
 
 export function saveVisualMemory(
@@ -250,14 +253,16 @@ export function deleteVisualMemory(id: string): boolean {
   if (!memory) return false;
 
   try {
-    const fs = require("fs");
-    if (fs.existsSync(memory.screenshotPath)) {
-      fs.unlinkSync(memory.screenshotPath);
+    if (existsSync(memory.screenshotPath)) {
+      unlinkSync(memory.screenshotPath);
     }
-    if (memory.thumbnailPath && fs.existsSync(memory.thumbnailPath)) {
-      fs.unlinkSync(memory.thumbnailPath);
+    if (memory.thumbnailPath && existsSync(memory.thumbnailPath)) {
+      unlinkSync(memory.thumbnailPath);
     }
-  } catch {
+  } catch (err) {
+    // File removal is best-effort (the DB rows are deleted regardless) but
+    // log it so dangling files / a read-only data dir don't vanish silently.
+    console.warn(`[visualMemory] could not delete files for ${id}:`, err);
   }
 
   db.prepare(`DELETE FROM visual_regions WHERE visual_memory_id = ?`).run(id);

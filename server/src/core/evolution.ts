@@ -1,5 +1,6 @@
 import { ulid } from "ulid";
 import { openDb } from "../db/sqlite.js";
+import { surfaceError } from "../util/diagnostics.js";
 import {
   getEventBus,
   nowIso,
@@ -672,7 +673,11 @@ export class CognitiveEvolutionEngine {
         rankerTrainingCount: ranker?.trained_count ?? 0,
         blockedActions: audit?.blocked ?? 0,
       };
-    } catch {
+    } catch (err) {
+      // The fallback zeros are indistinguishable from a genuine "no activity
+      // yet" baseline, which the evolution fitness function would then seed
+      // from. Surface the failure so a missing table / migration gap is visible.
+      surfaceError("evolution.gatherPerformanceStats", err);
       return {
         runs: 0,
         completed: 0,

@@ -1,4 +1,5 @@
 import { broadcast } from "../ws/brainBus.js";
+import { surfaceError } from "../util/diagnostics.js";
 import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
 import { Connector } from "../connectors/Connector.js";
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
@@ -280,6 +281,11 @@ export async function runConsolidationCycle(): Promise<ConsolidationResult> {
   if (adapted !== thresholds) {
     broadcast(makeEvent(`Thresholds adapted: forget=${adapted.forget.toFixed(3)}, consolidate=${adapted.consolidate.toFixed(3)}, promote=${adapted.promote.toFixed(3)}`, "progress"));
   }
+  // Use the adapted thresholds for the rest of this cycle. Candidate selection
+  // (getLowImportanceMemories below) was previously running on the stale
+  // pre-adaptation snapshot while evaluateMemory's getCurrentThresholds() saw
+  // the adapted values — the two halves of the cycle disagreed.
+  thresholds = adapted;
 
   const connector = getDefaultConnectorInstance();
   const actions: ConsolidationAction[] = [];
@@ -522,8 +528,8 @@ export function processNewMemory(
         }
       }
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("consolidationEngine.processNewMemory.clusterLookup", err);
   }
 
   const now = new Date();

@@ -216,9 +216,11 @@ export function batchUpdateStrength(
         stmt.run(delta, now, id);
       }
     }
-  } catch {
-    // Swallowed by design (batch strength is best-effort). See the
-    // matching note on updateMemoryStrength — same hidden-failure risk.
+  } catch (err) {
+    // Batch strength is best-effort and must not break the caller — but it is
+    // no longer silent. Same hidden-failure risk as updateMemoryStrength
+    // (the MIN_STRENGTH/MAX_STRENGTH SQL-identifier bug hid here too).
+    surfaceError("memoryStrength.batchUpdateStrength", err);
   }
 }
 
@@ -243,11 +245,15 @@ export function normalizeStrengths(sampleSize = 100): void {
     );
     const now = new Date().toISOString();
     for (const row of rows) {
-      const normalized = minImp + (row.importance - minImp) / range * (maxImp - minImp);
+      // Min-max rescale into [0,1]. The previous form
+      //   minImp + (importance - minImp) / range * (maxImp - minImp)
+      // cancelled `range` against `(maxImp - minImp)` and was an identity
+      // no-op that rewrote every row to its own value.
+      const normalized = (row.importance - minImp) / range;
       stmt.run(normalized, now, row.id);
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("memoryStrength.normalizeStrengths", err);
   }
 }
 

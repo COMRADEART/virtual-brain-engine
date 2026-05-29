@@ -272,8 +272,9 @@ export class SignalSimulation {
       this.regionFlashIntensity[index] *= flashDecay;
     }
 
+    const pathwayDecay = Math.pow(0.08, deltaSeconds);
     for (let index = 0; index < this.pathwayIntensity.length; index += 1) {
-      this.pathwayIntensity[index] *= Math.pow(0.08, deltaSeconds);
+      this.pathwayIntensity[index] *= pathwayDecay;
     }
 
     this._memoryIntensity *= Math.pow(0.92, deltaSeconds);

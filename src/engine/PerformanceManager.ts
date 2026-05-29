@@ -51,6 +51,14 @@ export class PerformanceManager {
   private camera: THREE.Camera | null = null;
   private sceneCenter = new THREE.Vector3(0, 0, 0);
 
+  // Reused scratch vectors for the per-frame LOD math. getPathwayLodLevel /
+  // getPulseLodLevel run for every pathway and every active pulse each frame;
+  // allocating fresh Vector3s there was the single largest source of GC
+  // pressure in the render loop (hundreds of thousands of allocs/sec).
+  private readonly _scratchA = new THREE.Vector3();
+  private readonly _scratchB = new THREE.Vector3();
+  private readonly _scratchC = new THREE.Vector3();
+
   // Performance settings that can be adjusted
   private neuronDensityScale = 1.0; // multiplier for base density
   private pulseCountScale = 1.0;    // multiplier for base maxPulses
@@ -193,17 +201,13 @@ export class PerformanceManager {
    */
   getPathwayLodLevel(pathway: SynapticPathway, nodes: NeuronNode[]): number {
     if (!this.camera) return 0;
-    const sourcePos = new THREE.Vector3(
-      nodes[pathway.source].position[0],
-      nodes[pathway.source].position[1],
-      nodes[pathway.source].position[2]
+    const source = nodes[pathway.source].position;
+    const target = nodes[pathway.target].position;
+    const midpoint = this._scratchC.set(
+      (source[0] + target[0]) * 0.5,
+      (source[1] + target[1]) * 0.5,
+      (source[2] + target[2]) * 0.5,
     );
-    const targetPos = new THREE.Vector3(
-      nodes[pathway.target].position[0],
-      nodes[pathway.target].position[1],
-      nodes[pathway.target].position[2]
-    );
-    const midpoint = new THREE.Vector3().addVectors(sourcePos, targetPos).multiplyScalar(0.5);
     const distance = this.camera.position.distanceTo(midpoint);
     const thresholds = this.lodThresholds.pathway;
     if (distance < thresholds.high) return 0;
@@ -232,21 +236,13 @@ export class PerformanceManager {
    */
   getPulseLodLevel(pulse: SignalPulse, pathway: SynapticPathway, nodes: NeuronNode[]): number {
     if (!this.camera) return 0;
-    // Get pulse position along the pathway
-    const fromPos = new THREE.Vector3(
-      nodes[pulse.fromNode].position[0],
-      nodes[pulse.fromNode].position[1],
-      nodes[pulse.fromNode].position[2]
-    );
-    const toPos = new THREE.Vector3(
-      nodes[pulse.toNode].position[0],
-      nodes[pulse.toNode].position[1],
-      nodes[pulse.toNode].position[2]
-    );
+    // Get pulse position along the pathway (reused scratch vectors, no per-call alloc)
+    const from = nodes[pulse.fromNode].position;
+    const to = nodes[pulse.toNode].position;
+    const fromPos = this._scratchA.set(from[0], from[1], from[2]);
+    const toPos = this._scratchB.set(to[0], to[1], to[2]);
     const t = pulse.reverse ? 1 - pulse.progress : pulse.progress;
-    const pulsePos = new THREE.Vector3()
-      .copy(fromPos)
-      .lerp(toPos, t);
+    const pulsePos = this._scratchC.copy(fromPos).lerp(toPos, t);
 
     const distance = this.camera.position.distanceTo(pulsePos);
     const thresholds = this.lodThresholds.pulse;

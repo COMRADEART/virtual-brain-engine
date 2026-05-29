@@ -893,6 +893,18 @@ const adjustedDensity = performanceManager
     return () => {
       const disposable = simulation as { dispose?: () => void };
       if (typeof disposable.dispose === "function") disposable.dispose();
+      // Dispose the advanced visual-effects pipeline (spiking/hybrid mode) too.
+      // Without this the last BrainVisualEffects instance — its geometries,
+      // shader materials and WS subscriptions — leaked on unmount: the
+      // mount-effect cleanup has no reference to it, and the per-density cleanup
+      // above only runs on the NEXT density change. No-op in default mode where
+      // the ref is null.
+      const effects = visualEffectsRef.current;
+      if (effects) {
+        scene.remove(effects.group);
+        effects.dispose();
+        visualEffectsRef.current = null;
+      }
     };
     // Intentionally only depend on neuronDensity (and the stable metrics setter):
     // action/speed/running/visibility changes are handled by the small effects
