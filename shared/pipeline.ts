@@ -137,4 +137,13 @@ export type BrainBusMessage =
   // Emitted by the idle agent in place of `idle-thought` when curiosity is high
   // (engine uncertainty crosses a threshold). The `target` names what to
   // explore (project name, memory cluster id, or "scan" for a fresh walk).
-  | { type: "exploration-scheduled"; target: string; curiosity: number; reason: string; timestamp: string };
+  | { type: "exploration-scheduled"; target: string; curiosity: number; reason: string; timestamp: string }
+  // --- Learning Lab (online ranker training signal) ---
+  // Emitted after an explicit-feedback update so an open Learning Lab panel
+  // refreshes its stats without polling.
+  | {
+      type: "learning-update";
+      feedback: { up: number; down: number; total: number };
+      trainedCount: number;
+      timestamp: string;
+    };

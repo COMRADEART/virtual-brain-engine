@@ -282,6 +282,45 @@ export function getMemoryCount(): number {
   return row.count;
 }
 
+export interface MemoryCorpus {
+  text: string;
+  chars: number;
+  documents: number;
+}
+
+// Concatenate the brain's own memories into one training corpus for the
+// from-scratch LLM trainer (Learning Lab — Phase C). Newest first, each doc
+// separated by a blank line. `maxChars` caps the export so a huge DB can't
+// blow up the worker payload; `minImportance` lets the caller train on only
+// the memories the brain considers worth keeping.
+export function exportMemoryCorpus(
+  opts: { maxChars?: number; minImportance?: number } = {},
+): MemoryCorpus {
+  const maxChars = opts.maxChars ?? 5_000_000;
+  const minImportance = opts.minImportance ?? 0;
+  const db = openDb();
+  const rows = db
+    .prepare<[number], { title: string | null; content: string }>(
+      `SELECT title, content FROM memory_points
+       WHERE importance >= ?
+       ORDER BY updated_at DESC`,
+    )
+    .all(minImportance);
+  const parts: string[] = [];
+  let chars = 0;
+  let documents = 0;
+  for (const row of rows) {
+    const piece = (row.title ? `${row.title}\n` : "") + row.content;
+    if (chars + piece.length > maxChars) {
+      break;
+    }
+    parts.push(piece);
+    chars += piece.length + 2; // +2 for the "\n\n" separator
+    documents += 1;
+  }
+  return { text: parts.join("\n\n"), chars, documents };
+}
+
 export function getRelationCount(): number {
   const db = openDb();
   const row = db.prepare("SELECT COUNT(*) as count FROM memory_relations").get() as { count: number };

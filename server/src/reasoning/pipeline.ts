@@ -30,6 +30,7 @@ import {
 } from "./ranker.js";
 import { applyMemoryRetrievalBoost, onConversationMessage, processNewMemory } from "../memory/consolidationEngine.js";
 import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
+import { recordRankTrainingLog } from "../db/repositories/feedback.js";
 import {
   ERROR_SYSTEM,
   PROJECT_RERANK_SYSTEM,
@@ -490,6 +491,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   } catch (err) {
     // Learning is best-effort; surface but don't fail the run.
     console.warn("[pipeline] learning persistence failed:", err);
+  }
+  // Persist the training snapshot (feature vectors + cited ids) keyed by runId
+  // so a later explicit 👍/👎 (POST /api/feedback) can retrain against the same
+  // features that produced this ranking. Best-effort — never break the run.
+  try {
+    recordRankTrainingLog(runId, rankFeatures, citedIds);
+  } catch (err) {
+    console.warn("[pipeline] rank-training-log persist failed:", err);
   }
   // Online ranker update from this query's implicit feedback. Independent of
   // persistence success; no-op when there were no citations.

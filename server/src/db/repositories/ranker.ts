@@ -58,3 +58,48 @@ export function saveRankerState(state: RankerState): void {
        updated_at    = excluded.updated_at`,
   ).run(ROW_ID, state.version, JSON.stringify(state.weights), state.trainedCount, now);
 }
+
+// --- Loss history (Learning Lab) --------------------------------------------
+// Each online ranker update records the model's log-loss on that batch BEFORE
+// the gradient step. Best-effort: a failed write must never break training.
+
+const LOSS_HISTORY_KEEP = 200;
+
+export type RankerLossKind = "citation" | "feedback";
+
+export function recordRankerLoss(trainedCount: number, loss: number, kind: RankerLossKind): void {
+  if (!Number.isFinite(loss)) {
+    return;
+  }
+  const db = openDb();
+  db.prepare(
+    `INSERT INTO ranker_loss_history (trained_count, loss, kind, created_at) VALUES (?, ?, ?, ?)`,
+  ).run(trainedCount, loss, kind, new Date().toISOString());
+  // Keep the table bounded — drop everything past the most recent N rows.
+  db.prepare(
+    `DELETE FROM ranker_loss_history WHERE id NOT IN (
+       SELECT id FROM ranker_loss_history ORDER BY id DESC LIMIT ?
+     )`,
+  ).run(LOSS_HISTORY_KEEP);
+}
+
+export interface RankerLossPoint {
+  trainedCount: number;
+  loss: number;
+  kind: string;
+  createdAt: string;
+}
+
+// Oldest-first so the caller can plot left-to-right without reversing.
+export function loadRankerLossHistory(limit = 100): RankerLossPoint[] {
+  const db = openDb();
+  const rows = db
+    .prepare<[number], { trained_count: number; loss: number; kind: string; created_at: string }>(
+      `SELECT trained_count, loss, kind, created_at
+       FROM ranker_loss_history ORDER BY id DESC LIMIT ?`,
+    )
+    .all(limit);
+  return rows
+    .reverse()
+    .map((r) => ({ trainedCount: r.trained_count, loss: r.loss, kind: r.kind, createdAt: r.created_at }));
+}

@@ -13,5 +13,6 @@ Thumbs.db
 .idea/
 data/
 worker/.venv/
-worker/__pycache__/
+__pycache__/
+*.pyc
 server/dist/

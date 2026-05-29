@@ -12,12 +12,14 @@ import type { VectorSearchHit } from "../db/repositories/memory.js";
 import type { MemoryRelation } from "../../../shared/memory.js";
 import {
   loadRankerState,
+  recordRankerLoss,
   saveRankerState,
   type RankerState,
 } from "../db/repositories/ranker.js";
 import {
   FEATURE_VERSION,
   heuristicScore,
+  logLoss,
   predictProb,
   sgdStep,
   toFeatureVector,
@@ -48,8 +50,9 @@ const W_GRAPH = 0.15;
 const PPR_MIN_RELATIONS = 50;
 
 // Queries-with-citations before the learned model fully takes over from the
-// heuristic (alpha ramps 0 -> 1 linearly across this many).
-const WARM_AT = 20;
+// heuristic (alpha ramps 0 -> 1 linearly across this many). Exported so the
+// Learning Lab status route reports the same warm-up target it trains against.
+export const WARM_AT = 20;
 const LR = 0.05;
 const L2 = 1e-4;
 
@@ -276,6 +279,14 @@ export function trainFromCitations(
     return;
   }
   const s = state();
+  // Record the model's loss on THIS batch before the gradient step — the curve
+  // trends down as the ranker learns across queries (Learning Lab). Best-effort.
+  try {
+    const samples = Array.from(featuresById, ([id, x]) => ({ x, y: citedIds.has(id) ? 1 : 0 }));
+    recordRankerLoss(s.trainedCount, logLoss(s.weights, samples), "citation");
+  } catch (err) {
+    console.warn("[ranker] loss record failed:", err);
+  }
   let weights = s.weights;
   for (const [id, x] of featuresById) {
     const y = citedIds.has(id) ? 1 : 0;
@@ -291,6 +302,62 @@ export function trainFromCitations(
   } catch (err) {
     console.warn("[ranker] persist failed:", err);
   }
+}
+
+// Online update from one answer's EXPLICIT feedback (👍/👎). Unlike
+// trainFromCitations this does NOT advance trainedCount — warm-up stays keyed
+// to query volume; explicit feedback only nudges the weights:
+//   +1 reinforces the cited=1 / shown-but-not-cited=0 contrast (this answer
+//      was good, so the memories it leaned on were the right ones);
+//   -1 teaches that the cited memories were NOT actually good (y=0). Only the
+//      cited rows carry negative information — the non-cited ones weren't used,
+//      so a 👎 says nothing about them.
+// Returns true if a gradient step ran. No-op (returns false) when there were
+// no features or — for 👎 — no citations to penalise.
+export function trainFromFeedback(
+  featuresById: Map<string, number[]>,
+  citedIds: Set<string>,
+  rating: 1 | -1,
+): boolean {
+  if (featuresById.size === 0) {
+    return false;
+  }
+  const samples: Array<{ x: number[]; y: number }> = [];
+  if (rating > 0) {
+    for (const [id, x] of featuresById) {
+      samples.push({ x, y: citedIds.has(id) ? 1 : 0 });
+    }
+  } else {
+    for (const [id, x] of featuresById) {
+      if (citedIds.has(id)) {
+        samples.push({ x, y: 0 });
+      }
+    }
+  }
+  if (samples.length === 0) {
+    return false;
+  }
+  const s = state();
+  try {
+    recordRankerLoss(s.trainedCount, logLoss(s.weights, samples), "feedback");
+  } catch (err) {
+    console.warn("[ranker] loss record failed:", err);
+  }
+  let weights = s.weights;
+  for (const { x, y } of samples) {
+    weights = sgdStep(weights, x, y, LR, L2);
+  }
+  cached = {
+    version: FEATURE_VERSION,
+    weights,
+    trainedCount: s.trainedCount,
+  };
+  try {
+    saveRankerState(cached);
+  } catch (err) {
+    console.warn("[ranker] feedback persist failed:", err);
+  }
+  return true;
 }
 
 // Test seam — drop the in-memory cache so a fresh load is forced.

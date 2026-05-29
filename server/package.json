@@ -15,7 +15,8 @@
     "perception:selfcheck": "tsx scripts/perception-selfcheck.ts",
     "attention:selfcheck": "tsx scripts/attention-selfcheck.ts",
     "graph:selfcheck": "tsx scripts/graph-selfcheck.ts",
-    "worldmodel:selfcheck": "tsx scripts/worldmodel-selfcheck.ts"
+    "worldmodel:selfcheck": "tsx scripts/worldmodel-selfcheck.ts",
+    "learning:selfcheck": "tsx scripts/learning-selfcheck.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",

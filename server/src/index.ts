@@ -19,6 +19,8 @@ import { memoryRouter } from "./routes/memory.js";
 import { scanRouter } from "./routes/scan.js";
 import { connectorsRouter } from "./routes/connectors.js";
 import { askRouter } from "./routes/ask.js";
+import { feedbackRouter } from "./routes/feedback.js";
+import { learningRouter } from "./routes/learning.js";
 import { conversationsRouter } from "./routes/conversations.js";
 import { twinRouter } from "./routes/twin.js";
 import { swarmRouter } from "./routes/swarm.js";
@@ -102,6 +104,8 @@ async function main(): Promise<void> {
   app.use("/api", scanRouter);
   app.use("/api", connectorsRouter);
   app.use("/api", askRouter);
+  app.use("/api", feedbackRouter);
+  app.use("/api", learningRouter);
   app.use("/api", conversationsRouter);
   app.use("/api", twinRouter);
   app.use("/api", swarmRouter);

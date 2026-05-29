@@ -108,6 +108,45 @@ CREATE TABLE IF NOT EXISTS ranker_state (
   updated_at    TEXT NOT NULL
 );
 
+-- Explicit answer feedback (Learning Lab — Phase A). The online ranker
+-- otherwise learns only from IMPLICIT signal (which retrieved memories the
+-- answer cited). This captures the user's EXPLICIT verdict on an answer so we
+-- can reinforce (+1) or penalise (-1) the memories the answer relied on.
+CREATE TABLE IF NOT EXISTS answer_feedback (
+  id              TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL,
+  conversation_id TEXT,
+  rating          INTEGER NOT NULL,          -- +1 helpful / -1 not helpful
+  comment         TEXT,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_answer_feedback_run ON answer_feedback(run_id);
+CREATE INDEX IF NOT EXISTS idx_answer_feedback_time ON answer_feedback(created_at DESC);
+
+-- Per-run training snapshot: the exact ranker feature vectors + which memories
+-- the answer cited. Persisted at the learning step so a later /api/feedback
+-- call can retrain the ranker against the user's explicit label using the SAME
+-- features that produced the ranking. Pruned to the most recent rows.
+CREATE TABLE IF NOT EXISTS rank_training_log (
+  run_id     TEXT PRIMARY KEY,
+  features   TEXT NOT NULL,                  -- JSON { memoryId: number[] }
+  cited      TEXT NOT NULL DEFAULT '[]',     -- JSON string[]
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rank_training_log_time ON rank_training_log(created_at DESC);
+
+-- Ranker training loss history (Learning Lab — Phase B). One row per online
+-- update; the log-loss of the just-trained batch BEFORE the gradient step, so
+-- the curve shows the model getting better over time. Capped to recent rows.
+CREATE TABLE IF NOT EXISTS ranker_loss_history (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  trained_count INTEGER NOT NULL,
+  loss          REAL NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'citation',  -- 'citation' | 'feedback'
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ranker_loss_time ON ranker_loss_history(created_at DESC);
+
 -- Spreading activation + co-access patterns (accessPatternTracker)
 CREATE TABLE IF NOT EXISTS memory_access_patterns (
   id               TEXT PRIMARY KEY,

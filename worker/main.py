@@ -25,7 +25,9 @@ import base64
 import importlib.util
 import io
 import os
+import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
@@ -219,6 +221,106 @@ def caption(body: CaptionIn) -> dict[str, Any]:
         "latencyMs": elapsed_ms,
         "model": _CAPTION_MODEL_ID,
     }
+
+
+# ---------------------------------------------------------------------------
+# /train/* — from-scratch LLM trainer (Learning Lab — Phase C).
+#
+# Trains a tiny GPT from ZERO on the brain's own memory corpus (shipped by the
+# Node side in the request body). Honest scope: this learns the corpus's
+# texture, not a capable assistant. torch is imported LAZILY inside /train/start
+# so the worker still boots without ML deps — exactly like the perception models.
+# ---------------------------------------------------------------------------
+
+_train_lock = threading.Lock()
+_train_thread: threading.Thread | None = None
+# Keys mirror shared/learning.LlmTrainerStatus so the Node client maps 1:1.
+_train_status: dict[str, Any] = {
+    "state": "idle",
+    "step": 0,
+    "totalSteps": 0,
+    "loss": None,
+    "valLoss": None,
+    "sample": None,
+    "vocabSize": None,
+    "params": None,
+    "corpusChars": None,
+    "message": None,
+    "updatedAt": None,
+}
+
+_MIN_CORPUS_CHARS = 1000
+
+
+class TrainIn(BaseModel):
+    corpus: str = Field(..., description="Training corpus — the brain's own memories.")
+    steps: int | None = Field(default=None, ge=1, le=100_000)
+    force: bool = Field(default=False, description="Restart even if a run is in progress.")
+
+
+@app.get("/train/status")
+def train_status() -> dict[str, Any]:
+    out = dict(_train_status)
+    # A booted worker WITHOUT torch can't train — report that honestly rather
+    # than sitting at "idle" forever. Once a run has happened the real state
+    # (running/done/error) takes precedence.
+    if out["state"] == "idle" and importlib.util.find_spec("torch") is None:
+        out["state"] = "unavailable"
+        out["message"] = "torch not installed — pip install -r requirements-ml.txt"
+    return out
+
+
+@app.post("/train/start")
+def train_start(body: TrainIn) -> dict[str, Any]:
+    global _train_thread
+    # Lazy import — torch (and the trainer) only load here.
+    try:
+        from train.trainer import run_training
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"torch not installed ({exc}). Install worker/requirements-ml.txt to train.",
+        ) from exc
+
+    if len(body.corpus) < _MIN_CORPUS_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"corpus too small to train ({len(body.corpus)} chars, need >= {_MIN_CORPUS_CHARS}).",
+        )
+
+    with _train_lock:
+        # Single in-flight run, enforced on THREAD LIVENESS (not the status
+        # string). A live thread owns _train_status; spawning a second would
+        # race writes into the same dict. We can't safely kill a Python thread,
+        # so force can't preempt a live run — it only lets a NEW run start when
+        # a previous thread has died but left a stale "running" status.
+        if _train_thread is not None and _train_thread.is_alive():
+            out = dict(_train_status)
+            if body.force:
+                out["message"] = "a training run is already in flight — force ignored until it finishes"
+            return out
+        _train_status.update(
+            state="running",
+            step=0,
+            totalSteps=body.steps or 0,
+            loss=None,
+            valLoss=None,
+            sample=None,
+            vocabSize=None,
+            params=None,
+            corpusChars=len(body.corpus),
+            message="starting…",
+            updatedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        thread = threading.Thread(
+            target=run_training,
+            args=(body.corpus, _train_status, body.steps),
+            daemon=True,
+        )
+        _train_thread = thread
+        thread.start()
+
+    return dict(_train_status)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -36,6 +36,7 @@ import type {
   WorkerStatus,
 } from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
+import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
 import type { SwarmConsensusRound, SwarmNodeDescriptor, SwarmSnapshot, SwarmTask } from "../../shared/swarm";
 import type { TwinView, SimulationResult } from "../../shared/twin";
 import type {
@@ -582,6 +583,41 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify(input),
     });
+  },
+
+  // Explicit answer feedback (Learning Lab). rating: +1 helpful / -1 not.
+  // Retrains the online ranker against this run's features + nudges cited
+  // memories' importance, server-side.
+  sendFeedback(input: {
+    runId: string;
+    rating: 1 | -1;
+    comment?: string;
+    conversationId?: string;
+  }): Promise<{
+    ok: boolean;
+    trained: boolean;
+    citedCount: number;
+    feedback: { up: number; down: number; total: number; lastAt: string | null };
+  }> {
+    return json(`/api/feedback`, { method: "POST", body: JSON.stringify(input) });
+  },
+
+  // Learning Lab snapshot: ranker warm-up + labelled weights + loss history +
+  // feedback stats + from-scratch LLM trainer status.
+  learningStatus(): Promise<LearningStatus> {
+    return json<LearningStatus>(`/api/learning/status`);
+  },
+
+  // Kick the from-scratch PyTorch trainer (Phase C) on the worker sidecar.
+  learningTrainLlm(input: { steps?: number; force?: boolean } = {}): Promise<LlmTrainerStatus> {
+    return json<LlmTrainerStatus>(`/api/learning/llm/start`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  learningLlmStatus(): Promise<LlmTrainerStatus> {
+    return json<LlmTrainerStatus>(`/api/learning/llm/status`);
   },
 
   // POST /api/ask returns SSE. We parse "event:" + "data:" blocks and yield
