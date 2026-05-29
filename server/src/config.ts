@@ -2,12 +2,17 @@ import { config as loadEnv } from "dotenv";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-loadEnv();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // server/src → project root
 const REPO_ROOT = resolve(__dirname, "..", "..");
+
+// Pin dotenv to the repo-root .env explicitly. The bare loadEnv() reads from
+// process.cwd(), which is whatever directory the server was launched from — so
+// API keys placed in the root .env would silently fail to load when the server
+// is started from server/ or via a selfcheck. Pinning the path makes key
+// loading deterministic regardless of cwd.
+loadEnv({ path: resolve(REPO_ROOT, ".env") });
 
 export interface ServerConfig {
   port: number;
@@ -30,6 +35,14 @@ export interface ServerConfig {
   // to point the server at a remote OpenAI-compatible endpoint; the UI then
   // surfaces a "Remote model in use" badge to make that explicit.
   localOnly: boolean;
+  // Free-tier remote providers (NVIDIA NIM + Google Gemini). These are seeded as
+  // *disabled, non-default* connectors only when the matching API key env var is
+  // present, and only their two exact hosts may bypass the LOCAL_ONLY gate. Keys
+  // themselves live in the root .env (gitignored) and are read from process.env
+  // at request time — never stored in the DB. Model names are env-overridable so
+  // a user can point at a different free model without touching code.
+  nvidiaChatModel: string;
+  geminiChatModel: string;
   // Enable the P2P Civilization subsystem. Binds port 8788; start/stop is
   // tracked in the shutdown handler.
   civilizationEnabled: boolean;
@@ -83,6 +96,8 @@ export const CONFIG: ServerConfig = {
   maxFileBytes: num("MAX_FILE_BYTES", 2 * 1024 * 1024),
   allowedOrigin: str("ALLOWED_ORIGIN", "http://127.0.0.1:5173"),
   localOnly: bool("LOCAL_ONLY", true),
+  nvidiaChatModel: str("NVIDIA_CHAT_MODEL", "meta/llama-3.3-70b-instruct"),
+  geminiChatModel: str("GEMINI_CHAT_MODEL", "gemini-2.0-flash"),
   civilizationEnabled: bool("CIVILIZATION_ENABLED", false),
 };
 

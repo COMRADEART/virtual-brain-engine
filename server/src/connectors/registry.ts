@@ -91,10 +91,73 @@ export function ensureDefaultConnector(): ConnectorDescriptor {
   return descriptor;
 }
 
+// Free-tier remote providers. Seeded only when the matching API key env var is
+// present, and always *disabled + non-default* so local Ollama stays the working
+// default and the boot/60s auto-probe never reaches out to them (no quota burn,
+// no locality-badge flip). The user opts in explicitly via the picker. Their
+// hosts are the only non-local URLs allowed past the LOCAL_ONLY gate
+// (see isAllowedRemoteHost). Chat-only — no embeddingModel — so retrieval keeps
+// using the local 768-dim Ollama embedder and the vector index stays intact.
+const REMOTE_PROVIDERS: Array<{
+  id: string;
+  name: string;
+  baseUrl: string;
+  hasKey: () => boolean;
+  model: () => string;
+}> = [
+  {
+    id: "nvidia",
+    name: "NVIDIA NIM (remote)",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    hasKey: () => (process.env.NVIDIA_API_KEY ?? "").length > 0,
+    model: () => CONFIG.nvidiaChatModel,
+  },
+  {
+    id: "google-gemini",
+    name: "Google Gemini (remote)",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    hasKey: () =>
+      (process.env.GEMINI_API_KEY ?? "").length > 0 ||
+      (process.env.GOOGLE_AI_API_KEY ?? "").length > 0,
+    model: () => CONFIG.geminiChatModel,
+  },
+];
+
+// Idempotent. For each provider whose key is configured, ensure a connector row
+// exists. Preserves a user's prior enabled/default/model choice on re-run; on
+// first seed it's disabled + non-default. When no key is set we skip seeding
+// entirely (and leave any pre-existing row alone rather than deleting it, so a
+// transiently-missing key never drops a chosen default).
+export function ensureRemoteProviderConnectors(): void {
+  for (const provider of REMOTE_PROVIDERS) {
+    if (!provider.hasKey()) {
+      continue;
+    }
+    const existing = getConnector(provider.id);
+    upsertConnector({
+      id: provider.id,
+      name: existing?.name ?? provider.name,
+      kind: "openai-compatible",
+      baseUrl: provider.baseUrl,
+      model: existing?.model ?? provider.model(),
+      embeddingModel: undefined,
+      enabled: existing?.enabled ?? false,
+      isDefault: existing?.isDefault ?? false,
+    });
+    cache.delete(provider.id);
+  }
+}
+
 export async function probeAllConnectors(): Promise<void> {
   const instances = listConnectorInstances();
   await Promise.all(
     instances.map(async (instance) => {
+      // Never auto-probe non-local connectors: it would egress to remote
+      // providers on every boot + 60s tick and burn free-tier quota. The user
+      // tests them explicitly via POST /connectors/:id/test instead.
+      if (!instance.descriptor.isLocal) {
+        return;
+      }
       const result = await instance.test();
       updateConnectorState(
         instance.descriptor.id,

@@ -5,6 +5,43 @@ import type {
 } from "../../../shared/connector.js";
 import { Connector, ConnectorError } from "./Connector.js";
 
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+// First non-empty value. Treats "" the same as unset, so a blank `GEMINI_API_KEY=`
+// line in .env doesn't shadow a real GOOGLE_AI_API_KEY (??-chaining would, since
+// "" isn't nullish).
+function firstNonEmpty(...vals: Array<string | undefined>): string {
+  for (const v of vals) {
+    if (v && v.length > 0) {
+      return v;
+    }
+  }
+  return "";
+}
+
+// Resolve the bearer key by host. Local OpenAI-compatible runtimes need no key
+// (or any string); the two free remote providers each read their own env var so
+// you can hold both keys at once. Keys are read from process.env only — never
+// persisted to the DB. Returns null when no key is configured (the local path).
+function resolveApiKey(baseUrl: string): string | null {
+  const host = hostnameOf(baseUrl);
+  let raw = "";
+  if (host === "integrate.api.nvidia.com") {
+    raw = firstNonEmpty(process.env.NVIDIA_API_KEY);
+  } else if (host === "generativelanguage.googleapis.com") {
+    raw = firstNonEmpty(process.env.GEMINI_API_KEY, process.env.GOOGLE_AI_API_KEY);
+  } else {
+    raw = firstNonEmpty(process.env.OPENAI_API_KEY, process.env.LMSTUDIO_API_KEY);
+  }
+  return raw.length > 0 ? raw : null;
+}
+
 // One connector to drive every OpenAI-compatible local server: LM Studio,
 // llama.cpp's llama-server, Jan, GPT4All, vLLM, TGI. baseUrl is required and
 // should be the root that exposes /v1/* (e.g. "http://127.0.0.1:1234/v1" or
@@ -22,6 +59,7 @@ import { Connector, ConnectorError } from "./Connector.js";
 export class OpenAICompatibleConnector implements Connector {
   readonly descriptor: ConnectorDescriptor;
   private readonly baseUrl: string;
+  private readonly apiRoot: string;
   private readonly defaultModel: string;
   private readonly apiKey: string | null;
   readonly embed?: (text: string, signal?: AbortSignal) => Promise<number[]>;
@@ -35,23 +73,22 @@ export class OpenAICompatibleConnector implements Connector {
       );
     }
     this.baseUrl = descriptor.baseUrl.replace(/\/$/, "");
+    // Resolve the API root. A host-only base (e.g. http://127.0.0.1:8080, vLLM/TGI
+    // default) gets /v1 appended. A base that already carries a path is taken as
+    // the API root verbatim — that covers both "…/v1" (LM Studio, NVIDIA NIM) and
+    // non-/v1 roots like Gemini's "…/v1beta/openai". Appending /v1 to those would
+    // produce a broken URL, which the old endsWith("/v1") check did for Gemini.
+    this.apiRoot = /^https?:\/\/[^/]+$/.test(this.baseUrl) ? `${this.baseUrl}/v1` : this.baseUrl;
     this.defaultModel = descriptor.model ?? "";
-    const envKey = process.env.OPENAI_API_KEY ?? process.env.LMSTUDIO_API_KEY ?? "";
-    this.apiKey = envKey.length > 0 ? envKey : null;
+    this.apiKey = resolveApiKey(this.baseUrl);
     if (descriptor.embeddingModel) {
       const embedModel = descriptor.embeddingModel;
       this.embed = (text: string, signal?: AbortSignal) => this.callEmbed(embedModel, text, signal);
     }
   }
 
-  // Some servers expose /v1 at the root (vLLM, TGI in default config), others
-  // at /v1 already in the baseUrl. We accept either by normalising: if baseUrl
-  // already contains /v1, drop it for the prefix.
   private path(suffix: string): string {
-    if (this.baseUrl.endsWith("/v1")) {
-      return `${this.baseUrl}${suffix}`;
-    }
-    return `${this.baseUrl}/v1${suffix}`;
+    return `${this.apiRoot}${suffix}`;
   }
 
   private headers(): Record<string, string> {

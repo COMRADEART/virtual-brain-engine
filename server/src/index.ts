@@ -5,6 +5,7 @@ import { CONFIG } from "./config.js";
 import { openDb } from "./db/sqlite.js";
 import {
   ensureDefaultConnector,
+  ensureRemoteProviderConnectors,
   probeAllConnectors,
   reconcileDiscovered,
 } from "./connectors/registry.js";
@@ -44,6 +45,9 @@ async function main(): Promise<void> {
   }
 
   ensureDefaultConnector();
+  // Seed free-tier remote providers (NVIDIA/Gemini) as disabled, selectable
+  // connectors — only when their API key is present in the env. No key, no row.
+  ensureRemoteProviderConnectors();
   ensureScanRoot(CONFIG.defaultScanRoot);
   const decayHandles = scheduleDecayTick();
 
