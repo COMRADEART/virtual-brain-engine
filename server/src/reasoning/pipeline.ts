@@ -21,6 +21,7 @@ import {
 } from "../db/repositories/conversations.js";
 import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
 import { Connector, ConnectorError } from "../connectors/Connector.js";
+import { CONFIG } from "../config.js";
 import { broadcast } from "../ws/brainBus.js";
 import {
   maybeExplore,
@@ -30,6 +31,7 @@ import {
 } from "./ranker.js";
 import { applyMemoryRetrievalBoost, onConversationMessage, processNewMemory } from "../memory/consolidationEngine.js";
 import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
+import { getRegionPrototypes, routeQuery, type RouteDecision } from "./router.js";
 import { recordRankTrainingLog } from "../db/repositories/feedback.js";
 import {
   ERROR_SYSTEM,
@@ -240,6 +242,12 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   }
   insertMessage({ conversationId: cid, role: "user", content: req.prompt, pipelineRunId: runId });
   emitAll(makeEvent(cid, runId, "input", "complete"), emit);
+  // MoE router — pick the expert cortices + a depth gate for this query. The
+  // lexical route is computed up front (deterministic, no deps); it gets an
+  // optional embedding-refined upgrade once the query embedding exists (memory
+  // step below). `route.depth === "shallow"` lets the reasoning step skip the
+  // expensive LLM plan call entirely.
+  let route: RouteDecision = routeQuery(req.prompt);
   const swarm = getCognitiveSwarm();
   swarm.routeCognitiveWorkflow(
     `Answer user request: ${req.prompt.slice(0, 180)}`,
@@ -264,8 +272,18 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   let saliencyApplied = false;
   const embedder = getEmbedder(connector);
   if (embedder?.embed) {
+    const embedFn = embedder.embed.bind(embedder);
     try {
-      const embedding = await embedder.embed(req.prompt);
+      const embedding = await embedFn(req.prompt);
+      // Embedding-refined route. Independent try/catch so a failure here
+      // (prototype embed error, etc.) NEVER falls into the outer catch and
+      // skips retrieval — we just keep the lexical route.
+      try {
+        const protos = await getRegionPrototypes({ embed: embedFn });
+        route = routeQuery(req.prompt, { queryEmbedding: embedding, regionPrototypes: protos });
+      } catch {
+        // keep lexical route
+      }
       const raw = vectorSearch(embedding, 8);
       // Assemble the saliency context cheaply. The organism singleton's
       // public getters are the seam; both calls are bounded (~80 row scan +
@@ -310,10 +328,16 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   }
 
   // 3. REASONING
-  emitAll(makeEvent(cid, runId, "reasoning", "start"), emit);
+  // Flash the routed expert cortices (deduped with reasoning-cortex) instead of
+  // the static reasoning region, so the scene shows where this query was routed.
+  const routedRegions: LogicalRegionId[] = [...new Set<LogicalRegionId>([...route.experts, "reasoning-cortex"])];
+  const routeSummary = `experts ${route.experts.join(", ")} · difficulty ${route.difficulty.toFixed(2)} · ${route.depth}`;
+  emitAll(makeEvent(cid, runId, "reasoning", "start", { logicalRegions: routedRegions }), emit);
   // What the LLM actually reads: warm-gated high-confidence subset, with the
   // position-bias shuffle applied. Smaller block → less context → faster
   // local inference. The full ranked set is still kept for training + the UI.
+  // Kept OUTSIDE the depth branch — the error and response steps consume
+  // memoryList even when reasoning is shallow.
   const promptHits = maybeExplore(
     selectPromptHits(memoryHits, rankFeatures, rankWarm),
     runId,
@@ -324,33 +348,50 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     .join("\n\n");
   type ReasoningOut = { plan: string; openQuestions: string[] };
   let reasoning: ReasoningOut = { plan: "", openQuestions: [] };
-  try {
-    const parsed = await chatJson<ReasoningOut>(
-      connector,
-      REASONING_SYSTEM,
-      `Question:\n${req.prompt}\n\nMemory snippets:\n${memoryList || "(empty)"}`,
-    );
-    if (parsed) {
-      reasoning = {
-        plan: parsed.plan ?? "",
-        openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions : [],
-      };
+  let reasoningDetail: string;
+  if (route.depth === "shallow") {
+    // Adaptive compute: an easy query skips the expensive LLM reasoning plan
+    // (and the swarm consensus) and answers directly from retrieved memory.
+    reasoning = {
+      plan: `Shallow route (difficulty ${route.difficulty.toFixed(2)}, experts ${route.experts.join(", ")}): answering directly from retrieved memory.`,
+      openQuestions: [],
+    };
+    reasoningDetail = `Skipped LLM reasoning — ${routeSummary}`;
+  } else {
+    try {
+      const parsed = await chatJson<ReasoningOut>(
+        connector,
+        REASONING_SYSTEM,
+        `Question:\n${req.prompt}\n\nMemory snippets:\n${memoryList || "(empty)"}`,
+      );
+      if (parsed) {
+        reasoning = {
+          plan: parsed.plan ?? "",
+          openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions : [],
+        };
+      }
+    } catch (err) {
+      emitAll(
+        makeEvent(cid, runId, "reasoning", "error", {
+          detail: err instanceof Error ? err.message : String(err),
+        }),
+        emit,
+      );
+      failPipelineRun(runId, "reasoning failed");
+      return;
     }
-  } catch (err) {
-    emitAll(
-      makeEvent(cid, runId, "reasoning", "error", {
-        detail: err instanceof Error ? err.message : String(err),
-      }),
-      emit,
-    );
-    failPipelineRun(runId, "reasoning failed");
-    return;
+    reasoningDetail = reasoning.plan.slice(0, 200);
   }
   emitAll(
-    makeEvent(cid, runId, "reasoning", "complete", { detail: reasoning.plan.slice(0, 200) }),
+    makeEvent(cid, runId, "reasoning", "complete", {
+      detail: reasoningDetail,
+      logicalRegions: routedRegions,
+    }),
     emit,
   );
-  swarm.runConsensus(`Compare reasoning plans for: ${req.prompt.slice(0, 180)}`);
+  if (route.depth === "full") {
+    swarm.runConsensus(`Compare reasoning plans for: ${req.prompt.slice(0, 180)}`);
+  }
 
   // 4. PROJECT
   emitAll(makeEvent(cid, runId, "project", "start"), emit);
@@ -459,6 +500,24 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       .filter((id) => knownIds.has(id)),
   );
   try {
+    // Embed the learned Q+A best-effort so it (a) becomes visible to vector
+    // search and (b) can later use the cosine novelty/cluster path. embedder is
+    // declared at function scope (~line 272).
+    let learnedEmbedding: number[] | undefined;
+    if (embedder?.embed) {
+      try {
+        learnedEmbedding = await embedder.embed(`Q: ${req.prompt}\nA: ${finalAnswer}`);
+      } catch {
+        // best-effort; store without a vector (falls back to string similarity)
+      }
+    }
+    // Drop a wrong-dim vector rather than let upsertMemoryPoint's hard dim-check
+    // throw — that throw would escape to the outer catch and silently DROP the
+    // whole learned memory (no insert, no processNewMemory, no citation graph).
+    // Happens if the embed model is swapped or EMBEDDING_DIM is misconfigured.
+    if (learnedEmbedding && learnedEmbedding.length !== CONFIG.embeddingDim) {
+      learnedEmbedding = undefined;
+    }
     const learned = upsertMemoryPoint({
       sourceType: "conversation",
       filePath: null,
@@ -467,6 +526,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       content: `Q: ${req.prompt}\nA: ${finalAnswer}`,
       contentHash: sha1(`${req.prompt}|${finalAnswer}`),
       importance: errorReport.confidence,
+      embedding: learnedEmbedding,
       metadata: { conversationId: cid, runId },
     });
     const memoryContext = processNewMemory(

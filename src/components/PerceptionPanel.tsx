@@ -30,7 +30,7 @@ const RECENT_CAP = 6;
 
 interface PerceptionRecord {
   id: string;
-  kind: "transcribe" | "caption";
+  kind: "transcribe" | "caption" | "frame";
   text: string;
   model: string;
   latencyMs: number;
@@ -59,10 +59,15 @@ function formatLatency(ms: number): string {
 
 function statusTone(status: WorkerStatus | null): "down" | "scaffold" | "ready" {
   if (!status || status.status !== "ok") return "down";
-  const anyReady = status.models.whisper === "ready" || status.models.caption === "ready";
+  const anyReady =
+    status.models.whisper === "ready" ||
+    status.models.caption === "ready" ||
+    status.models.omniparser === "ready";
   if (anyReady) return "ready";
   const anyAvailable =
-    status.models.whisper !== "unavailable" || status.models.caption !== "unavailable";
+    status.models.whisper !== "unavailable" ||
+    status.models.caption !== "unavailable" ||
+    status.models.omniparser !== "unavailable";
   return anyAvailable ? "scaffold" : "down";
 }
 
@@ -117,7 +122,7 @@ export function PerceptionPanel(): JSX.Element | null {
           if (!cancelled) setStatus(s);
         })
         .catch(() => {
-          if (!cancelled) setStatus({ status: "down", uptimeSec: null, version: null, models: { whisper: "unavailable", caption: "unavailable" } });
+          if (!cancelled) setStatus({ status: "down", uptimeSec: null, version: null, models: { whisper: "unavailable", caption: "unavailable", omniparser: "unavailable" } });
         });
     };
     tick();

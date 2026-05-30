@@ -490,7 +490,7 @@ export function processNewMemory(
   predictedRelated: string[];
   relatedIds: string[];
 } {
-  const novelty = assessNovelty(content, projectName);
+  const novelty = assessNovelty(content, projectName, newMemoryId);
 
   if (newMemoryId && novelty.isNovel) {
     applyNoveltyBoost(newMemoryId, novelty.noveltyScore);

@@ -25,12 +25,19 @@ const tmp = mkdtempSync(join(tmpdir(), "brain-memcheck-"));
 process.env.BRAIN_DATA_DIR = tmp;
 process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 
-const { openDb } = await import("../src/db/sqlite.js");
+const { openDb, isVectorAvailable } = await import("../src/db/sqlite.js");
 const { upsertMemoryPoint } = await import("../src/db/repositories/memory.js");
 const { getMemoryById } = await import("../src/memory/memoryLifecycle.js");
 const { assessNovelty } = await import("../src/memory/noveltyDetector.js");
 const { updateMemoryStrength } = await import("../src/memory/memoryStrength.js");
 const { getDiagnosticCounts } = await import("../src/util/diagnostics.js");
+const { cosineSimilarity, getStoredEmbedding, getStoredEmbeddings } = await import(
+  "../src/memory/embeddingSimilarity.js"
+);
+const { updateClusterForMemory, getClustersForMemory } = await import(
+  "../src/memory/semanticCluster.js"
+);
+const { CONFIG } = await import("../src/config.js");
 
 let failures = 0;
 function check(label: string, ok: boolean, extra = ""): void {
@@ -95,6 +102,137 @@ check(
   (counts["memoryStrength.updateMemoryStrength"] ?? 0) >= 1,
   JSON.stringify(counts),
 );
+
+// ---------------------------------------------------------------------------
+// (4) Embedding cosine similarity — the string-heuristic → real-cosine upgrade.
+//     Asserts the DECISION LOGIC (not threshold calibration) at clearly-separated
+//     cosine values, so it's hermetic and embedder-independent. The behavioral
+//     cluster block only runs when the sqlite-vec extension actually loaded.
+// ---------------------------------------------------------------------------
+const vecOn = isVectorAvailable();
+console.log(`  [cosine] sqlite-vec extension: ${vecOn ? "LOADED" : "UNAVAILABLE"}`);
+
+// 4a. cosineSimilarity — pure math at unambiguous values.
+const near1 = cosineSimilarity([1, 2, 3], [1, 2, 3]);
+check("cosineSimilarity(identical) ≈ 1", Math.abs(near1 - 1) < 1e-6, `got ${near1}`);
+check("cosineSimilarity(orthogonal) = 0", cosineSimilarity([1, 0], [0, 1]) === 0);
+const opp = cosineSimilarity([1, 0], [-1, 0]);
+check("cosineSimilarity(opposite) ≈ -1", Math.abs(opp + 1) < 1e-6, `got ${opp}`);
+check("cosineSimilarity(length mismatch) = 0", cosineSimilarity([1, 2, 3], [1, 2]) === 0);
+check("cosineSimilarity(zero vector) = 0", cosineSimilarity([0, 0], [1, 1]) === 0);
+
+// 4b. getStoredEmbedding — defensive contract + (when vec is on) a round-trip
+//     through the REAL serializer, which doubles as vec0-blob format verification.
+check("getStoredEmbedding('nonexistent-id') -> null", getStoredEmbedding("nonexistent-id") === null);
+check("getStoredEmbeddings([]) -> empty map", getStoredEmbeddings([]).size === 0);
+
+const dim = CONFIG.embeddingDim;
+// Place nonzero components starting at `at`, zero elsewhere. Letting the
+// behavioral vectors live in DIFFERENT dimensions than the round-trip probe
+// keeps them mutually orthogonal, so the probe's cluster can never accidentally
+// attract them — the merge/separate assertions stay deterministic.
+function vecAt(at: number, values: number[]): number[] {
+  const v = new Array<number>(dim).fill(0);
+  for (let i = 0; i < values.length && at + i < dim; i += 1) v[at + i] = values[i];
+  return v;
+}
+function padVec(prefix: number[]): number[] {
+  return vecAt(0, prefix);
+}
+
+if (vecOn) {
+  // Round-trip: insert a known float32 vector via the real serializer, read it
+  // back. First few components must survive within float32 tolerance.
+  const knownPrefix = [0.5, -0.25, 0.125, 0.0625];
+  const rt = upsertMemoryPoint({
+    sourceType: "manual",
+    content: "cosine round-trip probe",
+    contentHash: `rt-${Date.now()}`,
+    embedding: padVec(knownPrefix),
+  });
+  const readBack = getStoredEmbedding(rt.id);
+  const rtOk =
+    !!readBack &&
+    readBack.length === dim &&
+    knownPrefix.every((expected, i) => Math.abs(readBack[i] - expected) < 1e-3);
+  check("getStoredEmbedding round-trips a known float32 vector", rtOk,
+    readBack ? `first=${readBack.slice(0, 4).map((x) => x.toFixed(4)).join(",")}` : "null");
+
+  // 4c. BEHAVIORAL: cosine merges what Jaccard would NOT. Two memories with
+  //     near-identical embeddings (cosine ≈ 0.99) but DISJOINT vocabulary land in
+  //     one cluster — string-Jaccard on their text would be ~0.
+  // dims 10+ — orthogonal to the round-trip probe (dims 0-3) so the probe's
+  // cluster can't attract these. vecA·vecB cosine ≈ 0.9999.
+  const vecA = vecAt(10, [1, 0, 0, 0]);
+  const vecB = vecAt(10, [0.9999, 0.0141, 0, 0]);
+  const cAB = cosineSimilarity(vecA, vecB);
+  check("synthetic vecA·vecB cosine ≈ 0.99 (>0.95)", cAB > 0.95, `got ${cAB.toFixed(4)}`);
+
+  const mCosA = upsertMemoryPoint({
+    sourceType: "manual",
+    content: "alpha beta gamma delta epsilon zeta eta",
+    contentHash: `cosA-${Date.now()}`,
+    embedding: vecA,
+  });
+  const mCosB = upsertMemoryPoint({
+    sourceType: "manual",
+    content: "ocean mountain forest river desert canyon valley",
+    contentHash: `cosB-${Date.now()}`,
+    embedding: vecB,
+  });
+  updateClusterForMemory(mCosA.id, mCosA.content, db);
+  updateClusterForMemory(mCosB.id, mCosB.content, db);
+  const clustersB = getClustersForMemory(mCosB.id, db);
+  const merged =
+    clustersB.length > 0 &&
+    clustersB.some((c) => c.memoryIds.includes(mCosA.id) && c.memoryIds.includes(mCosB.id));
+  check("cosine MERGES near-identical embeddings despite disjoint text", merged,
+    `B-clusters=${clustersB.map((c) => c.memoryIds.length).join("/")}`);
+
+  // 4d. BEHAVIORAL: an orthogonal-embedding memory (cosine ≈ 0 to vecA) forms a
+  //     SEPARATE cluster from mCosA.
+  const vecOrtho = vecAt(14, [1, 0, 0, 0]); // disjoint dims from vecA (10) and probe (0-3)
+  check("synthetic vecA·vecOrtho cosine = 0", cosineSimilarity(vecA, vecOrtho) === 0);
+  const mOrtho = upsertMemoryPoint({
+    sourceType: "manual",
+    content: "alpha beta gamma delta epsilon zeta eta theta",
+    contentHash: `ortho-${Date.now()}`,
+    embedding: vecOrtho,
+  });
+  updateClusterForMemory(mOrtho.id, mOrtho.content, db);
+  const clustersOrtho = getClustersForMemory(mOrtho.id, db);
+  const separate =
+    clustersOrtho.length > 0 &&
+    clustersOrtho.every((c) => !c.memoryIds.includes(mCosA.id));
+  check("orthogonal embedding forms a SEPARATE cluster", separate,
+    `ortho-clusters contain A? ${!separate}`);
+
+  // 4e. STRING-FALLBACK PARITY: a memory with NO embedding still clusters via the
+  //     string path (no throw, behaves as before — byte-identical fallback).
+  let fallbackThrew = false;
+  let mNoEmb: { id: string; content: string } | null = null;
+  try {
+    mNoEmb = upsertMemoryPoint({
+      sourceType: "manual",
+      content: "string fallback path clusters without any stored embedding vector",
+      contentHash: `noemb-${Date.now()}`,
+    });
+    updateClusterForMemory(mNoEmb.id, mNoEmb.content, db);
+  } catch {
+    fallbackThrew = true;
+  }
+  const fallbackClustered =
+    !fallbackThrew &&
+    !!mNoEmb &&
+    getStoredEmbedding(mNoEmb.id, db) === null &&
+    getClustersForMemory(mNoEmb.id, db).some((c) => c.memoryIds.includes(mNoEmb!.id));
+  check("string-fallback (no embedding) still clusters via string path", fallbackClustered);
+} else {
+  // No extension: getStoredEmbedding must be null for ANY id (portable assertion
+  // on machines without sqlite-vec). Cosine behavioral logic can't be exercised.
+  check("getStoredEmbedding(<any id>) -> null when vec unavailable",
+    getStoredEmbedding(point.id) === null);
+}
 
 console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

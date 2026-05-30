@@ -177,6 +177,26 @@ export function recordObservation(obs: CausalObservation): CausalLink {
   };
 }
 
+/**
+ * Every causal link in the ledger, ordered by epistemic uncertainty
+ * (`1 − confidence`) descending — the least-observed pairs first. This is the
+ * curiosity frontier: the rows whose strength estimate we trust the LEAST and
+ * would learn the most from re-observing. Consumed by core/curiosity.ts.
+ */
+export function getAllCausalLinks(): CausalLink[] {
+  const db = openDb();
+  const rows = db
+    .prepare<[], CausalRow>(
+      `SELECT id, cause_class, effect_class, observations, occurrences, strength, confidence,
+              last_observed_at, source
+         FROM causal_links`,
+    )
+    .all();
+  return rows
+    .map(rowToLink)
+    .sort((a, b) => (1 - b.confidence) - (1 - a.confidence));
+}
+
 /** All effects ever observed for a cause, ordered by strength × confidence. */
 export function getEffectsForCause(causeClass: string): CausalLink[] {
   const db = openDb();

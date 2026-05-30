@@ -31,7 +31,9 @@ const { openDb, applyMigrations } = await import("../src/db/sqlite.js");
 const { classifyAbstractionLevel, classifyTimelineRole, timelineRoleSet } = await import(
   "../src/core/abstractionLevels.js"
 );
-const { probeWorker, transcribe, caption } = await import("../src/perception/workerClient.js");
+const { probeWorker, transcribe, caption, parseFrame } = await import(
+  "../src/perception/workerClient.js"
+);
 const { getDiagnosticCounts, resetDiagnostics } = await import("../src/util/diagnostics.js");
 const { ABSTRACTION_LEVEL_LABELS } = await import("../../shared/imagination.js");
 
@@ -286,6 +288,132 @@ check(
   "caption failure surfaced via diagnostics",
   (counts["perception:caption"] ?? 0) >= 1,
   JSON.stringify(counts),
+);
+
+// =============================================================================
+// (B2) Phase 2 — frame parse client + OmniParser probe state (worker down)
+// =============================================================================
+
+const frame = await parseFrame({ imageBase64: "AA==" });
+check("parseFrame() on down worker returns ok:false", !frame.ok);
+check(
+  "parseFrame() surfaces perception:frame diagnostic",
+  (getDiagnosticCounts()["perception:frame"] ?? 0) >= 1,
+  JSON.stringify(getDiagnosticCounts()),
+);
+check(
+  "probeWorker() reports models.omniparser='unavailable' when down",
+  status.models.omniparser === "unavailable",
+);
+
+// =============================================================================
+// (B3) Phase 2 — perception INGESTION: a frame becomes a retrievable MemoryPoint
+// =============================================================================
+//
+// This is the genuinely-verifiable half (the OmniParser model can't run here
+// without torch). We feed SYNTHETIC parsed-frame text + embeddings straight
+// into ingestPerceptionMemory and assert the retrieval plumbing + the dedup
+// governance gate behave.
+
+const { ingestPerceptionMemory, countPerceptionMemories, DEDUP_COS, PERCEPTION_IMPORTANCE } =
+  await import("../src/vision/perceptionMemory.js");
+const { isVectorAvailable } = await import("../src/db/sqlite.js");
+const { getStoredEmbedding } = await import("../src/memory/embeddingSimilarity.js");
+const { CONFIG } = await import("../src/config.js");
+const { getMemoryPoint } = await import("../src/db/repositories/memory.js");
+
+const DIM = CONFIG.embeddingDim;
+const vectorOk = isVectorAvailable();
+check("sqlite-vec extension available (vector path exercised)", vectorOk, vectorOk ? "" : "no vec — string-only path");
+
+// Empty/whitespace content is rejected before any DB work.
+const emptyIngest = await ingestPerceptionMemory({ content: "   " });
+check("ingestPerceptionMemory rejects empty content", !emptyIngest.stored && emptyIngest.reason === "empty");
+check("empty ingest stored nothing", countPerceptionMemories() === 0);
+
+if (vectorOk) {
+  // A clean base vector: first half ones, second half zeros (so the orthogonal
+  // complement gives an unambiguous cosine 0 distinct frame later).
+  const base = new Array<number>(DIM).fill(0).map((_, i) => (i < DIM / 2 ? 1 : 0));
+
+  const first = await ingestPerceptionMemory({
+    content: "VS Code — editing reasoning/pipeline.ts",
+    embedding: base,
+    sourceApp: "Code.exe",
+    windowTitle: "pipeline.ts — star",
+  });
+  check("first perception frame stores", first.stored && first.reason === "stored", JSON.stringify(first));
+  check("countPerceptionMemories() === 1 after first store", countPerceptionMemories() === 1);
+
+  const memId = first.memoryId!;
+  const row = memId ? getMemoryPoint(memId) : null;
+  check(
+    "stored row is source_type='manual' + metadata.kind='perception'",
+    !!row && row.sourceType === "manual" && (row.metadata?.kind as string) === "perception",
+    row ? `sourceType=${row.sourceType} kind=${String(row.metadata?.kind)}` : "row missing",
+  );
+  check(
+    "perception importance is discounted to PERCEPTION_IMPORTANCE",
+    !!row && Math.abs(row.importance - PERCEPTION_IMPORTANCE) < 1e-9,
+    row ? `importance=${row.importance}` : "row missing",
+  );
+  const roundTrip = getStoredEmbedding(memId);
+  check(
+    "stored embedding round-trips (vector persisted)",
+    !!roundTrip && roundTrip.length === DIM,
+    roundTrip ? `len=${roundTrip.length}` : "null",
+  );
+
+  // --- Dedup governance: 49 near-identical frames must NOT flood the pool. ---
+  // Each is base + tiny noise (~1e-3) -> cosine ~0.999 >> DEDUP_COS.
+  let dupCount = 0;
+  for (let n = 0; n < 49; n += 1) {
+    const noisy = base.map((v, i) => v + ((i % 7) - 3) * 1e-3);
+    const r = await ingestPerceptionMemory({
+      content: `VS Code — editing reasoning/pipeline.ts (tick ${n})`,
+      embedding: noisy,
+      windowTitle: "pipeline.ts — star",
+    });
+    if (r.reason === "duplicate") dupCount += 1;
+  }
+  check("near-identical frames are flagged duplicate (cos > DEDUP_COS)", dupCount === 49, `dups=${dupCount}`);
+  check(
+    "high-volume repetitive stream did NOT flood retrieval (still 1)",
+    countPerceptionMemories() === 1,
+    `count=${countPerceptionMemories()} DEDUP_COS=${DEDUP_COS}`,
+  );
+
+  // --- A genuinely DISTINCT frame (orthogonal vector) DOES store. ---
+  const distinct = new Array<number>(DIM).fill(0).map((_, i) => (i >= DIM / 2 ? 1 : 0));
+  const distinctRes = await ingestPerceptionMemory({
+    content: "Firefox — reading docs/CIVILIZATION_ARCHITECTURE.md",
+    embedding: distinct,
+    windowTitle: "Firefox",
+  });
+  check("distinct (orthogonal) frame stores", distinctRes.stored && distinctRes.reason === "stored");
+  check("countPerceptionMemories() === 2 after distinct frame", countPerceptionMemories() === 2);
+} else {
+  // No vec extension: the no-embedding path must still store (string-only),
+  // and the dedup gate is skipped (no geometry to compare).
+  const a = await ingestPerceptionMemory({ content: "VS Code — editing reasoning/pipeline.ts" });
+  check("string-only perception frame stores (no vec)", a.stored && a.reason === "stored");
+  check("countPerceptionMemories() === 1 (string-only path)", countPerceptionMemories() === 1);
+}
+
+// =============================================================================
+// (B4) Phase 2 — privacy default: capture is OFF until explicitly enabled
+// =============================================================================
+//
+// The route's 403 guard depends on getVisionConfig() being falsy by default.
+// Document that default here; the route's 403 itself is integration-tested by
+// the orchestrator (it needs a live worker + body parser).
+
+const { getVisionConfig } = await import("../src/vision/capture.js");
+const visionCfg = await getVisionConfig();
+check(
+  "vision capture is OFF by default (no config persisted)",
+  visionCfg === null || visionCfg.enabled !== true,
+  visionCfg ? `enabled=${visionCfg.enabled}` : "null",
 );
 
 // =============================================================================

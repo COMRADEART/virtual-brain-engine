@@ -15,6 +15,8 @@
 import type {
   CaptionRequest,
   CaptionResult,
+  FrameRequest,
+  FrameResult,
   TranscribeRequest,
   TranscribeResult,
   WorkerStatus,
@@ -94,14 +96,18 @@ export async function probeWorker(): Promise<WorkerStatus> {
     role: string;
     uptimeSec: number;
     version: string;
-    models: { whisper: "ready" | "available" | "unavailable"; caption: "ready" | "available" | "unavailable" };
+    models: {
+      whisper: "ready" | "available" | "unavailable";
+      caption: "ready" | "available" | "unavailable";
+      omniparser: "ready" | "available" | "unavailable";
+    };
   }>("/healthz", { method: "GET" }, PROBE_TIMEOUT_MS, "perception:probe", { quiet: true });
   if (!result.ok) {
     return {
       status: "down",
       uptimeSec: null,
       version: null,
-      models: { whisper: "unavailable", caption: "unavailable" },
+      models: { whisper: "unavailable", caption: "unavailable", omniparser: "unavailable" },
       error: result.error,
     };
   }
@@ -109,8 +115,23 @@ export async function probeWorker(): Promise<WorkerStatus> {
     status: "ok",
     uptimeSec: result.data.uptimeSec,
     version: result.data.version,
-    models: result.data.models,
+    // Defensive default: an older worker may omit omniparser from /healthz —
+    // treat a missing key as "unavailable" rather than letting it be undefined.
+    models: {
+      whisper: result.data.models.whisper,
+      caption: result.data.models.caption,
+      omniparser: result.data.models.omniparser ?? "unavailable",
+    },
   };
+}
+
+export async function parseFrame(req: FrameRequest): Promise<WorkerResult<FrameResult>> {
+  return fetchJson<FrameResult>(
+    "/perceive/frame",
+    { method: "POST", body: JSON.stringify(req) },
+    CALL_TIMEOUT_MS,
+    "perception:frame",
+  );
 }
 
 export async function transcribe(req: TranscribeRequest): Promise<WorkerResult<TranscribeResult>> {

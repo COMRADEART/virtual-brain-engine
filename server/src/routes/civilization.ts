@@ -364,3 +364,146 @@ civilizationRouter.get("/civilization/visualization/snapshot", (_req, res) => {
     topology: { nodes: [], edges: [] },
   });
 });
+
+// --- Advanced + maturity layers (architecture components #4, #11–#19) ---
+
+civilizationRouter.get("/civilization/reputation", (_req, res) => {
+  const sys = civilization.getSystem();
+  const reputations = sys?.trustReputation.getAllReputations() ?? [];
+  res.json({
+    count: reputations.length,
+    reputations,
+    sybilSignals: sys?.trustReputation.detectSybils() ?? [],
+  });
+});
+
+civilizationRouter.get("/civilization/social-memory", (_req, res) => {
+  const sys = civilization.getSystem();
+  const memories = sys?.interBrainMemory.getAll() ?? [];
+  res.json({
+    count: memories.length,
+    partners: sys?.interBrainMemory.rankPartners() ?? [],
+    memories: memories.map((m) => ({
+      id: m.id,
+      interactionType: m.interactionType,
+      participants: m.participants,
+      outcome: m.outcome,
+      summary: m.summary,
+      createdAt: m.createdAt,
+    })),
+  });
+});
+
+civilizationRouter.get("/civilization/emergent-groups", (_req, res) => {
+  const sys = civilization.getSystem();
+  const groups = sys?.emergentOrg.getAllGroups() ?? [];
+  res.json({
+    count: groups.length,
+    groups: groups.map((g) => ({
+      id: g.id,
+      name: g.name,
+      type: g.type,
+      phase: sys?.emergentOrg.getPhase(g.id),
+      memberCount: g.members.filter((m) => m.isActive).length,
+      isActive: g.isActive,
+      goals: g.goals,
+      formedAt: g.formedAt,
+    })),
+  });
+});
+
+civilizationRouter.get("/civilization/imagination", (_req, res) => {
+  const sys = civilization.getSystem();
+  const sessions = sys?.collectiveImagination.getAllSessions() ?? [];
+  res.json({
+    count: sessions.length,
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      topic: s.topic,
+      mode: s.mode,
+      branchCount: s.branches.length,
+      result: s.result,
+      completed: !!s.completedAt,
+      createdAt: s.createdAt,
+    })),
+  });
+});
+
+civilizationRouter.get("/civilization/language", (_req, res) => {
+  const sys = civilization.getSystem();
+  res.json(sys?.languageEvolution.getStateSerializable() ?? {
+    civilizationId: "unknown",
+    sharedSymbols: {},
+    abbreviations: {},
+    reasoningShorthands: {},
+    adoptedCount: 0,
+    proposedCount: 0,
+    lastUpdatedAt: new Date().toISOString(),
+  });
+});
+
+civilizationRouter.get("/civilization/twin", (_req, res) => {
+  const sys = civilization.getSystem();
+  const twin = civilization.getTwin();
+  res.json({
+    twin,
+    resourceBalances: sys?.civilizationTwin.getResourceBalances() ?? {},
+    cohesionTrend: sys?.civilizationTwin.getCohesionTrend() ?? 0,
+  });
+});
+
+civilizationRouter.get("/civilization/alerts", (_req, res) => {
+  const sys = civilization.getSystem();
+  const alerts = sys?.ethicsSafety.getAllAlerts() ?? [];
+  res.json({
+    count: alerts.length,
+    active: sys?.ethicsSafety.getActiveAlerts().length ?? 0,
+    quarantined: sys?.ethicsSafety.getQuarantined() ?? [],
+    alerts: alerts.map((a) => ({
+      id: a.id,
+      type: a.type,
+      severity: a.severity,
+      status: a.status,
+      description: a.description,
+      createdAt: a.createdAt,
+    })),
+  });
+});
+
+civilizationRouter.get("/civilization/multi", (_req, res) => {
+  const sys = civilization.getSystem();
+  res.json({
+    civilizations: sys?.multiCivilization.getCivilizationsSerializable() ?? [],
+    societies: sys?.multiCivilization.getSocieties() ?? [],
+    conflicts: sys?.multiCivilization.getConflicts() ?? [],
+  });
+});
+
+civilizationRouter.post("/civilization/simulate/governance", (req, res) => {
+  const sys = civilization.getSystem();
+  if (!sys) {
+    res.status(503).json({ error: "Civilization not running" });
+    return;
+  }
+  const { model, brainCount, approvalBias, proposals, seed } = req.body ?? {};
+  const result = sys.simulation.simulateGovernance(
+    {
+      model: model ?? "consensus",
+      brainCount: brainCount ?? 5,
+      approvalBias: approvalBias ?? 0.6,
+      proposals: proposals ?? 10,
+    },
+    seed ?? 1,
+  );
+  res.json(result);
+});
+
+civilizationRouter.post("/civilization/simulate/scaling", (req, res) => {
+  const sys = civilization.getSystem();
+  if (!sys) {
+    res.status(503).json({ error: "Civilization not running" });
+    return;
+  }
+  const { brainCount } = req.body ?? {};
+  res.json(sys.simulation.simulateScaling(brainCount ?? 10));
+});

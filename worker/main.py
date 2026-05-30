@@ -45,10 +45,12 @@ _START_TS = time.monotonic()
 # the underlying model has been loaded by an earlier request. Cold restart =
 # every model goes back to "available" until first call. The server tolerates
 # any state — only the route that needs the missing model 503s.
-_warm: dict[str, bool] = {"whisper": False, "caption": False}
+_warm: dict[str, bool] = {"whisper": False, "caption": False, "omniparser": False}
 
 
-def _model_state(feature: Literal["whisper", "caption"]) -> Literal["ready", "available", "unavailable"]:
+def _model_state(
+    feature: Literal["whisper", "caption", "omniparser"],
+) -> Literal["ready", "available", "unavailable"]:
     if _warm.get(feature):
         return "ready"
     # importlib.util.find_spec is cheap (filesystem only); avoids importing the
@@ -56,6 +58,10 @@ def _model_state(feature: Literal["whisper", "caption"]) -> Literal["ready", "av
     deps = {
         "whisper": ("faster_whisper",),
         "caption": ("transformers", "PIL"),
+        # OmniParser V2 = YOLO (ultralytics) icon/element detector + Florence2
+        # caption (transformers + PIL). All need torch, so "unavailable" is the
+        # common case in a base install.
+        "omniparser": ("ultralytics", "transformers", "PIL"),
     }[feature]
     for mod in deps:
         if importlib.util.find_spec(mod) is None:
@@ -73,6 +79,7 @@ def healthz() -> dict[str, Any]:
         "models": {
             "whisper": _model_state("whisper"),
             "caption": _model_state("caption"),
+            "omniparser": _model_state("omniparser"),
         },
     }
 
@@ -220,6 +227,132 @@ def caption(body: CaptionIn) -> dict[str, Any]:
         "confidence": None,
         "latencyMs": elapsed_ms,
         "model": _CAPTION_MODEL_ID,
+    }
+
+
+# ---------------------------------------------------------------------------
+# /perceive/frame — screen frame -> structured UI elements + OCR (OmniParser V2).
+#
+# OmniParser V2 = a YOLO icon/element detector (ultralytics) + a Florence2
+# caption model (transformers/PIL). Both need torch, so this endpoint is the
+# "frame" analogue of /caption: the deps are OPTIONAL + imported LAZILY, and a
+# missing dep -> 503 (exactly like _load_caption). We never download weights at
+# import time. The real model wiring below is a best-effort sketch — without
+# torch it never executes — but it's lazy and plausible so installing
+# requirements-ml.txt lights it up.
+# ---------------------------------------------------------------------------
+
+
+class FrameIn(BaseModel):
+    imageBase64: str = Field(..., description="Base64-encoded screen-frame bytes (png/jpg/webp).")
+    ocr: bool = Field(default=True, description="Run OCR over the frame.")
+
+
+_omni_yolo: Any | None = None
+_omni_caption: Any | None = None
+_OMNI_YOLO_WEIGHTS = os.environ.get("OMNIPARSER_YOLO_WEIGHTS", "icon_detect/model.pt")
+_OMNI_CAPTION_MODEL_ID = os.environ.get("OMNIPARSER_CAPTION_MODEL_ID", "microsoft/Florence-2-base")
+
+
+def _load_omniparser() -> tuple[Any, Any]:
+    """Lazy-load the OmniParser detector + caption model.
+
+    Raises HTTPException(503) when ultralytics / transformers / PIL aren't
+    installed — same contract as _load_caption / _load_whisper. The weights
+    are only loaded here (first call), never at import time.
+    """
+    global _omni_yolo, _omni_caption
+    if _omni_yolo is not None and _omni_caption is not None:
+        return _omni_yolo, _omni_caption
+    try:
+        from ultralytics import YOLO  # type: ignore[import-not-found]
+        from transformers import (  # type: ignore[import-not-found]
+            AutoModelForCausalLM,
+            AutoProcessor,
+        )
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OmniParser deps not installed. Install worker/requirements-ml.txt "
+                "to enable frame parsing."
+            ),
+        ) from exc
+    _omni_yolo = YOLO(_OMNI_YOLO_WEIGHTS)
+    processor = AutoProcessor.from_pretrained(_OMNI_CAPTION_MODEL_ID, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(_OMNI_CAPTION_MODEL_ID, trust_remote_code=True)
+    _omni_caption = (processor, model)
+    _warm["omniparser"] = True
+    return _omni_yolo, _omni_caption
+
+
+_INTERACTABLE_TYPES = {"icon", "button"}
+
+
+@app.post("/perceive/frame")
+def perceive_frame(body: FrameIn) -> dict[str, Any]:
+    try:
+        raw = base64.b64decode(body.imageBase64, validate=False)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"imageBase64 decode failed: {exc}") from exc
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OmniParser deps not installed. Install worker/requirements-ml.txt "
+                "to enable frame parsing."
+            ),
+        ) from exc
+
+    yolo, (processor, caption_model) = _load_omniparser()
+    image = Image.open(io.BytesIO(raw)).convert("RGB")
+    started = time.perf_counter()
+
+    # --- Element detection (YOLO) ------------------------------------------
+    elements: list[dict[str, Any]] = []
+    detections = yolo(image, verbose=False)
+    for det in detections:
+        boxes = getattr(det, "boxes", None)
+        if boxes is None:
+            continue
+        for box in boxes:
+            # xywh: center-x, center-y, w, h -> convert to top-left x, y.
+            cx, cy, w, h = (float(v) for v in box.xywh[0].tolist())
+            x = int(cx - w / 2)
+            y = int(cy - h / 2)
+            cls_idx = int(box.cls[0]) if getattr(box, "cls", None) is not None else 0
+            elem_type = yolo.names.get(cls_idx, "icon") if hasattr(yolo, "names") else "icon"
+            if elem_type not in ("icon", "text", "button"):
+                elem_type = "icon"
+            # Per-element caption via Florence2 over the crop.
+            crop = image.crop((x, y, x + int(w), y + int(h)))
+            inputs = processor(text="<CAPTION>", images=crop, return_tensors="pt")
+            out = caption_model.generate(**inputs, max_new_tokens=24)
+            caption_text = processor.batch_decode(out, skip_special_tokens=True)[0].strip()
+            elements.append(
+                {
+                    "bbox": [x, y, int(w), int(h)],
+                    "type": elem_type,
+                    "interactable": elem_type in _INTERACTABLE_TYPES,
+                    "caption": caption_text,
+                }
+            )
+
+    # --- Whole-frame OCR (Florence2 OCR task) ------------------------------
+    ocr_text = ""
+    if body.ocr:
+        inputs = processor(text="<OCR>", images=image, return_tensors="pt")
+        out = caption_model.generate(**inputs, max_new_tokens=256)
+        ocr_text = processor.batch_decode(out, skip_special_tokens=True)[0].strip()
+
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    return {
+        "elements": elements,
+        "ocrText": ocr_text,
+        "latencyMs": elapsed_ms,
+        "model": "omniparser-v2",
     }
 
 

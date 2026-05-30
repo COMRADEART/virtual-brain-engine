@@ -15,10 +15,14 @@
 #   transformers + torch  ~700MB (CPU wheels) — BLIP base model ~990MB
 #                                downloaded on first /caption call
 #   pillow                ~3MB
+#   ultralytics           ~30MB (YOLO; OmniParser V2 icon/element detector for
+#                                /perceive/frame — pulls torch transitively too;
+#                                Florence2 caption weights download on first call)
 #
-# If you only want one of the two features, omit the other line.
+# If you only want one of the features, omit the other line.
 
 faster-whisper>=1.0.3
 transformers>=4.44.0
 torch>=2.2.0
 pillow>=10.0.0
+ultralytics>=8.2.0

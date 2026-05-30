@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import { ulid } from "ulid";
 import { surfaceError } from "../util/diagnostics.js";
+import { cosineSimilarity, getStoredEmbedding, getStoredEmbeddings } from "./embeddingSimilarity.js";
 
 export interface TopicCluster {
   clusterId: string;
@@ -95,6 +96,15 @@ export function computeNgramOverlap(a: string, b: string): number {
 // byte-identical bigram-set hashes almost never collide across distinct
 // memories, so the old `topic = ?` path produced one-member clusters forever.
 const SIMILARITY_THRESHOLD = 0.18;
+// COSINE threshold for the embedding match path. Different SCALE from the
+// Jaccard SIMILARITY_THRESHOLD (0.18). CALIBRATED against the configured embedder
+// (nomic-embed-text, raw /api/embeddings, 2026-05-30, 8 known pairs): that model
+// has a HIGH cosine floor — unrelated cross-domain text ~0.40–0.50, related-but-
+// distinct (same topic, disjoint words) ~0.565–0.60, near-duplicate paraphrase
+// ~0.69. 0.58 sits just above the unrelated band so genuinely same-topic
+// memories merge while cross-domain ones stay separate. Re-measure if the embed
+// model changes (a 0.8 placeholder would never let ANYTHING cluster here).
+const EMBEDDING_SIMILARITY_THRESHOLD = 0.58;
 // Bound the candidate scan so an insert stays ~O(1) regardless of history.
 const MAX_CANDIDATE_CLUSTERS = 25;
 
@@ -105,6 +115,14 @@ export function updateClusterForMemory(
 ): void {
   try {
     const now = new Date().toISOString();
+
+    // Decide the metric ONCE per call. If the new memory has a stored embedding,
+    // we match candidates by cosine similarity against their representatives'
+    // embeddings (embedding-bearing reps only). Otherwise the original string
+    // (bigram-Jaccard) path runs entirely unchanged. The two scales never mix.
+    const queryEmbedding = getStoredEmbedding(memoryId, db);
+    const cosineMode = queryEmbedding !== null;
+    const matchThreshold = cosineMode ? EMBEDDING_SIMILARITY_THRESHOLD : SIMILARITY_THRESHOLD;
 
     // Recently-active clusters, strongest first. We match by content
     // similarity against one representative member per cluster.
@@ -119,8 +137,8 @@ export function updateClusterForMemory(
 
     let best: { id: string; ids: string[]; sim: number } | null = null;
     if (candidates.length > 0) {
-      // One representative id per candidate, then a single batched content
-      // fetch — never a per-candidate query (no N+1).
+      // One representative id per candidate (needed by BOTH modes), then a single
+      // batched fetch — never a per-candidate query (no N+1).
       const repByCluster = new Map<string, string>();
       const idsByCluster = new Map<string, string[]>();
       for (const c of candidates) {
@@ -129,6 +147,7 @@ export function updateClusterForMemory(
         if (ids.length > 0) repByCluster.set(c.id, ids[0]);
       }
       const repIds = [...new Set(repByCluster.values())];
+      // Batched rep CONTENT (string mode needs it; harmless to keep otherwise).
       const contentById = new Map<string, string>();
       if (repIds.length > 0) {
         const placeholders = repIds.map(() => "?").join(", ");
@@ -140,18 +159,28 @@ export function updateClusterForMemory(
           .all(repIds);
         for (const r of rows) contentById.set(r.id, r.content);
       }
+      // COSINE MODE: batched rep EMBEDDINGS; reps without an embedding are skipped.
+      const embeddingById = cosineMode ? getStoredEmbeddings(repIds, db) : new Map<string, number[]>();
       for (const c of candidates) {
         const repId = repByCluster.get(c.id);
-        const repContent = repId ? contentById.get(repId) : undefined;
-        if (!repContent) continue;
-        const sim = computeNgramOverlap(content, repContent);
+        if (!repId) continue;
+        let sim: number;
+        if (cosineMode) {
+          const repEmb = embeddingById.get(repId);
+          if (!repEmb) continue; // rep lacks an embedding → not a cosine match
+          sim = cosineSimilarity(queryEmbedding as number[], repEmb);
+        } else {
+          const repContent = contentById.get(repId);
+          if (!repContent) continue;
+          sim = computeNgramOverlap(content, repContent);
+        }
         if (!best || sim > best.sim) {
           best = { id: c.id, ids: idsByCluster.get(c.id) ?? [], sim };
         }
       }
     }
 
-    if (best && best.sim >= SIMILARITY_THRESHOLD) {
+    if (best && best.sim >= matchThreshold) {
       if (!best.ids.includes(memoryId)) {
         best.ids.push(memoryId);
         const coherence = computeClusterCoherence(best.ids, content, db);

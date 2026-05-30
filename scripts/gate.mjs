@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Phase 0 — green-build composite gate.
 //
-// Runs frontend typecheck, server typecheck, the nine selfchecks
+// Runs frontend typecheck, server typecheck, the eleven selfchecks
 // (ranker, agents, twin, memory, perception, attention, graph, worldmodel,
-// learning), the frontend unit tests, and a server smoke that BOOTS the real
-// server and
+// learning, civilization, evolution), the frontend unit tests, and a server
+// smoke that BOOTS the real server and
 // sweeps every GET endpoint (the runtime check the gate used to lack — it is
 // how a dead-on-boot server shipped green). All run as ISOLATED
 // subprocesses so a Windows libuv shutdown abort in one selfcheck cannot
@@ -31,6 +31,7 @@ const npmCmd = isWindows ? "npm.cmd" : "npm";
 const steps = [
   { label: "frontend typecheck", args: ["run", "gate:frontend"] },
   { label: "server typecheck",   args: ["run", "gate:server"] },
+  { label: "router selfcheck",   args: ["--prefix", "server", "run", "router:selfcheck"] },
   { label: "ranker selfcheck",   args: ["--prefix", "server", "run", "ranker:selfcheck"] },
   { label: "agents selfcheck",   args: ["--prefix", "server", "run", "agents:selfcheck"] },
   { label: "twin selfcheck",     args: ["--prefix", "server", "run", "twin:selfcheck"] },
@@ -40,12 +41,23 @@ const steps = [
   { label: "graph selfcheck",      args: ["--prefix", "server", "run", "graph:selfcheck"] },
   { label: "worldmodel selfcheck", args: ["--prefix", "server", "run", "worldmodel:selfcheck"] },
   { label: "learning selfcheck",   args: ["--prefix", "server", "run", "learning:selfcheck"] },
+  { label: "civilization selfcheck", args: ["--prefix", "server", "run", "civilization:selfcheck"] },
+  { label: "evolution selfcheck", args: ["--prefix", "server", "run", "evolution:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline
-  // is covered manually by `npm run ask:smoke`).
+  // is covered by the opt-in ask:smoke tail below).
   { label: "server smoke",         args: ["run", "server:smoke"] },
 ];
+
+// Opt-in runtime tail (Plan Civil — Phase 0 "verification floor"). The default
+// gate keeps its zero-config, no-LLM contract; setting GATE_ASK_SMOKE=1 appends
+// a LIVE `POST /api/ask` that boots the server and asserts the 7-step pipeline
+// completes end-to-end. ask-smoke.mjs SKIPS cleanly (exit 0, "result":"SKIP")
+// when no chat model is reachable, so it's safe even on a connector-less CI box.
+if (process.env.GATE_ASK_SMOKE === "1") {
+  steps.push({ label: "ask smoke (live /api/ask)", args: ["run", "ask:smoke"] });
+}
 
 if (!existsSync(resolve(repoRoot, "package.json"))) {
   console.error(`gate.mjs: cannot locate package.json under ${repoRoot}`);

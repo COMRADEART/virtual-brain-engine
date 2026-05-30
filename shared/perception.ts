@@ -29,6 +29,14 @@ export interface WorkerStatus {
   models: {
     whisper: "ready" | "available" | "unavailable";
     caption: "ready" | "available" | "unavailable";
+    /**
+     * OmniParser V2 (YOLO icon/element detector + Florence2 caption). "ready"
+     * = warm, "available" = ultralytics+transformers+PIL importable, lazy-load
+     * on first call, "unavailable" = a dep is missing (the common case — these
+     * need torch). Frame parsing 503s when unavailable; everything else keeps
+     * working.
+     */
+    omniparser: "ready" | "available" | "unavailable";
   };
   /** Set when the probe itself failed (timeout, ECONNREFUSED, bad JSON, ...). */
   error?: string;
@@ -85,12 +93,46 @@ export interface CaptionResult {
 }
 
 /**
+ * POST /api/perceive/frame — screen frame -> structured UI elements + OCR. The
+ * server forwards to the worker's /perceive/frame endpoint, which runs
+ * OmniParser V2 (YOLO + Florence2). The Node side then turns the parse into a
+ * retrievable MemoryPoint (see server/src/vision/perceptionMemory.ts).
+ */
+export interface FrameRequest {
+  /** Base64-encoded screen-frame bytes (png/jpg/webp). */
+  imageBase64: string;
+  /** Run OCR over the frame (default true). */
+  ocr?: boolean;
+}
+
+/** One detected UI element from OmniParser. */
+export interface FrameElement {
+  /** [x, y, w, h] in pixels. */
+  bbox: [number, number, number, number];
+  /** Coarse element class. */
+  type: "icon" | "text" | "button";
+  /** Whether the element is plausibly clickable/typeable. */
+  interactable: boolean;
+  /** Short natural-language caption for the element (Florence2). */
+  caption: string;
+}
+
+export interface FrameResult {
+  elements: FrameElement[];
+  /** Concatenated OCR text over the whole frame ("" when ocr=false). */
+  ocrText: string;
+  /** Worker wall-clock for the parse, milliseconds. */
+  latencyMs: number;
+  model: string; // e.g. "omniparser-v2"
+}
+
+/**
  * Brain-bus broadcast for perception events. Mirrors the surface in
  * shared/pipeline.ts (BrainBusMessage) so any subscribed tab can see Whisper /
- * caption activity even if it didn't initiate the request. Kept narrow on
- * purpose — we don't broadcast the raw payload.
+ * caption / frame activity even if it didn't initiate the request. Kept narrow
+ * on purpose — we don't broadcast the raw payload.
  */
-export type PerceptionEventKind = "transcribe" | "caption";
+export type PerceptionEventKind = "transcribe" | "caption" | "frame";
 
 export interface PerceptionEvent {
   type: "perception";

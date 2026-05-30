@@ -97,16 +97,10 @@ export interface RankTrainingSnapshot {
   citedIds: Set<string>;
 }
 
-export function loadRankTrainingLog(runId: string): RankTrainingSnapshot | null {
-  const db = openDb();
-  const row = db
-    .prepare<[string], { features: string; cited: string }>(
-      `SELECT features, cited FROM rank_training_log WHERE run_id = ?`,
-    )
-    .get(runId);
-  if (!row) {
-    return null;
-  }
+// Parse one persisted `rank_training_log` row's JSON into a snapshot, applying
+// the same defensive validation everywhere (numeric finite feature vectors,
+// string cited ids). Shared by the single-run and all-rows readers below.
+function parseTrainingRow(row: { features: string; cited: string }): RankTrainingSnapshot | null {
   try {
     const featuresObj = JSON.parse(row.features) as Record<string, unknown>;
     const featuresById = new Map<string, number[]>();
@@ -123,4 +117,39 @@ export function loadRankTrainingLog(runId: string): RankTrainingSnapshot | null 
   } catch {
     return null;
   }
+}
+
+export function loadRankTrainingLog(runId: string): RankTrainingSnapshot | null {
+  const db = openDb();
+  const row = db
+    .prepare<[string], { features: string; cited: string }>(
+      `SELECT features, cited FROM rank_training_log WHERE run_id = ?`,
+    )
+    .get(runId);
+  if (!row) {
+    return null;
+  }
+  return parseTrainingRow(row);
+}
+
+// All persisted training snapshots, oldest-first. The evolution optimizer
+// flattens these into a single labelled corpus to search ranker weights against.
+// Malformed rows are skipped, not fatal. The `run_id ASC` tiebreaker makes the
+// order a TOTAL order (run_id is unique) — without it, rows written within the
+// same millisecond tie on created_at and SQLite returns them in an unstable
+// order, which would make the seeded optimizer non-reproducible across runs.
+export function listRankTrainingLogs(db = openDb()): RankTrainingSnapshot[] {
+  const rows = db
+    .prepare<[], { features: string; cited: string }>(
+      `SELECT features, cited FROM rank_training_log ORDER BY created_at ASC, run_id ASC`,
+    )
+    .all();
+  const out: RankTrainingSnapshot[] = [];
+  for (const row of rows) {
+    const snap = parseTrainingRow(row);
+    if (snap) {
+      out.push(snap);
+    }
+  }
+  return out;
 }

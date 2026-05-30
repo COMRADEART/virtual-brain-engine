@@ -9,6 +9,7 @@
 
 import type { BrainBusMessage } from "../../../shared/pipeline.js";
 import { getEventBus, type BrainEvent } from "../core/eventBus.js";
+import { gatherCuriosity } from "../core/curiosity.js";
 import { createCognitiveEvolutionEngine } from "../core/evolution.js";
 import { createImaginationEngine } from "../core/imagination.js";
 import { createPersistentOrganism } from "../core/organism.js";
@@ -227,6 +228,17 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
             activeGoals: organism.getActiveGoalTitles(8),
             organismHealth: organism.getHealthScore(),
           };
+        } catch {
+          return null;
+        }
+      },
+      // Curiosity = expected information gain over the causal world model.
+      // gatherCuriosity() reads the causal ledger + organism health and scores
+      // the uncertainty frontier. When it crosses CURIOSITY_EXPLORE_THRESHOLD
+      // the IdleAgent fires `exploration-scheduled` instead of an idle thought.
+      curiosityProvider: () => {
+        try {
+          return gatherCuriosity().curiosity;
         } catch {
           return null;
         }

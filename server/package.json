@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\"",
+    "router:selfcheck": "tsx scripts/router-selfcheck.ts",
     "ranker:selfcheck": "tsx scripts/ranker-selfcheck.ts",
     "agents:selfcheck": "tsx scripts/agents-selfcheck.ts",
     "twin:selfcheck": "tsx scripts/twin-selfcheck.ts",
@@ -16,7 +17,11 @@
     "attention:selfcheck": "tsx scripts/attention-selfcheck.ts",
     "graph:selfcheck": "tsx scripts/graph-selfcheck.ts",
     "worldmodel:selfcheck": "tsx scripts/worldmodel-selfcheck.ts",
-    "learning:selfcheck": "tsx scripts/learning-selfcheck.ts"
+    "learning:selfcheck": "tsx scripts/learning-selfcheck.ts",
+    "civilization:selfcheck": "tsx scripts/civilization-selfcheck.ts",
+    "evolution:selfcheck": "tsx scripts/evolution-selfcheck.ts",
+    "cluster:probe": "tsx scripts/cluster-probe.mjs",
+    "perception:probe": "tsx scripts/perception-probe.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
