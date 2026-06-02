@@ -48,6 +48,7 @@ const steps = [
   { label: "ingest selfcheck",    args: ["--prefix", "server", "run", "ingest:selfcheck"] },
   { label: "learningloop selfcheck", args: ["--prefix", "server", "run", "learningloop:selfcheck"] },
   { label: "models selfcheck",    args: ["--prefix", "server", "run", "models:selfcheck"] },
+  { label: "websearch selfcheck",  args: ["--prefix", "server", "run", "websearch:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline
@@ -65,6 +66,7 @@ if (process.env.GATE_ASK_SMOKE === "1") {
   steps.push({ label: "actions smoke (live /api/actions/resolve)", args: ["run", "actions:smoke"] });
   steps.push({ label: "models smoke (live ollama pull)", args: ["run", "models:smoke"] });
   steps.push({ label: "web smoke (egress gate + live fetch)", args: ["run", "web:smoke"] });
+  steps.push({ label: "websearch smoke (egress gate + live search)", args: ["run", "websearch:smoke"] });
 }
 
 if (!existsSync(resolve(repoRoot, "package.json"))) {

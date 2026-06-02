@@ -24,6 +24,19 @@ export type ActionId =
   // text into memory through the governed ingest pipeline. confirm-tier (it
   // egresses) and only works while LOCAL_ONLY=false — see server/src/ingest.
   | "learn-url"
+  // Hybrid local+internet ("FRIDAY goes online"). web-search returns live web
+  // results; research-web searches + fetches + LEARNS the top pages into memory.
+  // Both egress, so both are confirm-tier and gated by LOCAL_ONLY.
+  | "web-search"
+  | "research-web"
+  // System actions — "interact with the computer / do tasks". These run a Node
+  // handler in the server process (same machine as the user). system-info is a
+  // read-only metrics snapshot; the file ops are confirm-tier and path-guarded
+  // (absolute paths only; sensitive locations like .env/.ssh are refused).
+  | "system-info"
+  | "list-directory"
+  | "read-file"
+  | "write-file"
   // Phase 3b — OS-surface actions. The server validates/gates/audits and returns
   // an osDirective; the actual OS call runs in Tauri (capability-scoped), never
   // in the headless server.
@@ -36,6 +49,12 @@ export const ACTION_IDS: ActionId[] = [
   "create-note",
   "trigger-scan",
   "learn-url",
+  "web-search",
+  "research-web",
+  "system-info",
+  "list-directory",
+  "read-file",
+  "write-file",
   "open-path",
   "open-url",
 ];

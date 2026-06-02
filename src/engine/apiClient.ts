@@ -40,6 +40,7 @@ import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
 import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionSpec } from "../../shared/actions";
 import type { IngestItem, IngestRunResult, IngestSourceId, IngestStatus } from "../../shared/ingest";
 import type { ModelPullState, ModelsView } from "../../shared/models";
+import type { WebResearchView, WebSearchOutcome } from "../../shared/web";
 import type { SwarmConsensusRound, SwarmNodeDescriptor, SwarmSnapshot, SwarmTask } from "../../shared/swarm";
 import type { TwinView, SimulationResult } from "../../shared/twin";
 import type {
@@ -681,6 +682,21 @@ export const apiClient = {
   // action (resolveAction → executeAction).
   ingestWeb(url: string): Promise<IngestRunResult & { title: string | null }> {
     return json(`/api/ingest/web`, { method: "POST", body: JSON.stringify({ url }) });
+  },
+
+  // ----- Hybrid web (FRIDAY online): local + internet side by side ----------
+  // Both egress and are gated by LOCAL_ONLY server-side — they return
+  // { ok:false, reason } (never a thrown error) when the brain is local-only.
+  // webResearch also READS the top pages into memory (learns them). The pet's
+  // command box reaches the same capability via the confirm-tier web-search /
+  // research-web actions; /api/ask fuses web results automatically when hybrid
+  // mode is on.
+  webSearch(query: string, limit?: number): Promise<WebSearchOutcome> {
+    return json(`/api/web/search`, { method: "POST", body: JSON.stringify({ query, limit }) });
+  },
+
+  webResearch(query: string, maxPages?: number): Promise<WebResearchView> {
+    return json(`/api/web/research`, { method: "POST", body: JSON.stringify({ query, maxPages }) });
   },
 
   // ----- Model Hub: download a chat model → wire it into the brain ----------

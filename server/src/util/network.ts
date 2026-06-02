@@ -88,9 +88,15 @@ export function isLocalHostname(hostname: string): boolean {
     }
     return false;
   }
-  // IPv6 link-local fe80::/10 and unique-local fc00::/7.
-  if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) {
-    return true;
+  // IPv6 link-local fe80::/10 and unique-local fc00::/7 — ONLY for actual IPv6
+  // literals. A URL-parsed IPv6 host always contains a colon; a DNS name never
+  // does. Without the `includes(":")` guard the bare `fc`/`fd` prefix matches
+  // wrongly classified remote domains (fdroid.org, fc-cdn.example.com, …) as
+  // local, letting them slip past the LOCAL_ONLY egress gate.
+  if (host.includes(":")) {
+    if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) {
+      return true;
+    }
   }
   return false;
 }

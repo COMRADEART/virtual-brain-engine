@@ -45,6 +45,7 @@ import { getCognitiveSwarm } from "../core/swarm.js";
 import { getImaginationEngine } from "../core/imagination.js";
 import { getPersistentOrganism } from "../core/organism.js";
 import type { SaliencyContext } from "../attention/saliency.js";
+import { hybridEnabled, shouldAugment, webResearch } from "../web/research.js";
 import { surfaceError } from "../util/diagnostics.js";
 
 // Phase 1 (blueprint) — assemble the per-query SaliencyContext from the
@@ -272,6 +273,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   let rankWarm = false;
   let rankAlpha = 0;
   let saliencyApplied = false;
+  let webAugmentNote = "";
   const embedder = getEmbedder(connector);
   if (embedder?.embed) {
     const embedFn = embedder.embed.bind(embedder);
@@ -286,7 +288,32 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       } catch {
         // keep lexical route
       }
-      const raw = vectorSearch(embedding, 8);
+      let raw = vectorSearch(embedding, 8);
+      // HYBRID: local memory + live web, SIDE BY SIDE. Only when the brain is
+      // explicitly online (LOCAL_ONLY=false + HYBRID_RESEARCH + mode≠off) AND the
+      // smart gate decides the web would help (thin/weak local memory, or a
+      // time-sensitive query). webResearch searches → reads the top pages INTO
+      // memory (so the brain LEARNS them, vector-retrievable next time) → returns
+      // them as fusable, citeable hits. Self-contained try/catch so a web failure
+      // NEVER costs us the local answer that's already in hand.
+      if (hybridEnabled()) {
+        try {
+          const decision = shouldAugment(req.prompt, raw);
+          if (decision.augment) {
+            const wr = await webResearch(req.prompt, { embed: embedFn, limit: CONFIG.webResearchMaxPages });
+            if (wr.hits.length > 0) {
+              raw = [...raw, ...wr.hits];
+            }
+            webAugmentNote = wr.ok
+              ? ` · web:${wr.provider}(+${wr.ingested} learned, ${wr.hits.length} fused)`
+              : ` · web:skipped(${wr.reason})`;
+          } else {
+            webAugmentNote = ` · web:off(${decision.reason})`;
+          }
+        } catch (err) {
+          surfaceError("pipeline.hybrid", err);
+        }
+      }
       // Assemble the saliency context cheaply. The organism singleton's
       // public getters are the seam; both calls are bounded (~80 row scan +
       // single SELECT). Wrap in try/catch so a misbehaving organism (e.g.
@@ -312,7 +339,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     filePath: hit.memory.filePath ?? undefined,
     score: hit.score,
   }));
-  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}`;
+  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${webAugmentNote}`;
   const memoryDetail = memoryError
     ? memoryError
     : embedder && embedder !== connector

@@ -7,10 +7,14 @@
 // EGRESS GUARANTEE. This is the only ingest source that leaves the machine, so
 // it sits behind the SAME gate as the remote-LLM connectors: when the server is
 // LOCAL_ONLY (the default), only loopback/RFC1918 targets are reachable —
-// `isLocalUrl()` rejects every internet host, so the fetch is NEVER issued and
-// "zero outbound traffic by default" holds exactly. Internet learning requires
-// the user to have already set LOCAL_ONLY=false (the same opt-out that enables
-// remote models), at which point the LocalityBadge already reads amber.
+// `isLocalUrl()` rejects every internet host, so no internet request is issued
+// and "zero outbound traffic by default" holds. Redirects are NOT an escape
+// hatch: under LOCAL_ONLY the fetch uses `redirect:"manual"` and refuses any
+// 30x, so a gate-passing local target cannot bounce the request off-box (the
+// gate validates the initial URL; manual-redirect closes the follow-up hop).
+// Internet learning requires the user to have already set LOCAL_ONLY=false (the
+// same opt-out that enables remote models), at which point the LocalityBadge
+// already reads amber.
 //
 // `fetchImpl` is injectable so the selfcheck can exercise every branch with
 // canned responses and ZERO real network.
@@ -204,7 +208,13 @@ export async function fetchUrlText(rawUrl: string, opts: WebFetchOptions = {}): 
   try {
     res = await doFetch(rawUrl, {
       signal: controller.signal,
-      redirect: "follow",
+      // Under LOCAL_ONLY we MUST NOT auto-follow redirects. The gate above
+      // validated only `rawUrl`; `redirect:"follow"` would transparently
+      // re-issue the request to a 30x `Location` — which can be a REMOTE host,
+      // egressing under LOCAL_ONLY=true. "manual" makes fetch SURFACE the 3xx
+      // (status 0 / type "opaqueredirect", or a visible 3xx) without contacting
+      // the target, so we refuse it below before a byte leaves the machine.
+      redirect: localOnly ? "manual" : "follow",
       headers: {
         "user-agent": "STAR-Brain/0.1 (+local personal memory)",
         accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
@@ -216,6 +226,16 @@ export async function fetchUrlText(rawUrl: string, opts: WebFetchOptions = {}): 
     return { ok: false, reason: `fetch failed: ${err instanceof Error ? err.message : String(err)}` };
   }
   clearTimeout(timer);
+
+  // Off-box redirect refusal (LOCAL_ONLY). The redirect target was NOT contacted
+  // (redirect:"manual"); refusing is correct rather than chasing the hop.
+  // CONSEQUENCE: under LOCAL_ONLY=true this refuses ALL 30x, including a same-box
+  // local→local redirect (e.g. a local service that 301s http→https). In practice
+  // callers reach a 200 directly; if a local fetch ever "breaks" under LOCAL_ONLY,
+  // this is why — set LOCAL_ONLY=false or point at the post-redirect URL.
+  if (localOnly && (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))) {
+    return { ok: false, reason: "blocked: off-box redirect refused under LOCAL_ONLY" };
+  }
 
   if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
 

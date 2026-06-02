@@ -24,6 +24,7 @@
     "ingest:selfcheck": "tsx scripts/ingest-selfcheck.ts",
     "learningloop:selfcheck": "tsx scripts/learningloop-selfcheck.ts",
     "models:selfcheck": "tsx scripts/models-selfcheck.ts",
+    "websearch:selfcheck": "tsx scripts/websearch-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },

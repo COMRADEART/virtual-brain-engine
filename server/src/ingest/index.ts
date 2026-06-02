@@ -13,8 +13,14 @@
 // ambient ingest uses "chunk" (1.0).
 
 import { createHash } from "node:crypto";
+import { CONFIG } from "../config.js";
 import { computeImportance } from "../memory/importanceScorer.js";
-import { hasMemoryWithContentHash, upsertMemoryPoint } from "../db/repositories/memory.js";
+import {
+  hasMemoryWithContentHash,
+  upsertMemoryPoint,
+  type MemoryUpsertInput,
+} from "../db/repositories/memory.js";
+import type { MemoryPoint } from "../../../shared/memory.js";
 import {
   insertIngestLog,
   isConsentEnabled,
@@ -68,15 +74,81 @@ export function ingestItems(sourceId: IngestSourceId, items: IngestItem[]): Inge
   return ingestExplicit(sourceId, items);
 }
 
+// Per-item governance — THE single choke point shared by both the sync and the
+// embedded async ingest paths (so the rule "exclude → redact → dedup →
+// importance" has exactly one implementation, never two that can drift). Returns
+// what to do with one item: skip, dedup (already stored), or persist the given
+// upsert input (sans embedding — callers add that). DEDUP reads the live DB, so
+// callers MUST persist an "ok" item before preparing the next one to catch
+// within-batch duplicates (the original interleaved behaviour).
+type Prepared =
+  | { status: "skip" }
+  | { status: "dedup" }
+  | { status: "ok"; redacted: boolean; upsert: MemoryUpsertInput };
+
+function prepareIngestItem(sourceId: IngestSourceId, item: IngestItem): Prepared {
+  // (2) EXCLUDE obviously-sensitive provenance, regardless of redaction.
+  if (isExcludedPath(item.sourcePath)) {
+    return { status: "skip" };
+  }
+  // (3) REDACT every field we will persist, BEFORE deriving anything from it.
+  const content = redactSecrets((item.text ?? "").trim());
+  if (content.text.length === 0) {
+    return { status: "skip" };
+  }
+  // Title is derived from the REDACTED text so a leading secret can't leak via
+  // the title even though the body was scrubbed.
+  const titleSource = item.title ? item.title : content.text.slice(0, 60);
+  const title = redactSecrets(titleSource);
+  const path = item.sourcePath ? redactSecrets(item.sourcePath) : { text: undefined as string | undefined, count: 0 };
+  const redacted = content.count + title.count + path.count > 0;
+
+  // (4) DEDUP on the POST-redaction text, so the hash invariant
+  // (content_hash == sha1(content)) holds and the secret never enters the hash.
+  const contentHash = sha1(content.text);
+  if (hasMemoryWithContentHash(contentHash)) {
+    return { status: "dedup" };
+  }
+
+  // (5) IMPORTANCE — reuse the pure scorer; ambient capture = "chunk" weight.
+  const importance = computeImportance({
+    baseImportance: 0.5,
+    ageDays: 0,
+    citationCount: 0,
+    projectBoost: 0,
+    sourceType: "chunk",
+    contentLength: content.text.length,
+  }).score;
+
+  return {
+    status: "ok",
+    redacted,
+    // (6) file_path stays null (this isn't a scanned file); provenance lives in
+    // metadata, already redacted. No arbitrary item fields are stored.
+    upsert: {
+      sourceType: "chunk",
+      filePath: null,
+      title: title.text,
+      content: content.text,
+      contentHash,
+      importance,
+      metadata: {
+        source: `ingest:${sourceId}`,
+        sourcePath: path.text,
+        occurredAt: item.occurredAt,
+      },
+    },
+  };
+}
+
 // EXPLICIT ingest: the SAME governance (exclude → redact → dedup → importance →
 // persist → audit) but WITHOUT the ambient-consent gate. Used by ingestItems
 // (after consent passes) and by deliberate, user-initiated paths — web learning
 // (fetchAndIngestUrl) — where the explicit command itself IS the consent.
 export function ingestExplicit(sourceId: IngestSourceId, items: IngestItem[]): IngestRunResult {
-  const received = items.length;
   const result: IngestRunResult = {
     sourceId,
-    received,
+    received: items.length,
     ingested: 0,
     deduped: 0,
     redacted: 0,
@@ -84,61 +156,76 @@ export function ingestExplicit(sourceId: IngestSourceId, items: IngestItem[]): I
   };
 
   for (const item of items) {
-    // (2) EXCLUDE obviously-sensitive provenance, regardless of redaction.
-    if (isExcludedPath(item.sourcePath)) {
+    const prep = prepareIngestItem(sourceId, item);
+    if (prep.status === "skip") {
       result.skipped += 1;
       continue;
     }
-
-    // (3) REDACT every field we will persist, BEFORE deriving anything from it.
-    const content = redactSecrets((item.text ?? "").trim());
-    if (content.text.length === 0) {
-      result.skipped += 1;
-      continue;
-    }
-    // Title is derived from the REDACTED text so a leading secret can't leak via
-    // the title even though the body was scrubbed.
-    const titleSource = item.title ? item.title : content.text.slice(0, 60);
-    const title = redactSecrets(titleSource);
-    const path = item.sourcePath ? redactSecrets(item.sourcePath) : { text: undefined as string | undefined, count: 0 };
-    if (content.count + title.count + path.count > 0) {
-      result.redacted += 1;
-    }
-
-    // (4) DEDUP on the POST-redaction text, so the hash invariant
-    // (content_hash == sha1(content)) holds and the secret never enters the hash.
-    const contentHash = sha1(content.text);
-    if (hasMemoryWithContentHash(contentHash)) {
+    if (prep.status === "dedup") {
       result.deduped += 1;
       continue;
     }
-
-    // (5) IMPORTANCE — reuse the pure scorer; ambient capture = "chunk" weight.
-    const importance = computeImportance({
-      baseImportance: 0.5,
-      ageDays: 0,
-      citationCount: 0,
-      projectBoost: 0,
-      sourceType: "chunk",
-      contentLength: content.text.length,
-    }).score;
-
-    // (6) PERSIST. file_path stays null (this isn't a scanned file); provenance
-    // lives in metadata, already redacted. No arbitrary item fields are stored.
+    if (prep.redacted) result.redacted += 1;
     try {
-      upsertMemoryPoint({
-        sourceType: "chunk",
-        filePath: null,
-        title: title.text,
-        content: content.text,
-        contentHash,
-        importance,
-        metadata: {
-          source: `ingest:${sourceId}`,
-          sourcePath: path.text,
-          occurredAt: item.occurredAt,
-        },
-      });
+      upsertMemoryPoint(prep.upsert);
+      result.ingested += 1;
+    } catch (err) {
+      surfaceError(`ingest:${sourceId}`, err);
+      result.skipped += 1;
+    }
+  }
+
+  logRun(result);
+  return result;
+}
+
+// EMBEDDED explicit ingest: identical governance to ingestExplicit, but each
+// persisted item is EMBEDDED (the embedding is computed on the REDACTED text, so
+// a secret never reaches the embedder either) and the persisted MemoryPoints are
+// returned. This is what makes "learn from the internet" first-class: web pages
+// land in the vector index and are retrievable by future /api/ask, not just by
+// keyword. A wrong-dim embedding is dropped (stored without a vector) rather than
+// thrown, exactly like the pipeline's learned-memory path.
+export async function ingestExplicitEmbedded(
+  sourceId: IngestSourceId,
+  items: IngestItem[],
+  embed?: (text: string) => Promise<number[]>,
+): Promise<IngestRunResult & { points: MemoryPoint[] }> {
+  const result: IngestRunResult & { points: MemoryPoint[] } = {
+    sourceId,
+    received: items.length,
+    ingested: 0,
+    deduped: 0,
+    redacted: 0,
+    skipped: 0,
+    points: [],
+  };
+
+  for (const item of items) {
+    const prep = prepareIngestItem(sourceId, item);
+    if (prep.status === "skip") {
+      result.skipped += 1;
+      continue;
+    }
+    if (prep.status === "dedup") {
+      result.deduped += 1;
+      continue;
+    }
+    if (prep.redacted) result.redacted += 1;
+
+    let embedding: number[] | undefined;
+    if (embed) {
+      try {
+        const vec = await embed(prep.upsert.content);
+        embedding = vec.length === CONFIG.embeddingDim ? vec : undefined;
+      } catch (err) {
+        // Embedding is best-effort — store the memory anyway (keyword-retrievable).
+        surfaceError(`ingest:${sourceId}:embed`, err);
+      }
+    }
+    try {
+      const point = upsertMemoryPoint({ ...prep.upsert, embedding });
+      result.points.push(point);
       result.ingested += 1;
     } catch (err) {
       surfaceError(`ingest:${sourceId}`, err);
@@ -156,9 +243,21 @@ export function ingestExplicit(sourceId: IngestSourceId, items: IngestItem[]): I
 // still audited (received=1, skipped=1, reason) so the trail records attempts.
 export interface WebIngestResult extends IngestRunResult {
   title: string | null;
+  // The persisted web memories, present only when an `embed` fn was supplied
+  // (the hybrid pipeline path). Each is a real, citeable MemoryPoint.
+  points?: MemoryPoint[];
+  // The page's final URL after redirects (for provenance / citations).
+  finalUrl?: string;
 }
 
-export async function fetchAndIngestUrl(rawUrl: string, opts: WebFetchOptions = {}): Promise<WebIngestResult> {
+// `embed` (optional): when supplied, fetched chunks are embedded + stored via the
+// embedded path so the page joins the vector index; the persisted points are
+// returned. Without it, the page is stored keyword-retrievable only (the existing
+// `learn-url` / POST /api/ingest/web behaviour — unchanged).
+export async function fetchAndIngestUrl(
+  rawUrl: string,
+  opts: WebFetchOptions & { embed?: (text: string) => Promise<number[]> } = {},
+): Promise<WebIngestResult> {
   const fetched = await fetchUrlText(rawUrl, opts);
   if (!fetched.ok) {
     const result: IngestRunResult = {
@@ -186,8 +285,12 @@ export async function fetchAndIngestUrl(rawUrl: string, opts: WebFetchOptions = 
     sourcePath: fetched.finalUrl,
     occurredAt,
   }));
+  if (opts.embed) {
+    const result = await ingestExplicitEmbedded("web", items, opts.embed);
+    return { ...result, title: fetched.title, finalUrl: fetched.finalUrl };
+  }
   const result = ingestExplicit("web", items);
-  return { ...result, title: fetched.title };
+  return { ...result, title: fetched.title, finalUrl: fetched.finalUrl };
 }
 
 export function ingestStatus(): IngestStatus {

@@ -46,6 +46,30 @@ export interface ServerConfig {
   // Enable the P2P Civilization subsystem. Binds port 8788; start/stop is
   // tracked in the shutdown handler.
   civilizationEnabled: boolean;
+  // --- Hybrid local+internet ("FRIDAY goes online") -------------------------
+  // Which web-search backend to use. "auto" picks: local SearXNG (if SEARXNG_URL
+  // set) → a keyed API (Brave/Tavily/Exa, if a key is in the env) → the no-key
+  // DuckDuckGo HTML fallback. Force one with "searxng"|"brave"|"tavily"|"exa"|
+  // "duckduckgo". Egress for every backend goes through the SAME LOCAL_ONLY gate
+  // as web fetching: a local SearXNG is reachable even under LOCAL_ONLY=true; a
+  // remote provider is reachable only when LOCAL_ONLY=false.
+  webSearchProvider: string;
+  // When (and whether) an /api/ask answer reaches the internet alongside local
+  // memory. "smart" (default) only searches when local memory is thin/weak or the
+  // query looks time-sensitive; "always" searches every query; "ondemand" keeps
+  // /api/ask purely local (the web is reached only via explicit research/learn
+  // actions); "off" disables hybrid augmentation entirely.
+  webSearchMode: "smart" | "always" | "ondemand" | "off";
+  // Base URL of a local SearXNG instance (e.g. http://127.0.0.1:8080). Empty =
+  // not configured. Used for local-first web search; must be loopback/RFC1918 to
+  // be reachable under LOCAL_ONLY=true.
+  searxngUrl: string;
+  // Master switch for the pipeline's local+web fusion. Even with LOCAL_ONLY=false
+  // and a provider configured, set HYBRID_RESEARCH=false to keep /api/ask local.
+  hybridResearch: boolean;
+  // How many search results a single hybrid augmentation / research action will
+  // fetch + ingest. Bounded to keep one query from pulling the whole web.
+  webResearchMaxPages: number;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -77,6 +101,11 @@ function bool(envKey: string, fallback: boolean): boolean {
   return fallback;
 }
 
+function oneOf<T extends string>(envKey: string, allowed: readonly T[], fallback: T): T {
+  const raw = (process.env[envKey] ?? "").trim().toLowerCase();
+  return (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
+}
+
 // data/brain.sqlite by default. Both are env-overridable so hermetic
 // selfchecks/integration tests can point openDb() at a throwaway DB instead of
 // the developer's real store (see scripts/memory-selfcheck.ts).
@@ -99,6 +128,11 @@ export const CONFIG: ServerConfig = {
   nvidiaChatModel: str("NVIDIA_CHAT_MODEL", "meta/llama-3.3-70b-instruct"),
   geminiChatModel: str("GEMINI_CHAT_MODEL", "gemini-2.0-flash"),
   civilizationEnabled: bool("CIVILIZATION_ENABLED", false),
+  webSearchProvider: str("WEB_SEARCH_PROVIDER", "auto").toLowerCase(),
+  webSearchMode: oneOf("WEB_SEARCH_MODE", ["smart", "always", "ondemand", "off"] as const, "smart"),
+  searxngUrl: str("SEARXNG_URL", "").replace(/\/$/, ""),
+  hybridResearch: bool("HYBRID_RESEARCH", true),
+  webResearchMaxPages: Math.min(10, Math.max(1, num("WEB_RESEARCH_MAX_PAGES", 3))),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;

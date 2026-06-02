@@ -37,6 +37,9 @@ const { cosineSimilarity, getStoredEmbedding, getStoredEmbeddings } = await impo
 const { updateClusterForMemory, getClustersForMemory } = await import(
   "../src/memory/semanticCluster.js"
 );
+const { buildAccessPattern, getRelatedMemories } = await import(
+  "../src/memory/accessPatternTracker.js"
+);
 const { CONFIG } = await import("../src/config.js");
 
 let failures = 0;
@@ -233,6 +236,46 @@ if (vecOn) {
   check("getStoredEmbedding(<any id>) -> null when vec unavailable",
     getStoredEmbedding(point.id) === null);
 }
+
+// ---------------------------------------------------------------------------
+// (5) getRelatedMemories param-count regression guard. The fix bound 6 params to
+//     the SQL's 6 placeholders; the prior 5-arg call ALWAYS threw "too few
+//     parameter values", which the function's own try/catch swallowed → it
+//     silently returned [] → related-memory consolidation/spreading-activation
+//     never fired (the exact "ships green" class CLAUDE.md warns about). Seed two
+//     co-accessed memories and assert the READ path actually returns the
+//     neighbour. With a regression the throw is swallowed and related=[] — so the
+//     second assertion (not the no-throw one) is what fails it.
+// ---------------------------------------------------------------------------
+const relA = upsertMemoryPoint({
+  sourceType: "manual",
+  content: "related-memory guard A",
+  contentHash: `relA-${Date.now()}`,
+  importance: 0.6,
+});
+const relB = upsertMemoryPoint({
+  sourceType: "manual",
+  content: "related-memory guard B",
+  contentHash: `relB-${Date.now()}`,
+  importance: 0.6,
+});
+// coaccess_count must reach MIN_COACCESS_COUNT (2) to pass the read filter.
+buildAccessPattern(relA.id, relB.id, db);
+buildAccessPattern(relA.id, relB.id, db);
+let relatedThrew = false;
+let related: string[] = [];
+try {
+  related = getRelatedMemories(relA.id);
+} catch (err) {
+  relatedThrew = true;
+  console.log("  getRelatedMemories threw:", err instanceof Error ? err.message : err);
+}
+check("getRelatedMemories(id) does not throw", !relatedThrew);
+check(
+  "getRelatedMemories(a) returns the co-accessed neighbour b (6-param fix)",
+  related.includes(relB.id),
+  `related=[${related.join(",")}]`,
+);
 
 console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -132,7 +132,7 @@ export function getRelatedMemories(memoryId: string, limit = 10): string[] {
   try {
     const db = openDb();
     const rows = db
-      .prepare<[string, string, number, string, string], { related_id: string; score: number }>(
+      .prepare<[string, string, string, number, string, string], { related_id: string; score: number }>(
         `SELECT related_id, score FROM (
            SELECT CASE WHEN memory_a = ? THEN memory_b ELSE memory_a END AS related_id,
                   coaccess_count AS score
@@ -147,7 +147,12 @@ export function getRelatedMemories(memoryId: string, limit = 10): string[] {
          ORDER BY score DESC
          LIMIT ${limit}`,
       )
-      .all(memoryId, memoryId, MIN_COACCESS_COUNT, memoryId, memoryId);
+      // Six bound params, in SQL order: the CASE-expr id, the two co-access
+      // predicate ids, the min-count, then the two relation-edge ids. The CASE
+      // placeholder was previously omitted, so this always threw "too few
+      // parameter values" and silently returned [] — related-memory
+      // consolidation/spreading-activation never actually fired.
+      .all(memoryId, memoryId, memoryId, MIN_COACCESS_COUNT, memoryId, memoryId);
     return rows.map((r) => r.related_id);
   } catch (err) {
     surfaceError("accessPatternTracker.getRelatedMemories", err);

@@ -13,14 +13,51 @@
 // two; today this keeps the user-command trail clean and queryable.
 
 import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import os from "node:os";
 import { getActionDef, isAllowlisted, validateArgs } from "./registry.js";
 import { consumeConfirmToken } from "./confirmTokens.js";
 import { insertActionLog } from "../db/repositories/actions.js";
 import { keywordSearch, listRecentMemories, upsertMemoryPoint } from "../db/repositories/memory.js";
 import { fetchAndIngestUrl } from "../ingest/index.js";
+import { isExcludedPath } from "../ingest/governance.js";
+import { webSearch } from "../web/search.js";
+import { webResearch } from "../web/research.js";
+import { getDefaultConnectorInstance } from "../connectors/registry.js";
 import { runScan, scanState } from "../scanner/indexer.js";
 import { surfaceError } from "../util/diagnostics.js";
 import type { ActionId, ActionResult, OsDirective } from "../../../shared/actions.js";
+
+// Filesystem actions touch the REAL machine (same box as the user), so they are
+// confirm-tier and guarded here: absolute paths only, and the governance
+// exclude-list (.env / .ssh / keys / credentials …) is refused outright — the
+// same locations ambient ingest will never capture.
+const MAX_READ_BYTES = 256 * 1024;
+
+// A Windows UNC / network path (`\\host\share`, `//host/share`, or the extended
+// `\\?\…` form). Node's fs.* on such a path opens an outbound SMB connection and
+// triggers an NTLM auth handshake — a non-fetch egress channel the LOCAL_ONLY
+// gate (which only sees fetch()) cannot cover. Reject before any fs call.
+function isUncPath(p: string): boolean {
+  return /^[\\/]{2}/.test(p);
+}
+
+// Validate + CANONICALIZE a path for the file actions. Returns the RESOLVED path
+// the caller MUST use (never the raw arg): checking one path and reading another
+// is a TOCTOU hole — `..` is normalized here so the exclude check and the actual
+// fs call agree. Rejects relative paths, UNC/network roots, and the governance
+// exclude-list. NOTE: resolve() normalizes `..` but does NOT resolve symlinks; a
+// junction pre-planted into a secret dir plus a user-confirmed action is an
+// accepted residual for this single-user, loopback-bound threat model.
+function guardFsPath(p: string): { ok: true; path: string } | { ok: false; error: string } {
+  if (!isAbsolute(p)) return { ok: false, error: "path must be absolute" };
+  if (isUncPath(p)) return { ok: false, error: "refused: UNC / network paths are not allowed" };
+  const resolved = resolve(p);
+  if (isUncPath(resolved)) return { ok: false, error: "refused: UNC / network paths are not allowed" };
+  if (isExcludedPath(resolved)) return { ok: false, error: "refused: sensitive location (.env/.ssh/keys/credentials)" };
+  return { ok: true, path: resolved };
+}
 
 export interface ExecuteInput {
   actionId: string; // untrusted — re-derived against the registry
@@ -97,6 +134,101 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
       summary: `Learned ${r.title ?? url} — ${r.ingested} new memor${r.ingested === 1 ? "y" : "ies"}${dup}`,
       data: r,
     };
+  },
+  // "Search the web" — live results, no persistence. Egress gated inside
+  // webSearch (LOCAL_ONLY); a blocked search returns a clear reason.
+  "web-search": async (args) => {
+    const query = String(args.query);
+    const limit = typeof args.limit === "number" ? args.limit : 5;
+    const r = await webSearch(query, { limit });
+    if (!r.ok) {
+      return { summary: `Couldn't search the web — ${r.reason}`, data: r };
+    }
+    return {
+      summary: `Found ${r.results.length} web result${r.results.length === 1 ? "" : "s"} for "${query}" (via ${r.provider})`,
+      data: r.results,
+    };
+  },
+  // "Research the web" — search + read the top pages INTO memory (learn). The
+  // default connector's embedder (if any) is passed so learned pages join the
+  // vector index. Egress gated inside webResearch.
+  "research-web": async (args) => {
+    const query = String(args.query);
+    const maxPages = typeof args.maxPages === "number" ? args.maxPages : undefined;
+    const conn = getDefaultConnectorInstance();
+    const embed = conn?.embed ? conn.embed.bind(conn) : undefined;
+    const r = await webResearch(query, { limit: maxPages, embed });
+    if (!r.ok) {
+      return { summary: `Couldn't research "${query}" — ${r.reason}`, data: r };
+    }
+    const dup = r.deduped > 0 ? `, ${r.deduped} already known` : "";
+    return {
+      summary: `Researched "${query}" via ${r.provider} — learned ${r.ingested} new memor${r.ingested === 1 ? "y" : "ies"}${dup} from ${r.results.length} page${r.results.length === 1 ? "" : "s"}`,
+      data: { provider: r.provider, ingested: r.ingested, deduped: r.deduped, results: r.results },
+    };
+  },
+  // --- System actions --------------------------------------------------------
+  "system-info": async () => {
+    const cpus = os.cpus();
+    const info: Record<string, unknown> = {
+      platform: os.platform(),
+      arch: os.arch(),
+      release: os.release(),
+      hostname: os.hostname(),
+      cpuModel: cpus[0]?.model ?? "unknown",
+      cpuCount: cpus.length,
+      totalMemGB: Number((os.totalmem() / 2 ** 30).toFixed(2)),
+      freeMemGB: Number((os.freemem() / 2 ** 30).toFixed(2)),
+      loadAvg: os.loadavg().map((n) => Number(n.toFixed(2))),
+      uptimeHours: Number((os.uptime() / 3600).toFixed(1)),
+      homedir: os.homedir(),
+    };
+    let diskNote = "";
+    try {
+      const statfs = (fs as unknown as { statfs?: (p: string) => Promise<{ blocks: number; bsize: number; bavail: number }> }).statfs;
+      if (statfs) {
+        const s = await statfs(os.homedir());
+        const totalGB = Number(((s.blocks * s.bsize) / 2 ** 30).toFixed(1));
+        const freeGB = Number(((s.bavail * s.bsize) / 2 ** 30).toFixed(1));
+        info.disk = { totalGB, freeGB };
+        diskNote = `, disk ${freeGB}/${totalGB} GB free`;
+      }
+    } catch {
+      /* disk stats are best-effort */
+    }
+    return {
+      summary: `${info.platform}/${info.arch}, ${info.cpuCount} CPUs, ${info.freeMemGB}/${info.totalMemGB} GB RAM free${diskNote}`,
+      data: info,
+    };
+  },
+  "list-directory": async (args) => {
+    const g = guardFsPath(String(args.path));
+    if (!g.ok) throw new Error(g.error);
+    const entries = await fs.readdir(g.path, { withFileTypes: true });
+    const items = entries.slice(0, 500).map((e) => ({
+      name: e.name,
+      type: e.isDirectory() ? "dir" : e.isFile() ? "file" : "other",
+    }));
+    return {
+      summary: `Listed ${items.length} item${items.length === 1 ? "" : "s"} in ${g.path}${entries.length > 500 ? " (truncated to 500)" : ""}`,
+      data: items,
+    };
+  },
+  "read-file": async (args) => {
+    const g = guardFsPath(String(args.path));
+    if (!g.ok) throw new Error(g.error);
+    const st = await fs.stat(g.path);
+    if (!st.isFile()) throw new Error("not a file");
+    if (st.size > MAX_READ_BYTES) throw new Error(`file too large (${st.size} bytes > ${MAX_READ_BYTES})`);
+    const text = await fs.readFile(g.path, "utf8");
+    return { summary: `Read ${g.path} (${text.length} chars)`, data: { path: g.path, content: text } };
+  },
+  "write-file": async (args) => {
+    const g = guardFsPath(String(args.path));
+    if (!g.ok) throw new Error(g.error);
+    const content = String(args.content);
+    await fs.writeFile(g.path, content, "utf8");
+    return { summary: `Wrote ${content.length} chars to ${g.path}`, data: { path: g.path, bytes: Buffer.byteLength(content, "utf8") } };
   },
 };
 

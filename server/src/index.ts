@@ -23,6 +23,7 @@ import { feedbackRouter } from "./routes/feedback.js";
 import { learningRouter } from "./routes/learning.js";
 import { actionsRouter } from "./routes/actions.js";
 import { ingestRouter } from "./routes/ingest.js";
+import { webRouter } from "./routes/web.js";
 import { modelsRouter } from "./routes/models.js";
 import { conversationsRouter } from "./routes/conversations.js";
 import { twinRouter } from "./routes/twin.js";
@@ -111,6 +112,7 @@ async function main(): Promise<void> {
   app.use("/api", learningRouter);
   app.use("/api", actionsRouter);
   app.use("/api", ingestRouter);
+  app.use("/api", webRouter);
   app.use("/api", modelsRouter);
   app.use("/api", conversationsRouter);
   app.use("/api", twinRouter);

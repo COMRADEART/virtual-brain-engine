@@ -436,7 +436,7 @@ export function PetWindow(): JSX.Element {
           >
             <input
               type="text"
-              placeholder="ask, command, or learn a url…"
+              placeholder="ask, command, or research the web…"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               autoFocus

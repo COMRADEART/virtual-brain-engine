@@ -58,18 +58,37 @@ export function redactSecrets(input: string): RedactionResult {
 // the safe hardcoded defaults.)
 const EXCLUDE_PATTERNS: RegExp[] = [
   /\.env(\.|$|\b)/i,
+  // SSH private keys (all common algorithms).
   /\bid_rsa\b/i,
-  /[\\/]\.ssh[\\/]/i,
-  /[\\/]\.aws[\\/]/i,
-  /[\\/]\.gnupg[\\/]/i,
+  /\bid_ed25519\b/i,
+  /\bid_ecdsa\b/i,
+  /\bid_dsa\b/i,
+  // Secret DIRECTORIES — match the dir itself (terminal component, no trailing
+  // separator required) AND anything inside it, so `list-directory <dir>` is
+  // refused too (the old `[\\/]\.ssh[\\/]` needed separators on BOTH sides and
+  // so let the directory itself through, exposing key filenames).
+  /[\\/]\.ssh($|[\\/])/i,
+  /[\\/]\.aws($|[\\/])/i,
+  /[\\/]\.gnupg($|[\\/])/i,
+  /[\\/]\.kube($|[\\/])/i,
+  /[\\/]\.docker($|[\\/])/i,
+  /[\\/]\.config[\\/]gh($|[\\/])/i,
+  /\.git-credentials\b/i,
   /\.pem$/i,
   /\.key$/i,
   /\.p12$/i,
   /\.pfx$/i,
+  /\.kdbx$/i,
+  /\.netrc\b/i,
   /\bcredentials?\b/i,
   /\bsecrets?\b/i,
   /\b\.npmrc\b/i,
   /\bwallet\b/i,
+  // Browser saved-password stores.
+  /[\\/]Login Data($|[\\/])/i,
+  /\blogins\.json\b/i,
+  // Windows SAM credential hive.
+  /[\\/]config[\\/]SAM$/i,
   /[\\/](?:KeePass|1Password|Bitwarden)[\\/]/i,
 ];
 
