@@ -119,6 +119,15 @@ export function getRoutedModel(route: RouteDecision): { profile: ModelProfile; m
   return { profile, model: pickModel(profile, getAssignments(), availableCache) };
 }
 
+// Resolve the assigned model for an EXPLICIT profile (used by the adaptive
+// controller, which may pick a profile other than profileForRoute(route)).
+// Returns null — i.e. the connector's default model — when that profile has no
+// assignment, so on a default setup (no per-profile model mapping) this is a
+// no-op exactly like getRoutedModel.
+export function modelForProfile(profile: ModelProfile): string | null {
+  return pickModel(profile, getAssignments(), availableCache);
+}
+
 // Test seam.
 export function _resetModelRoutingCaches(): void {
   assignmentsCache = null;

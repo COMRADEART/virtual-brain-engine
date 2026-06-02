@@ -49,6 +49,8 @@ const steps = [
   { label: "learningloop selfcheck", args: ["--prefix", "server", "run", "learningloop:selfcheck"] },
   { label: "models selfcheck",    args: ["--prefix", "server", "run", "models:selfcheck"] },
   { label: "websearch selfcheck",  args: ["--prefix", "server", "run", "websearch:selfcheck"] },
+  { label: "rag selfcheck",        args: ["--prefix", "server", "run", "rag:selfcheck"] },
+  { label: "rl selfcheck",         args: ["--prefix", "server", "run", "rl:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline

@@ -32,7 +32,14 @@ import {
 import { applyMemoryRetrievalBoost, onConversationMessage, processNewMemory } from "../memory/consolidationEngine.js";
 import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
 import { getRegionPrototypes, routeQuery, type RouteDecision } from "./router.js";
-import { getRoutedModel } from "./modelRouting.js";
+import { profileForRoute, modelForProfile } from "./modelRouting.js";
+import {
+  decide as controllerDecide,
+  reward as applyControllerReward,
+  buildRetrievalContext,
+  computeControllerOutcome,
+} from "./adaptiveController.js";
+import type { ControllerDecision, RetrievalContext } from "../../../shared/adaptive.js";
 import { recordRankTrainingLog } from "../db/repositories/feedback.js";
 import {
   ERROR_SYSTEM,
@@ -46,6 +53,10 @@ import { getImaginationEngine } from "../core/imagination.js";
 import { getPersistentOrganism } from "../core/organism.js";
 import type { SaliencyContext } from "../attention/saliency.js";
 import { hybridEnabled, shouldAugment, webResearch } from "../web/research.js";
+import { expandQuery, reciprocalRankFusion } from "./queryExpansion.js";
+import { applyReranker, trainReranker } from "./rerankerModel.js";
+import { loadRerankerState, saveRerankerState } from "../db/repositories/adaptive.js";
+import { DEFAULT_RETRIEVAL_K, RETRIEVAL_K_ARMS } from "../../../shared/adaptive.js";
 import { surfaceError } from "../util/diagnostics.js";
 
 // Phase 1 (blueprint) — assemble the per-query SaliencyContext from the
@@ -274,6 +285,12 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   let rankAlpha = 0;
   let saliencyApplied = false;
   let webAugmentNote = "";
+  let multiQueryNote = "";
+  // RL adaptive controller state for this run (in-memory; decision in the memory
+  // step → reward in the learning step). null whenever the controller is off.
+  let controllerDecision: ControllerDecision | null = null;
+  let controllerCtx: RetrievalContext | null = null;
+  const webHitIds = new Set<string>(); // ids of FUSED WEB hits, for the augment reward
   const embedder = getEmbedder(connector);
   if (embedder?.embed) {
     const embedFn = embedder.embed.bind(embedder);
@@ -288,31 +305,82 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       } catch {
         // keep lexical route
       }
-      let raw = vectorSearch(embedding, 8);
-      // HYBRID: local memory + live web, SIDE BY SIDE. Only when the brain is
-      // explicitly online (LOCAL_ONLY=false + HYBRID_RESEARCH + mode≠off) AND the
-      // smart gate decides the web would help (thin/weak local memory, or a
-      // time-sensitive query). webResearch searches → reads the top pages INTO
-      // memory (so the brain LEARNS them, vector-retrievable next time) → returns
-      // them as fusable, citeable hits. Self-contained try/catch so a web failure
-      // NEVER costs us the local answer that's already in hand.
-      if (hybridEnabled()) {
+      // Retrieve a baseline candidate set. When the adaptive controller is on we
+      // pull the widest arm so the retrievalK slot can SLICE down to its choice
+      // from a single fetch (no re-query); otherwise the historical default.
+      const controllerOn = CONFIG.adaptiveController;
+      const baseK = controllerOn ? Math.max(...RETRIEVAL_K_ARMS) : DEFAULT_RETRIEVAL_K;
+      let raw = vectorSearch(embedding, baseK);
+
+      // The heuristic baselines (what the pipeline would do without the
+      // controller). These are ALSO the warm-start the controller falls back to.
+      const hybridOn = hybridEnabled();
+      const heuristicAugment = hybridOn && shouldAugment(req.prompt, raw).augment;
+      const heuristicMultiQuery =
+        CONFIG.multiQueryRag && raw.length > 0 && (raw.length < 3 || (raw[0]?.score ?? 0) < 0.45);
+
+      // RL CONTROLLER (opt-in). Decides augment / retrieval-k / multi-query /
+      // model-profile from the bandit (warm-started at the heuristics, so a cold
+      // brain behaves identically). Failure-isolated → heuristics on any error.
+      let wantAugment = heuristicAugment;
+      let wantMultiQuery = heuristicMultiQuery;
+      if (controllerOn) {
+        controllerCtx = buildRetrievalContext(req.prompt, raw, hybridOn);
+        controllerDecision = controllerDecide(controllerCtx, {
+          augment: heuristicAugment,
+          retrievalK: DEFAULT_RETRIEVAL_K,
+          multiQuery: heuristicMultiQuery,
+          modelProfile: profileForRoute(route),
+        });
+        raw = raw.slice(0, controllerDecision.retrievalK);
+        wantAugment = controllerDecision.augmentWeb;
+        wantMultiQuery = controllerDecision.multiQuery;
+      }
+
+      // MULTI-QUERY RAG: rephrase the query a few ways, retrieve each, and
+      // Reciprocal-Rank-Fuse the union for higher recall. Failure-isolated so it
+      // can only ADD recall, never break retrieval.
+      if (wantMultiQuery && raw.length > 0) {
         try {
-          const decision = shouldAugment(req.prompt, raw);
-          if (decision.augment) {
-            const wr = await webResearch(req.prompt, { embed: embedFn, limit: CONFIG.webResearchMaxPages });
-            if (wr.hits.length > 0) {
-              raw = [...raw, ...wr.hits];
+          const variants = await expandQuery(
+            req.prompt,
+            (sys, user) => connector.send(user, { system: sys, temperature: 0.3 }),
+            { variants: CONFIG.multiQueryVariants },
+          );
+          if (variants.length > 1) {
+            const lists: VectorSearchHit[][] = [raw];
+            for (const v of variants.slice(1)) {
+              lists.push(vectorSearch(await embedFn(v), baseK));
             }
-            webAugmentNote = wr.ok
-              ? ` · web:${wr.provider}(+${wr.ingested} learned, ${wr.hits.length} fused)`
-              : ` · web:skipped(${wr.reason})`;
-          } else {
-            webAugmentNote = ` · web:off(${decision.reason})`;
+            raw = reciprocalRankFusion(lists, { limit: controllerDecision?.retrievalK ?? DEFAULT_RETRIEVAL_K });
+            multiQueryNote = ` · mq:+${variants.length - 1}q`;
           }
+        } catch (err) {
+          surfaceError("pipeline.multiQuery", err);
+        }
+      }
+      // HYBRID: local memory + live web, SIDE BY SIDE. The web is reached only
+      // when the brain is explicitly online (hybridOn = LOCAL_ONLY=false +
+      // HYBRID_RESEARCH + mode≠off) AND the decision (controller or heuristic)
+      // says to augment — so the egress gate is never bypassed. webResearch reads
+      // the top pages INTO memory (LEARNED, vector-retrievable next time) and
+      // returns them as fusable, citeable hits. Self-contained try/catch so a web
+      // failure NEVER costs the local answer already in hand.
+      if (hybridOn && wantAugment) {
+        try {
+          const wr = await webResearch(req.prompt, { embed: embedFn, limit: CONFIG.webResearchMaxPages });
+          if (wr.hits.length > 0) {
+            for (const h of wr.hits) webHitIds.add(h.memory.id);
+            raw = [...raw, ...wr.hits];
+          }
+          webAugmentNote = wr.ok
+            ? ` · web:${wr.provider}(+${wr.ingested} learned, ${wr.hits.length} fused)`
+            : ` · web:skipped(${wr.reason})`;
         } catch (err) {
           surfaceError("pipeline.hybrid", err);
         }
+      } else if (hybridOn) {
+        webAugmentNote = " · web:off(decision)";
       }
       // Assemble the saliency context cheaply. The organism singleton's
       // public getters are the seam; both calls are bounded (~80 row scan +
@@ -321,7 +389,11 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // refinement, not a critical-path dependency.
       const saliencyCtx = buildSaliencyContext(req.prompt);
       const r = rankHits(raw, saliencyCtx ?? undefined);
-      memoryHits = r.ranked;
+      // Lexical query-aware rerank of the top-K (ML). NO-OP until it has trained
+      // (returns r.ranked unchanged), so enabling it never regresses a cold brain.
+      memoryHits = CONFIG.rerankerEnabled
+        ? applyReranker(req.prompt, r.ranked, loadRerankerState())
+        : r.ranked;
       rankFeatures = r.featuresById;
       rankWarm = r.warm;
       rankAlpha = r.alpha;
@@ -339,7 +411,10 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     filePath: hit.memory.filePath ?? undefined,
     score: hit.score,
   }));
-  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${webAugmentNote}`;
+  const controllerNote = controllerDecision
+    ? ` · rl(k=${controllerDecision.retrievalK},${Object.values(controllerDecision.source).includes("policy") ? "policy" : "warmup"})`
+    : "";
+  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${multiQueryNote}${webAugmentNote}${controllerNote}`;
   const memoryDetail = memoryError
     ? memoryError
     : embedder && embedder !== connector
@@ -355,6 +430,13 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   if (memoryHits.length > 0) {
     applyMemoryRetrievalBoost(memoryHits.map((h) => h.memory.id));
   }
+
+  // Per-cortex model routing (MoE). The controller's chosen profile when on, else
+  // the heuristic route profile. A profile with no assigned model resolves to the
+  // connector default (undefined), so a setup without per-profile mappings is a
+  // no-op — wiring this finally makes the Model Hub assignments take effect.
+  const chosenProfile = controllerDecision?.modelProfile ?? profileForRoute(route);
+  const routedModelName = modelForProfile(chosenProfile) ?? undefined;
 
   // 3. REASONING
   // Flash the routed expert cortices (deduped with reasoning-cortex) instead of
@@ -392,6 +474,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
         connector,
         REASONING_SYSTEM,
         `Question:\n${req.prompt}\n\nMemory snippets:\n${memoryList || "(empty)"}`,
+        routedModelName,
       );
       if (parsed) {
         reasoning = {
@@ -496,6 +579,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     for await (const token of connector.stream(responsePrompt, {
       system: responseSystem,
       temperature: 0.3,
+      model: routedModelName,
     })) {
       assembled += token;
       emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: token }), emit);
@@ -592,6 +676,26 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // Online ranker update from this query's implicit feedback. Independent of
   // persistence success; no-op when there were no citations.
   trainFromCitations(rankFeatures, citedIds);
+  // Online lexical-reranker update on the SAME dense citation signal (cited=1 /
+  // shown-but-not-cited=0). Best-effort; no-op when there were no citations.
+  if (CONFIG.rerankerEnabled) {
+    try {
+      saveRerankerState(trainReranker(req.prompt, memoryHits, citedIds, loadRerankerState()));
+    } catch (err) {
+      surfaceError("pipeline.trainReranker", err);
+    }
+  }
+  // RL controller reward — the DENSE citation signal (NOT scarce 👍/👎). Coverage
+  // is the fraction of the hits the LLM actually read that earned a citation;
+  // webCitationUsed sharpens the augment slot. Only when the controller decided
+  // this run (so it's a strict no-op when ADAPTIVE_CONTROLLER is off).
+  if (CONFIG.adaptiveController && controllerDecision && controllerCtx) {
+    applyControllerReward(
+      controllerDecision,
+      controllerCtx,
+      computeControllerOutcome(citedIds, promptHits.length, webHitIds),
+    );
+  }
   completePipelineRun(runId, finalAnswer);
   // Background consolidation (replay, novelty, prefetch). Best-effort and runs
   // after the answer has streamed, so float it with a .catch() — an error here

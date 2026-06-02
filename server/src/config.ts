@@ -70,6 +70,30 @@ export interface ServerConfig {
   // How many search results a single hybrid augmentation / research action will
   // fetch + ingest. Bounded to keep one query from pulling the whole web.
   webResearchMaxPages: number;
+  // --- RL-adaptive RAG (ML/RL/RAG layer) ------------------------------------
+  // Multi-query RAG: when local memory is thin/weak, rephrase the query a few
+  // ways, retrieve each, and Reciprocal-Rank-Fuse the union for higher recall.
+  // ON by default but trigger-gated (it costs one extra LLM round-trip, only
+  // spent when local memory looks weak). Set MULTI_QUERY_RAG=false to disable.
+  multiQueryRag: boolean;
+  // How many ALTERNATIVE phrasings to generate (1-3); total queries = this + 1.
+  multiQueryVariants: number;
+  // Learned LEXICAL query-aware reranker that reorders the top-K after the LTR
+  // ranker (term overlap / title match — features the doc-side LTR can't see).
+  // Trains online on the citation signal; ON by default, degrades to a no-op
+  // until it has trained. Set RERANKER=false to disable.
+  rerankerEnabled: boolean;
+  // RL adaptive controller: a contextual bandit that learns the augment /
+  // retrieval-k / multi-query / model-routing decisions from the dense citation
+  // reward. OFF by default — it warm-starts at the heuristics and only helps once
+  // feedback accrues, so it's opt-in. Flip with ADAPTIVE_CONTROLLER=true.
+  adaptiveController: boolean;
+  // Per-SLOT real-observation count below which a bandit slot returns EXACTLY the
+  // heuristic decision (no exploration) — the no-regression floor. (Gated on the
+  // slot's total pulls: during warm-up the slot always returns the heuristic arm,
+  // so all observations accrue to it; a per-ARM gate would deadlock the non-
+  // heuristic arms, which get zero pulls until the slot is warm.)
+  banditWarmAt: number;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -133,6 +157,11 @@ export const CONFIG: ServerConfig = {
   searxngUrl: str("SEARXNG_URL", "").replace(/\/$/, ""),
   hybridResearch: bool("HYBRID_RESEARCH", true),
   webResearchMaxPages: Math.min(10, Math.max(1, num("WEB_RESEARCH_MAX_PAGES", 3))),
+  multiQueryRag: bool("MULTI_QUERY_RAG", true),
+  multiQueryVariants: Math.min(3, Math.max(1, num("MULTI_QUERY_VARIANTS", 2))),
+  rerankerEnabled: bool("RERANKER", true),
+  adaptiveController: bool("ADAPTIVE_CONTROLLER", false),
+  banditWarmAt: Math.max(1, num("BANDIT_WARM_AT", 30)),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;
