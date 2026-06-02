@@ -641,6 +641,59 @@ CREATE TABLE IF NOT EXISTS causal_links (
 CREATE INDEX IF NOT EXISTS idx_causal_links_cause  ON causal_links(cause_class);
 CREATE INDEX IF NOT EXISTS idx_causal_links_effect ON causal_links(effect_class);
 
+-- Permissioned command/action layer (Phase 3). Audit trail of every execute
+-- attempt that passed the allowlist + arg-validation + confirm gates. `confirmed`
+-- = a valid plan-bound token was presented (NOT "a human approved"). Distinct
+-- from agent_audit, which is the autonomous-agent allow-all trail.
+CREATE TABLE IF NOT EXISTS action_log (
+  id          TEXT PRIMARY KEY,
+  action_id   TEXT NOT NULL,
+  args        TEXT NOT NULL DEFAULT '{}',
+  risk        TEXT NOT NULL,
+  confirmed   INTEGER NOT NULL DEFAULT 0,
+  ok          INTEGER NOT NULL DEFAULT 0,
+  summary     TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_log_time   ON action_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_action_log_action ON action_log(action_id, created_at DESC);
+
+-- Computer-wide memory ingestion (Phase 2). Per-source consent is OPT-IN: a
+-- source with no row here is treated as disabled, so nothing is captured until
+-- the user explicitly turns it on.
+CREATE TABLE IF NOT EXISTS ingest_consent (
+  source_id   TEXT PRIMARY KEY,
+  enabled     INTEGER NOT NULL DEFAULT 0,
+  updated_at  TEXT NOT NULL
+);
+
+-- Per-run audit of ingestion governance (received/ingested/deduped/redacted/
+-- skipped). `redacted` is backstop telemetry, NOT a safety proof.
+CREATE TABLE IF NOT EXISTS ingest_log (
+  id          TEXT PRIMARY KEY,
+  source_id   TEXT NOT NULL,
+  received    INTEGER NOT NULL DEFAULT 0,
+  ingested    INTEGER NOT NULL DEFAULT 0,
+  deduped     INTEGER NOT NULL DEFAULT 0,
+  redacted    INTEGER NOT NULL DEFAULT 0,
+  skipped     INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_log_time   ON ingest_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ingest_log_source ON ingest_log(source_id, created_at DESC);
+
+-- Phase 4 — usefulness verdicts on the new surfaces (memory/action). A memory
+-- verdict nudges that memory's importance; both feed the Learning Lab usage
+-- summary. Separate from answer_feedback (which is keyed to a pipeline run).
+CREATE TABLE IF NOT EXISTS usage_feedback (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,        -- 'memory' | 'action'
+  target_id   TEXT NOT NULL,
+  rating      INTEGER NOT NULL,     -- +1 useful / -1 not
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_feedback_kind ON usage_feedback(kind, created_at DESC);
+
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INTEGER PRIMARY KEY,

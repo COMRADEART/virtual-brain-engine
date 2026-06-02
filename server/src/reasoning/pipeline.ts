@@ -32,6 +32,7 @@ import {
 import { applyMemoryRetrievalBoost, onConversationMessage, processNewMemory } from "../memory/consolidationEngine.js";
 import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
 import { getRegionPrototypes, routeQuery, type RouteDecision } from "./router.js";
+import { getRoutedModel } from "./modelRouting.js";
 import { recordRankTrainingLog } from "../db/repositories/feedback.js";
 import {
   ERROR_SYSTEM,
@@ -172,8 +173,9 @@ async function chatJson<T>(
   connector: Connector,
   system: string,
   prompt: string,
+  model?: string,
 ): Promise<T | null> {
-  const text = await connector.send(prompt, { system, format: "json", temperature: 0.2 });
+  const text = await connector.send(prompt, { system, format: "json", temperature: 0.2, model });
   return safeJson<T>(text);
 }
 

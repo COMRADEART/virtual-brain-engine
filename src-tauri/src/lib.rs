@@ -1,7 +1,9 @@
+mod collectors;
 mod commands;
 mod database;
 mod file_watcher;
 mod llm_probe;
+mod os_actions;
 mod phase2;
 mod screen_capture;
 mod system_monitor;
@@ -9,11 +11,13 @@ mod system_monitor;
 use commands::{
     add_memory_point, get_app_state, get_git_activity, get_project_context,
     get_project_stats, get_recent_activity, get_recent_memories, get_system_metrics,
-    record_brain_activity, save_project_context, show_main_window, start_monitoring,
-    stop_monitoring, toggle_brain_activity, toggle_system_metrics, unwatch_project,
-    watch_project, AppState,
+    pet_set_size, pet_start_drag, record_brain_activity, save_project_context, show_main_window,
+    start_monitoring, stop_monitoring, toggle_brain_activity, toggle_system_metrics,
+    unwatch_project, watch_project, AppState,
 };
+use collectors::collect_clipboard;
 use llm_probe::probe_local_llms;
+use os_actions::{os_open_path, os_open_url};
 use screen_capture::{
     capture_region, capture_screen, delete_screen_capture, get_monitors,
     get_screen_capture_path, get_vision_config, list_screen_captures, save_vision_config,
@@ -40,6 +44,7 @@ use tauri::{
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -134,6 +139,11 @@ pub fn run() {
             toggle_system_metrics,
             toggle_brain_activity,
             show_main_window,
+            pet_start_drag,
+            pet_set_size,
+            os_open_path,
+            os_open_url,
+            collect_clipboard,
             probe_local_llms,
             phase2_status,
             semantic_memory_ingest,

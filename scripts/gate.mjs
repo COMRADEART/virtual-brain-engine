@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Phase 0 — green-build composite gate.
 //
-// Runs frontend typecheck, server typecheck, the eleven selfchecks
-// (ranker, agents, twin, memory, perception, attention, graph, worldmodel,
-// learning, civilization, evolution), the frontend unit tests, and a server
+// Runs frontend typecheck, server typecheck, the selfchecks
+// (router, ranker, agents, twin, memory, perception, attention, graph,
+// worldmodel, learning, civilization, evolution, actions, ingest,
+// learningloop, models), the frontend unit tests, and a server
 // smoke that BOOTS the real server and
 // sweeps every GET endpoint (the runtime check the gate used to lack — it is
 // how a dead-on-boot server shipped green). All run as ISOLATED
@@ -43,6 +44,10 @@ const steps = [
   { label: "learning selfcheck",   args: ["--prefix", "server", "run", "learning:selfcheck"] },
   { label: "civilization selfcheck", args: ["--prefix", "server", "run", "civilization:selfcheck"] },
   { label: "evolution selfcheck", args: ["--prefix", "server", "run", "evolution:selfcheck"] },
+  { label: "actions selfcheck",   args: ["--prefix", "server", "run", "actions:selfcheck"] },
+  { label: "ingest selfcheck",    args: ["--prefix", "server", "run", "ingest:selfcheck"] },
+  { label: "learningloop selfcheck", args: ["--prefix", "server", "run", "learningloop:selfcheck"] },
+  { label: "models selfcheck",    args: ["--prefix", "server", "run", "models:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline
@@ -57,6 +62,9 @@ const steps = [
 // when no chat model is reachable, so it's safe even on a connector-less CI box.
 if (process.env.GATE_ASK_SMOKE === "1") {
   steps.push({ label: "ask smoke (live /api/ask)", args: ["run", "ask:smoke"] });
+  steps.push({ label: "actions smoke (live /api/actions/resolve)", args: ["run", "actions:smoke"] });
+  steps.push({ label: "models smoke (live ollama pull)", args: ["run", "models:smoke"] });
+  steps.push({ label: "web smoke (egress gate + live fetch)", args: ["run", "web:smoke"] });
 }
 
 if (!existsSync(resolve(repoRoot, "package.json"))) {

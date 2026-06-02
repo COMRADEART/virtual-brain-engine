@@ -37,6 +37,9 @@ import type {
 } from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
 import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
+import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionSpec } from "../../shared/actions";
+import type { IngestItem, IngestRunResult, IngestSourceId, IngestStatus } from "../../shared/ingest";
+import type { ModelPullState, ModelsView } from "../../shared/models";
 import type { SwarmConsensusRound, SwarmNodeDescriptor, SwarmSnapshot, SwarmTask } from "../../shared/swarm";
 import type { TwinView, SimulationResult } from "../../shared/twin";
 import type {
@@ -603,9 +606,20 @@ export const apiClient = {
   },
 
   // Learning Lab snapshot: ranker warm-up + labelled weights + loss history +
-  // feedback stats + from-scratch LLM trainer status.
+  // feedback stats + from-scratch LLM trainer status + usage summary (Phase 4).
   learningStatus(): Promise<LearningStatus> {
     return json<LearningStatus>(`/api/learning/status`);
+  },
+
+  // Phase 4 — usefulness verdicts. A memory 👍/👎 nudges its importance (a live
+  // ranker feature → shapes future retrieval); an action verdict is recorded as
+  // resolver-training data. Surfaces (pet, command results) call these.
+  sendMemoryFeedback(memoryId: string, rating: 1 | -1): Promise<{ ok: boolean; importance: number }> {
+    return json(`/api/feedback/memory`, { method: "POST", body: JSON.stringify({ memoryId, rating }) });
+  },
+
+  sendActionFeedback(actionId: string, rating: 1 | -1): Promise<{ ok: boolean }> {
+    return json(`/api/feedback/action`, { method: "POST", body: JSON.stringify({ actionId, rating }) });
   },
 
   // Kick the from-scratch PyTorch trainer (Phase C) on the worker sidecar.
@@ -618,6 +632,75 @@ export const apiClient = {
 
   learningLlmStatus(): Promise<LlmTrainerStatus> {
     return json<LlmTrainerStatus>(`/api/learning/llm/status`);
+  },
+
+  // ----- Phase 3 command/action layer --------------------------------------
+  // Allowlisted action specs (for the UI), NL→plan resolution, gated execution,
+  // and the audit log. resolveAction NEVER executes; executeAction enforces the
+  // confirm-token gate server-side (carry the token from resolveAction for
+  // confirm-tier plans).
+  listActions(): Promise<{ actions: ActionSpec[] }> {
+    return json(`/api/actions`);
+  },
+
+  resolveAction(prompt: string): Promise<ActionResolveResult> {
+    return json(`/api/actions/resolve`, { method: "POST", body: JSON.stringify({ prompt }) });
+  },
+
+  executeAction(input: {
+    actionId: string;
+    args?: Record<string, unknown>;
+    confirmToken?: string;
+  }): Promise<ActionResult> {
+    return json(`/api/actions/execute`, { method: "POST", body: JSON.stringify(input) });
+  },
+
+  actionLog(limit = 50): Promise<{ log: ActionLogEntry[] }> {
+    return json(`/api/actions/log?limit=${limit}`);
+  },
+
+  // ----- Phase 2 computer-wide memory ingestion ----------------------------
+  // Sources are opt-in (default OFF). Governance (consent/exclude/redact/dedup/
+  // audit) is enforced server-side; collectors just push items here.
+  ingestStatus(): Promise<IngestStatus> {
+    return json<IngestStatus>(`/api/ingest/status`);
+  },
+
+  ingestSetConsent(sourceId: IngestSourceId, enabled: boolean): Promise<{ ok: boolean; status: IngestStatus }> {
+    return json(`/api/ingest/consent`, { method: "POST", body: JSON.stringify({ sourceId, enabled }) });
+  },
+
+  ingestPush(sourceId: IngestSourceId, items: IngestItem[]): Promise<IngestRunResult> {
+    return json(`/api/ingest/push`, { method: "POST", body: JSON.stringify({ sourceId, items }) });
+  },
+
+  // "Learn from the internet": fetch a URL server-side and persist its readable
+  // text into memory. Egress is gated by LOCAL_ONLY on the server — when the
+  // brain is local-only this returns a `reason` instead of fetching. The pet's
+  // command box reaches the same capability via the confirm-tier `learn-url`
+  // action (resolveAction → executeAction).
+  ingestWeb(url: string): Promise<IngestRunResult & { title: string | null }> {
+    return json(`/api/ingest/web`, { method: "POST", body: JSON.stringify({ url }) });
+  },
+
+  // ----- Model Hub: download a chat model → wire it into the brain ----------
+  // Pull progress also streams over the bus (type "model-pull") and flashes the
+  // model-hub cortex; pull/status is the poll fallback. select sets the CHAT
+  // model only (embeddings are fixed).
+  models(): Promise<ModelsView> {
+    return json<ModelsView>(`/api/models`);
+  },
+
+  pullModel(name: string): Promise<{ ok: boolean; pull: ModelPullState }> {
+    return json(`/api/models/pull`, { method: "POST", body: JSON.stringify({ name }) });
+  },
+
+  modelPullStatus(): Promise<ModelPullState> {
+    return json<ModelPullState>(`/api/models/pull/status`);
+  },
+
+  selectModel(name: string): Promise<{ ok: boolean }> {
+    return json(`/api/models/select`, { method: "POST", body: JSON.stringify({ name }) });
   },
 
   // POST /api/ask returns SSE. We parse "event:" + "data:" blocks and yield

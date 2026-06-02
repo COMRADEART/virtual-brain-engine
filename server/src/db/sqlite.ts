@@ -169,6 +169,84 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Phase 3 (command/action layer) — audit trail for executed actions. The
+    // schema CREATE IF NOT EXISTS handles fresh DBs; this run() creates the
+    // table on a DB that predates it.
+    id: 5,
+    name: "0005-action-log",
+    run: (db) => {
+      if (!tableExists(db, "action_log")) {
+        db.exec(`
+          CREATE TABLE action_log (
+            id          TEXT PRIMARY KEY,
+            action_id   TEXT NOT NULL,
+            args        TEXT NOT NULL DEFAULT '{}',
+            risk        TEXT NOT NULL,
+            confirmed   INTEGER NOT NULL DEFAULT 0,
+            ok          INTEGER NOT NULL DEFAULT 0,
+            summary     TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_action_log_time   ON action_log(created_at DESC)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_action_log_action ON action_log(action_id, created_at DESC)");
+      }
+    },
+  },
+  {
+    // Phase 2 (computer-wide ingestion) — consent (opt-in) + run audit tables.
+    // Schema CREATE IF NOT EXISTS covers fresh DBs; this creates them on a DB
+    // that predates the feature.
+    id: 6,
+    name: "0006-ingest-tables",
+    run: (db) => {
+      if (!tableExists(db, "ingest_consent")) {
+        db.exec(`
+          CREATE TABLE ingest_consent (
+            source_id   TEXT PRIMARY KEY,
+            enabled     INTEGER NOT NULL DEFAULT 0,
+            updated_at  TEXT NOT NULL
+          );
+        `);
+      }
+      if (!tableExists(db, "ingest_log")) {
+        db.exec(`
+          CREATE TABLE ingest_log (
+            id          TEXT PRIMARY KEY,
+            source_id   TEXT NOT NULL,
+            received    INTEGER NOT NULL DEFAULT 0,
+            ingested    INTEGER NOT NULL DEFAULT 0,
+            deduped     INTEGER NOT NULL DEFAULT 0,
+            redacted    INTEGER NOT NULL DEFAULT 0,
+            skipped     INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_ingest_log_time   ON ingest_log(created_at DESC)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_ingest_log_source ON ingest_log(source_id, created_at DESC)");
+      }
+    },
+  },
+  {
+    // Phase 4 (learning from use) — usefulness verdicts on memories/actions.
+    id: 7,
+    name: "0007-usage-feedback",
+    run: (db) => {
+      if (!tableExists(db, "usage_feedback")) {
+        db.exec(`
+          CREATE TABLE usage_feedback (
+            id          TEXT PRIMARY KEY,
+            kind        TEXT NOT NULL,
+            target_id   TEXT NOT NULL,
+            rating      INTEGER NOT NULL,
+            created_at  TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_usage_feedback_kind ON usage_feedback(kind, created_at DESC)");
+      }
+    },
+  },
 ];
 
 // Exported for the perception/memory selfchecks: they need to apply the

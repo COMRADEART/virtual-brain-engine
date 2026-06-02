@@ -13,6 +13,18 @@ const USE_GPU = process.env.VERIFY_GPU === "1" || process.argv.includes("--gpu")
 // Post-reload settle time before sampling. The sparse spiking/hybrid engines warm
 // up slower than the default engine, so allow overriding via VERIFY_WAIT_MS.
 const RENDER_WAIT_MS = Number(process.env.VERIFY_WAIT_MS ?? 2600);
+// Which Brain OS layout to seed before sampling. Defaults to "full" (the
+// scientific control surface this check has always exercised); override with
+// VERIFY_LAYOUT=dashboard to confirm the dashboard's centre BrainScene draws.
+const VERIFY_LAYOUT = process.env.VERIFY_LAYOUT ?? "full";
+// The FIRST navigate hits a cold Vite dev server, which must transpile the whole
+// React + Three.js + app module graph on demand — that can exceed 8s on Windows
+// and grows as the app does (perception, learning lab, civilization, dashboard…),
+// so give the initial window-load a generous budget. The reload reuses Vite's
+// warm cache, so it stays tight and still catches a genuine hang. Both are
+// env-overridable for slow CI.
+const FIRST_LOAD_MS = Number(process.env.VERIFY_FIRST_LOAD_MS ?? 30000);
+const RELOAD_LOAD_MS = Number(process.env.VERIFY_RELOAD_MS ?? 10000);
 const chromeCandidates = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -113,13 +125,13 @@ async function main() {
     await client.send("Runtime.enable");
     await client.send("Log.enable");
     await client.send("Page.bringToFront");
-    const loadEvent = client.waitForEvent("Page.loadEventFired", 8000);
+    const loadEvent = client.waitForEvent("Page.loadEventFired", FIRST_LOAD_MS);
     await client.send("Page.navigate", { url: TARGET_URL });
     await loadEvent;
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem("brain-layout", JSON.stringify("full"))`,
+      expression: `localStorage.setItem("brain-layout", JSON.stringify(${JSON.stringify(VERIFY_LAYOUT)}))`,
     });
-    const reloadEvent = client.waitForEvent("Page.loadEventFired", 8000);
+    const reloadEvent = client.waitForEvent("Page.loadEventFired", RELOAD_LOAD_MS);
     await client.send("Page.reload", { ignoreCache: true });
     await reloadEvent;
     await delay(RENDER_WAIT_MS);

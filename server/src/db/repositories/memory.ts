@@ -132,6 +132,19 @@ export function upsertMemoryPoint(input: MemoryUpsertInput): MemoryPoint {
   return rowToMemory(row);
 }
 
+// Content-hash dedup, independent of file_path (the upsert's built-in dedup only
+// fires when a file_path is present). Used by the ingestion pipeline so the same
+// clipboard/doc text isn't stored twice. Backed by the memory_points_hash index.
+export function hasMemoryWithContentHash(hash: string): boolean {
+  const db = openDb();
+  const row = db
+    .prepare<[string], { c: number }>(
+      `SELECT count(*) AS c FROM memory_points WHERE content_hash = ?`,
+    )
+    .get(hash);
+  return (row?.c ?? 0) > 0;
+}
+
 export function getMemoryPoint(id: string): MemoryPoint | null {
   const db = openDb();
   const row = db

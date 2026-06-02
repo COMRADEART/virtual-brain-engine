@@ -139,6 +139,11 @@ export type BrainBusMessage =
   // (engine uncertainty crosses a threshold). The `target` names what to
   // explore (project name, memory cluster id, or "scan" for a fresh walk).
   | { type: "exploration-scheduled"; target: string; curiosity: number; reason: string; timestamp: string }
+  // --- Model Hub (download a model → it streams into the brain) ---
+  // Emitted (throttled) while an Ollama model downloads; the frontend flashes
+  // the `model-hub` cortex and renders a progress bar. percent is null while
+  // indeterminate (manifest phase, before any layer total is known).
+  | { type: "model-pull"; model: string; status: string; percent: number | null; done: boolean; timestamp: string }
   // --- Learning Lab (online ranker training signal) ---
   // Emitted after an explicit-feedback update so an open Learning Lab panel
   // refreshes its stats without polling.

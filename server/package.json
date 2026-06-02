@@ -20,6 +20,10 @@
     "learning:selfcheck": "tsx scripts/learning-selfcheck.ts",
     "civilization:selfcheck": "tsx scripts/civilization-selfcheck.ts",
     "evolution:selfcheck": "tsx scripts/evolution-selfcheck.ts",
+    "actions:selfcheck": "tsx scripts/actions-selfcheck.ts",
+    "ingest:selfcheck": "tsx scripts/ingest-selfcheck.ts",
+    "learningloop:selfcheck": "tsx scripts/learningloop-selfcheck.ts",
+    "models:selfcheck": "tsx scripts/models-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },
