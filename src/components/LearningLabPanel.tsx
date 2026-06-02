@@ -19,6 +19,7 @@ import { Activity, ChevronDown, ChevronUp, Cpu, GraduationCap, ThumbsDown, Thumb
 import { subscribeBrainBus, subscribeConnection } from "../engine/brainBus";
 import { apiClient } from "../engine/apiClient";
 import type { LearningStatus, LlmTrainerStatus, LossPoint } from "../../shared/learning";
+import type { IngestStatus, IngestSourceId } from "../../shared/ingest";
 
 const STATUS_POLL_MS = 5_000;
 // Poll the (separate) trainer status faster while it's actively running so the
@@ -96,6 +97,7 @@ export function LearningLabPanel(): JSX.Element | null {
   const [llm, setLlm] = useState<LlmTrainerStatus | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ingest, setIngest] = useState<IngestStatus | null>(null);
 
   useEffect(() => subscribeConnection(setBusOk), []);
 
@@ -120,6 +122,18 @@ export function LearningLabPanel(): JSX.Element | null {
         setLlm(s.llm);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    // Ingest source consent state — independent so a failure here doesn't blank
+    // the ranker view.
+    apiClient.ingestStatus().then(setIngest).catch(() => {});
+  }, []);
+
+  const toggleSource = useCallback(async (id: IngestSourceId, enabled: boolean): Promise<void> => {
+    try {
+      const r = await apiClient.ingestSetConsent(id, !enabled);
+      setIngest(r.status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
   // Poll while open + bus connected. Faster cadence while the LLM trainer runs.
@@ -212,6 +226,67 @@ export function LearningLabPanel(): JSX.Element | null {
                 <span className="learnlab-fb down"><ThumbsDown size={12} /> {feedback.down}</span>
                 <small>{feedback.total} rated answer{feedback.total === 1 ? "" : "s"}</small>
               </div>
+            </section>
+          ) : null}
+
+          {/* ---- Phase 4: learning from use (commands + ingestion) ---- */}
+          {status?.usage ? (
+            <section className="learnlab-section">
+              <h4>
+                <Activity size={12} /> Learning from use
+              </h4>
+              <ul className="learnlab-metrics">
+                <li>commands <strong>{status.usage.actions.total}</strong></li>
+                <li>success <strong>{Math.round(status.usage.actions.successRate * 100)}%</strong></li>
+                <li>ingested <strong>{status.usage.ingest.totalIngested}</strong></li>
+              </ul>
+              <div className="learnlab-feedback">
+                <span className="learnlab-fb up"><ThumbsUp size={12} /> {status.usage.memoryFeedback.up}</span>
+                <span className="learnlab-fb down"><ThumbsDown size={12} /> {status.usage.memoryFeedback.down}</span>
+                <small>memory verdicts</small>
+              </div>
+            </section>
+          ) : null}
+
+          {/* ---- Phase 2: computer-wide memory sources (opt-in consent) ---- */}
+          {ingest ? (
+            <section className="learnlab-section">
+              <h4>Memory sources</h4>
+              <p className="learnlab-note">Opt-in. Captured text is redacted + deduped before storage.</p>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                {ingest.sources.map((s) => (
+                  <li
+                    key={s.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      padding: "3px 0",
+                    }}
+                  >
+                    <span title={s.description} style={{ fontSize: 12 }}>
+                      {s.title}
+                    </span>
+                    <button
+                      type="button"
+                      aria-pressed={s.enabled}
+                      onClick={() => void toggleSource(s.id, s.enabled)}
+                      style={{
+                        fontSize: 10,
+                        padding: "2px 12px",
+                        borderRadius: 999,
+                        cursor: "pointer",
+                        border: "1px solid var(--line)",
+                        background: s.enabled ? "var(--cyan)" : "transparent",
+                        color: s.enabled ? "#04222b" : "#9fb4c9",
+                      }}
+                    >
+                      {s.enabled ? "on" : "off"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </section>
           ) : null}
 

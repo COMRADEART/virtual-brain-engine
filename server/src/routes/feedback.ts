@@ -20,6 +20,7 @@ import { loadRankerState } from "../db/repositories/ranker.js";
 import { trainFromFeedback } from "../reasoning/ranker.js";
 import { getMemoryPoint } from "../db/repositories/memory.js";
 import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
+import { applyActionFeedback, applyMemoryFeedback } from "../learning/usage.js";
 import { broadcast } from "../ws/brainBus.js";
 
 export const feedbackRouter = Router();
@@ -84,4 +85,40 @@ feedbackRouter.post("/feedback", (req, res) => {
   }
 
   res.json({ ok: true, trained, citedCount, feedback });
+});
+
+// Phase 4 — usefulness verdicts on the new surfaces. A memory verdict nudges
+// that memory's importance (a live ranker feature, so it shapes future
+// retrieval); an action verdict is recorded as resolver-training data. Both
+// feed the Learning Lab usage summary.
+const memoryFeedbackSchema = z.object({
+  memoryId: z.string().min(1),
+  rating: z.union([z.literal(1), z.literal(-1)]),
+});
+feedbackRouter.post("/feedback/memory", (req, res) => {
+  const parsed = memoryFeedbackSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  const result = applyMemoryFeedback(parsed.data.memoryId, parsed.data.rating);
+  if (!result) {
+    res.status(404).json({ error: "memory not found" });
+    return;
+  }
+  res.json({ ok: true, importance: result.importance });
+});
+
+const actionFeedbackSchema = z.object({
+  actionId: z.string().min(1),
+  rating: z.union([z.literal(1), z.literal(-1)]),
+});
+feedbackRouter.post("/feedback/action", (req, res) => {
+  const parsed = actionFeedbackSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  applyActionFeedback(parsed.data.actionId, parsed.data.rating);
+  res.json({ ok: true });
 });

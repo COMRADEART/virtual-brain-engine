@@ -14,6 +14,7 @@ import { getFeedbackStats } from "../db/repositories/feedback.js";
 import { FEATURE_LABELS, FEATURE_VERSION, zeroWeights } from "../reasoning/rankerModel.js";
 import { WARM_AT } from "../reasoning/ranker.js";
 import { getLlmTrainerStatus, startLlmTraining } from "../learning/llmTrainerClient.js";
+import { getUsageSummary } from "../learning/usage.js";
 
 export const learningRouter = Router();
 
@@ -33,6 +34,7 @@ learningRouter.get("/learning/status", async (_req, res) => {
     loss: loadRankerLossHistory(100),
     feedback: getFeedbackStats(),
     llm: await getLlmTrainerStatus(),
+    usage: getUsageSummary(),
   };
   res.json(status);
 });

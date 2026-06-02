@@ -60,9 +60,27 @@ export interface FeedbackStats {
   lastAt: string | null;
 }
 
+// Phase 4 — learning from USE. Aggregates signal from the new surfaces (the
+// command/action layer + computer-wide ingestion) and the explicit
+// usefulness verdicts the user gives on surfaced memories/actions, so the loop
+// "the brain improves from how you use it" is observable.
+export interface UsageSummary {
+  // Executed commands (from action_log): how many ran and how many succeeded.
+  actions: { total: number; ok: number; successRate: number };
+  // Computer-wide ingestion volume (from ingest_log).
+  ingest: { totalIngested: number };
+  // 👍/👎 the user gave on a surfaced memory's usefulness (nudges importance —
+  // a live ranker feature — so this directly shapes future retrieval).
+  memoryFeedback: { up: number; down: number };
+  // 👍/👎 on whether a resolved command was the right one (resolver-training
+  // dataset for a future learned resolver).
+  actionFeedback: { up: number; down: number };
+}
+
 export interface LearningStatus {
   ranker: RankerLearningStatus;
   loss: LossPoint[];
   feedback: FeedbackStats;
   llm: LlmTrainerStatus;
+  usage: UsageSummary;
 }
