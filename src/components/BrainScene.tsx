@@ -321,6 +321,18 @@ export function BrainScene({
     });
   }, []);
 
+  // Model Hub: a downloading model streams into the brain — flash the model-hub
+  // cortex as progress arrives (brighter on completion). Reuses the same
+  // flashLogicalRegion path the idle breathing loop already exercises.
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      if (message.type !== "model-pull") {
+        return;
+      }
+      simulationRef.current?.flashLogicalRegion("model-hub", message.done ? 1.0 : 0.55);
+    });
+  }, []);
+
 // Memory count updates drive the hippocampus glow intensity.
   useEffect(() => {
     return subscribeBrainBus((message) => {
