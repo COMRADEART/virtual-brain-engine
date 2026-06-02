@@ -16,6 +16,8 @@ import { VisionCortexPanel } from "./components/vision/VisionCortexPanel";
 import { BrainLegendHUD } from "./components/cognition/BrainLegendHUD";
 import { CognitivePanel } from "./components/cognition/CognitivePanel";
 import { CompactLayout, FocusMode, CommandPalette, useCommandPalette } from "./components/brain-os";
+import { ModelHubPanel } from "./components/ModelHubPanel";
+import { DashboardLayout } from "./components/dashboard/DashboardLayout";
 import { REGION_DEFINITIONS, BRAIN_ACTIONS } from "./data/regionDefinitions";
 import {
   DEFAULT_AUTO_TIER,
@@ -26,6 +28,7 @@ import {
   type PerfPresetId,
 } from "./engine/performancePresets";
 import { useAutoQuality } from "./engine/useAutoQuality";
+import { useClipboardCollector } from "./engine/useClipboardCollector";
 import { useLayoutMode, type LayoutMode } from "./engine/useLayoutMode";
 import type {
   BrainActionId,
@@ -53,6 +56,7 @@ const [showEmergentControls, setShowEmergentControls] = useState(true);
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useState(true);
   const [unifiedTab, setUnifiedTab] = useState<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("ask");
   const [unifiedCollapsed, setUnifiedCollapsed] = useState(true);
+  const [modelHubOpen, setModelHubOpen] = useState(false);
 
   const [shellTransparent, setShellTransparent] = useState(true);
   const [signalSpeed, setSignalSpeed] = useState(1.3);
@@ -67,6 +71,9 @@ const [showEmergentControls, setShowEmergentControls] = useState(true);
   const preset = PERF_PRESETS[effectivePresetId];
   const neuronDensity = densityOverride ?? preset.density;
   useAutoQuality(perfMode === "auto", setAutoTier, setFps);
+  // Phase 2b — ambient clipboard ingestion. Self-gates: no-op outside Tauri and
+  // unless the user has consented to the "clipboard" source.
+  useClipboardCollector();
   const { mode: layout, setMode, cycle: cycleLayout } = useLayoutMode();
   const { isOpen: commandPaletteOpen, setIsOpen: setCommandPaletteOpen } = useCommandPalette(layout, perfMode);
 
@@ -368,7 +375,21 @@ useEffect(() => {
         </>
       )}
 
+      {layout === "dashboard" && (
+        <DashboardLayout
+          running={running}
+          selectedActionId={selectedActionId}
+          selectedRegionId={selectedRegionId}
+          regionVisibility={regionVisibility}
+          metrics={{ ...metrics, fps }}
+          onRegionSelect={setSelectedRegionId}
+          onActionSelect={setSelectedActionId}
+          onMetricsChange={setMetrics}
+        />
+      )}
+
       <ShortcutsModal />
+      <ModelHubPanel open={modelHubOpen} onClose={() => setModelHubOpen(false)} />
       <CommandPalette
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
@@ -382,6 +403,7 @@ useEffect(() => {
         onToggleDigitalTwin={toggleDigitalTwin}
         onOpenUnifiedTab={openUnifiedTab}
         onToggleUnifiedPanel={toggleUnifiedPanel}
+        onOpenModelHub={() => setModelHubOpen(true)}
       />
     </main>
   );

@@ -306,3 +306,20 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
     window.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// Begin an OS-level drag of the calling window. The frameless pet attaches
+/// this to its orb's mousedown so the companion can be repositioned anywhere
+/// on screen. Requires the `core:window:allow-start-dragging` capability.
+#[tauri::command]
+pub fn pet_start_drag(window: tauri::Window) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+/// Resize the calling window between the pet's collapsed orb and expanded chat
+/// sizes. Requires the `core:window:allow-set-size` capability.
+#[tauri::command]
+pub fn pet_set_size(window: tauri::Window, width: f64, height: f64) -> Result<(), String> {
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())
+}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
-  Search, LayoutGrid, Focus, Maximize2, Zap, Cpu, Brain,
+  Search, LayoutGrid, LayoutDashboard, Focus, Maximize2, Zap, Cpu, Brain,
   Database, Sparkles, Settings2, ChevronRight, Command,
   Network, HeartPulse, BrainCircuit, Activity, GitBranch, MessageSquare
 } from "lucide-react";
@@ -31,6 +31,7 @@ interface CommandPaletteProps {
   onToggleDigitalTwin: (collapsed?: boolean) => void;
   onOpenUnifiedTab: (tab: "ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism") => void;
   onToggleUnifiedPanel: (collapsed?: boolean) => void;
+  onOpenModelHub: () => void;
 }
 
 const CATEGORY_LABELS: Record<Command["category"], string> = {
@@ -44,7 +45,7 @@ const CATEGORY_LABELS: Record<Command["category"], string> = {
 export function CommandPalette({
   isOpen, onClose, currentLayout, currentPerfMode,
   onLayoutChange, onCyclePreset, onFocusMode, onCompactMode, onFullMode,
-  onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel,
+  onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -52,6 +53,14 @@ export function CommandPalette({
   const listRef = useRef<HTMLDivElement>(null);
 
   const commands = useMemo<Command[]>(() => [
+    {
+      id: "dashboard-mode",
+      label: "Dashboard Mode",
+      description: "Telemetry widgets, live 3D brain, and activity log",
+      category: "layout",
+      icon: <LayoutDashboard size={16} />,
+      action: () => { onLayoutChange("dashboard"); onClose(); },
+    },
     {
       id: "focus-mode",
       label: "Focus Mode",
@@ -87,6 +96,14 @@ export function CommandPalette({
       icon: <Zap size={16} />,
       shortcut: "P",
       action: () => { onCyclePreset(); onClose(); },
+    },
+    {
+      id: "model-hub",
+      label: "Model Hub",
+      description: "Download a chat model and wire it into the brain",
+      category: "panels",
+      icon: <Cpu size={16} />,
+      action: () => { onOpenModelHub(); onClose(); },
     },
     {
       id: "toggle-twin",
@@ -169,8 +186,8 @@ export function CommandPalette({
       action: () => { onOpenUnifiedTab("graph"); onClose(); },
     },
   ], [
-    currentLayout, currentPerfMode, onCompactMode, onFullMode, onFocusMode, onCyclePreset, onClose,
-    onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel
+    currentLayout, currentPerfMode, onLayoutChange, onCompactMode, onFullMode, onFocusMode, onCyclePreset, onClose,
+    onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub
   ]);
 
   const filtered = useMemo(() => {
