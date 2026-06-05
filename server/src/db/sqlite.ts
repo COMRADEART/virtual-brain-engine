@@ -247,6 +247,25 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Agentic loop ("main thinking") — honest authorisation channel on the
+    // action audit. Adds action_log.authorized_via so the granted-session-scope
+    // path can run a confirm-tier action WITHOUT forging a per-plan confirm
+    // (confirmed stays 0; authorized_via='session-scope'). Fresh DBs get the
+    // column from schema.sql's CREATE TABLE; this backfills pre-existing DBs and
+    // sets a faithful value for legacy rows (confirmed → 'confirm-token').
+    id: 8,
+    name: "0008-action-log-authorized-via",
+    run: (db) => {
+      if (!columnExists(db, "action_log", "authorized_via")) {
+        db.exec("ALTER TABLE action_log ADD COLUMN authorized_via TEXT NOT NULL DEFAULT 'none'");
+        // Faithful backfill: a confirmed legacy row presented a token; an
+        // unconfirmed one that succeeded was a safe action.
+        db.exec("UPDATE action_log SET authorized_via = 'confirm-token' WHERE confirmed = 1");
+        db.exec("UPDATE action_log SET authorized_via = 'safe' WHERE confirmed = 0 AND risk = 'safe'");
+      }
+    },
+  },
 ];
 
 // Exported for the perception/memory selfchecks: they need to apply the

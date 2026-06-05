@@ -1,0 +1,709 @@
+// The agentic loop — the brain's "main thinking" (an Odysseus-style multi-round
+// ReAct loop, ported to TypeScript). The model THINKS and ACTS in steps: each
+// round it emits ONE tool call (as strict JSON — the local connector has no
+// native function-calling) OR a final answer. The loop runs the tool through the
+// SAME permissioned executor as a user command, feeds the result back, and loops
+// until the MODEL declares done. Ported faithfully from odysseus/src/agent_loop
+// (stream_agent_loop): the real logic — model-decides-done, the stall/loop
+// breaker, the intent-without-action nudge, and graceful round-cap exhaustion —
+// minus that file's provider-specific quirks (this codebase has one Connector).
+//
+// SAFETY. Every tool goes through executeAction() (allowlist + zod + confirm
+// gate + audit). Confirm-tier actions (web / file / git / scan) are handled per
+// the run's confirmMode:
+//   "ask"       — pause and surface a confirm request; resume on approval
+//                 (resumeAgentRun mints an HONEST confirm token — the human just
+//                 approved this exact plan).
+//   "scope"     — run within a user-granted risk ceiling via executeAction's
+//                 sessionScope channel (audited as session-scope, NOT a forged
+//                 confirm token).
+//   "safe-only" — refuse confirm-tier actions; only read-only tools run.
+// Web/file/system egress stays gated by LOCAL_ONLY inside the handlers, so the
+// loop can never reach the internet when the brain is local-only.
+
+import { createHash } from "node:crypto";
+import { ulid } from "ulid";
+import { CONFIG } from "../config.js";
+import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import type { Connector } from "../connectors/Connector.js";
+import { getActionDef, listActionSpecs } from "../actions/registry.js";
+import { isDynamicAction, getDynamicAction, listDynamicActions } from "../actions/dynamicRegistry.js";
+import { executeAction, type ExecuteInput } from "../actions/executor.js";
+import { mintConfirmToken } from "../actions/confirmTokens.js";
+import { keywordSearch, upsertMemoryPoint } from "../db/repositories/memory.js";
+import { runPipeline } from "./pipeline.js";
+import { broadcast } from "../ws/brainBus.js";
+import { surfaceError } from "../util/diagnostics.js";
+import type { ActionRiskTier, ActionSpec } from "../../../shared/actions.js";
+import type {
+  AgentConfirmDecision,
+  AgentConfirmMode,
+  AgentEvent,
+  AgentEventType,
+  AgentRunStatus,
+  AgentToolEvent,
+} from "../../../shared/agent.js";
+import type { LogicalRegionId, PipelineEvent, PipelineStatus, PipelineStepId } from "../../../shared/pipeline.js";
+
+// A single SSE frame on the /api/agent stream is either an agent event or a bare
+// pipeline event (region flashes + deep-reason telemetry). The route writes
+// whatever the loop emits.
+export type AgentEmit = (frame: AgentEvent | PipelineEvent) => void;
+
+// The pseudo-tool that drops into the full 7-step pipeline for a grounded,
+// citeable answer. It is NOT in the action registry (it isn't a side-effecting
+// command) — the loop intercepts it before the executor.
+const DEEP_REASON_ID = "deep-reason";
+
+const TRANSCRIPT_CHAR_BUDGET = 6000;
+const MAX_INTENT_NUDGES = 1;
+const STUCK_ROUND_LIMIT = 3; // repeated identical calls with no progress
+const RUNAWAY_TOOL_LIMIT = 8; // one tool fired this many times = runaway
+const RUN_TTL_MS = 30 * 60_000; // parked (paused) runs expire after 30 min
+
+interface ToolCall {
+  action: string;
+  args: Record<string, unknown>;
+}
+
+interface ParsedTurn {
+  thought: string;
+  tool: ToolCall | null;
+  final: string;
+}
+
+// In-memory parked-run store. A run lands here only when it PAUSES for a
+// confirm decision (ask mode); POST /api/agent/confirm resumes it. In-memory by
+// design (mirrors confirmTokens): a restart safely invalidates outstanding
+// confirmations.
+interface AgentRun {
+  runId: string;
+  conversationId: string;
+  prompt: string;
+  mode: AgentConfirmMode;
+  scope: ActionRiskTier[];
+  transcript: string[];
+  round: number;
+  toolCalls: number;
+  recentSigs: string[];
+  stuckRounds: number;
+  toolTypeCounts: Map<string, number>;
+  intentNudges: number;
+  forceAnswer: boolean;
+  createdAt: number;
+  pending?: { action: string; args: Record<string, unknown>; risk: ActionRiskTier; rationale: string };
+}
+
+const RUNS = new Map<string, AgentRun>();
+
+// Test seam (hermetic selfcheck): inject a scripted connector so the loop can be
+// driven without a live LLM. Null = use the real default connector.
+let connectorOverride: Connector | null = null;
+export function __setAgentConnector(c: Connector | null): void {
+  connectorOverride = c;
+}
+function activeConnector(): Connector | null {
+  return connectorOverride ?? getDefaultConnectorInstance();
+}
+
+function sweepRuns(now: number): void {
+  for (const [id, run] of RUNS) {
+    if (now - run.createdAt > RUN_TTL_MS) RUNS.delete(id);
+  }
+}
+
+function sha1(s: string): string {
+  return createHash("sha1").update(s).digest("hex");
+}
+
+// ── Tool catalog ──────────────────────────────────────────────────────────
+// Static allowlist + dynamic skills + the synthetic deep-reason tool. Specs
+// only (no zod schema) — the executor re-validates on its side.
+function toolCatalog(): ActionSpec[] {
+  const dynamic = (() => {
+    try {
+      return listDynamicActions();
+    } catch (err) {
+      surfaceError("agentLoop.listDynamicActions", err);
+      return [] as ActionSpec[];
+    }
+  })();
+  return [...listActionSpecs(), ...dynamic];
+}
+
+function buildSystemPrompt(): string {
+  const lines = toolCatalog().map(
+    (s) => `- ${s.id} (${s.risk}): ${s.description} params=${JSON.stringify(s.params)}`,
+  );
+  return [
+    "You are FRIDAY, the user's private, local computer brain. You accomplish the",
+    "user's request by THINKING and ACTING in small steps, using tools that run on",
+    "the user's own machine. You are permissioned: some tools need confirmation.",
+    "",
+    "Tools available:",
+    `- ${DEEP_REASON_ID} (safe): Answer a factual/knowledge question using the brain's full memory+reasoning pipeline (grounded, with citations). Prefer this for questions about the user, their files, or stored knowledge. params={"query":"the question to reason about"}`,
+    ...lines,
+    "",
+    "PROTOCOL — every step, reply with STRICT JSON only, no prose around it:",
+    '{"thought":"<one short sentence on what you are doing>","tool":{"action":"<tool id>","args":{...}},"final":""}',
+    "Rules:",
+    "- Take ONE step at a time: EITHER call ONE tool (set \"tool\", leave \"final\" empty) OR finish (set \"final\" to your answer, set \"tool\" to null). Never both.",
+    "- You will SEE each tool's result before your next step. Use the real results; never invent a result or claim you did something you did not do.",
+    "- Use ONLY the listed tool ids and ONLY their listed parameter names.",
+    "- YOU decide when the job is done. When every concrete thing the user asked for has actually succeeded, stop calling tools and write \"final\". Do not repeat a tool call you already ran.",
+    "- If you are genuinely blocked (a capability is missing or permission was denied), say so plainly in \"final\" and stop.",
+    "- For factual/knowledge questions, prefer deep-reason so the answer is grounded in memory.",
+  ].join("\n");
+}
+
+function memoryContext(prompt: string): string {
+  try {
+    const hits = keywordSearch(prompt, 4);
+    if (hits.length === 0) return "";
+    const lines = hits.map((h) => `- ${h.memory.title ?? "memory"}: ${h.memory.content.slice(0, 160)}`);
+    return ["Relevant memories (context — verify with deep-reason if you rely on them):", ...lines].join("\n");
+  } catch (err) {
+    surfaceError("agentLoop.memoryContext", err);
+    return "";
+  }
+}
+
+function buildUserPrompt(run: AgentRun): string {
+  // Trim oldest transcript lines to stay within budget (keep the most recent).
+  let joined = run.transcript.join("\n");
+  while (joined.length > TRANSCRIPT_CHAR_BUDGET && run.transcript.length > 1) {
+    run.transcript.shift();
+    joined = run.transcript.join("\n");
+  }
+  const ctx = memoryContext(run.prompt);
+  return [
+    ctx,
+    ctx ? "" : null,
+    `Request: ${run.prompt}`,
+    "",
+    "Progress so far:",
+    joined || "(nothing yet — this is your first step)",
+    "",
+    run.forceAnswer
+      ? "Reply with your FINAL answer now as JSON ({\"thought\":\"...\",\"tool\":null,\"final\":\"...\"}). Do NOT call any tool."
+      : "Reply with your next step as JSON only.",
+  ]
+    .filter((l): l is string => l !== null)
+    .join("\n");
+}
+
+function safeJson<T>(text: string): T | null {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]) as T;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+interface RawTurn {
+  thought?: unknown;
+  tool?: unknown;
+  action?: unknown; // tolerated: some models put the call at top level
+  args?: unknown;
+  final?: unknown;
+}
+
+function parseTurn(raw: string): ParsedTurn {
+  const obj = safeJson<RawTurn>(raw);
+  if (!obj) {
+    // No parseable JSON — treat the raw text as a final answer so the turn still
+    // resolves rather than looping on a malformed round.
+    return { thought: "", tool: null, final: raw.trim() };
+  }
+  const thought = typeof obj.thought === "string" ? obj.thought : "";
+  const final = typeof obj.final === "string" ? obj.final.trim() : "";
+
+  // tool may be nested ({tool:{action,args}}) or top-level ({action,args}).
+  let toolObj: { action?: unknown; args?: unknown } | null = null;
+  if (obj.tool && typeof obj.tool === "object") {
+    toolObj = obj.tool as { action?: unknown; args?: unknown };
+  } else if (typeof obj.action === "string") {
+    toolObj = { action: obj.action, args: obj.args };
+  }
+
+  if (toolObj && typeof toolObj.action === "string" && toolObj.action.trim() && toolObj.action !== "none") {
+    const args =
+      toolObj.args && typeof toolObj.args === "object" && !Array.isArray(toolObj.args)
+        ? (toolObj.args as Record<string, unknown>)
+        : {};
+    return { thought, tool: { action: toolObj.action.trim(), args }, final };
+  }
+  return { thought, tool: null, final };
+}
+
+// ── Region flash mapping (reuse existing LogicalRegionIds; no new regions) ──
+function regionForAction(actionId: string): LogicalRegionId {
+  if (actionId === DEEP_REASON_ID) return "memory-core";
+  if (actionId.startsWith("git-")) return "project-cortex";
+  if (
+    actionId === "search-memory" ||
+    actionId === "recent-memories" ||
+    actionId === "create-note" ||
+    actionId === "learn-url" ||
+    actionId === "research-web" ||
+    actionId === "web-search"
+  ) {
+    return "memory-core";
+  }
+  if (
+    actionId === "list-directory" ||
+    actionId === "read-file" ||
+    actionId === "write-file" ||
+    actionId === "system-info" ||
+    actionId === "trigger-scan" ||
+    actionId === "open-path" ||
+    actionId === "open-url"
+  ) {
+    return "file-memory";
+  }
+  return "reasoning-cortex";
+}
+
+// ── Emit helpers ────────────────────────────────────────────────────────────
+function agentEvent(run: AgentRun, type: AgentEventType, extra: Partial<AgentEvent> = {}): AgentEvent {
+  return {
+    type,
+    runId: run.runId,
+    conversationId: run.conversationId,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  };
+}
+
+// A pipeline-shaped frame: written to THIS run's SSE and broadcast to the WS bus
+// so the 3D brain visualizer flashes exactly like /api/ask does. (runPipeline,
+// used by deep-reason, broadcasts its OWN events — so we never double-broadcast
+// those; only these loop-authored ones go to the bus here.)
+function emitPipe(
+  run: AgentRun,
+  emit: AgentEmit,
+  step: PipelineStepId,
+  status: PipelineStatus,
+  regions: LogicalRegionId[],
+  extra: Partial<PipelineEvent> = {},
+): void {
+  const event: PipelineEvent = {
+    conversationId: run.conversationId,
+    runId: run.runId,
+    step,
+    status,
+    logicalRegions: regions,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  };
+  emit(event);
+  try {
+    broadcast({ type: "pipeline", ...event });
+  } catch (err) {
+    surfaceError("agentLoop.broadcast", err);
+  }
+}
+
+function pushResult(run: AgentRun, action: string, args: Record<string, unknown>, ok: boolean, detail: string): void {
+  const head = `${ok ? "✓" : "✗"} ${action}(${JSON.stringify(args)})`;
+  run.transcript.push(`${head} → ${detail}`.slice(0, 1600));
+}
+
+function previewData(data: unknown): string {
+  if (data == null) return "";
+  try {
+    const s = typeof data === "string" ? data : JSON.stringify(data);
+    return s.length > 600 ? s.slice(0, 600) + " …" : s;
+  } catch {
+    return "";
+  }
+}
+
+// ── Public: create + run ─────────────────────────────────────────────────────
+export interface StartAgentInput {
+  prompt: string;
+  conversationId?: string;
+  mode: AgentConfirmMode;
+  scope: ActionRiskTier[];
+}
+
+export function startAgentRun(input: StartAgentInput): AgentRun {
+  const now = Date.now();
+  sweepRuns(now);
+  const run: AgentRun = {
+    runId: `agent-${ulid()}`,
+    conversationId: input.conversationId && input.conversationId.length > 0 ? input.conversationId : ulid(),
+    prompt: input.prompt,
+    mode: input.mode,
+    scope: input.scope,
+    transcript: [],
+    round: 0,
+    toolCalls: 0,
+    recentSigs: [],
+    stuckRounds: 0,
+    toolTypeCounts: new Map(),
+    intentNudges: 0,
+    forceAnswer: false,
+    createdAt: now,
+  };
+  RUNS.set(run.runId, run);
+  return run;
+}
+
+export function getAgentRun(runId: string): AgentRun | undefined {
+  return RUNS.get(runId);
+}
+
+// Drive (or continue) the loop, streaming frames through `emit`. Returns when
+// the turn ends: done / blocked / exhausted (run dropped) OR paused (run parked
+// for a confirm decision).
+export async function runAgentLoop(run: AgentRun, emit: AgentEmit): Promise<void> {
+  const started = run.createdAt;
+  const connector = activeConnector();
+  if (!connector) {
+    emit(agentEvent(run, "error", { detail: "no connector configured — start Ollama or add a model" }));
+    finalizeMetrics(run, emit, "error", started);
+    RUNS.delete(run.runId);
+    return;
+  }
+
+  emit(agentEvent(run, "agent-start", { text: run.prompt, round: run.round }));
+  const system = buildSystemPrompt();
+
+  while (run.round < CONFIG.agentMaxRounds) {
+    run.round += 1;
+    emit(agentEvent(run, "round", { round: run.round }));
+    emitPipe(run, emit, "reasoning", "start", ["reasoning-cortex"], { detail: `round ${run.round}` });
+
+    let raw: string;
+    try {
+      raw = await connector.send(buildUserPrompt(run), { system, format: "json", temperature: 0.2 });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      emit(agentEvent(run, "error", { detail }));
+      emitPipe(run, emit, "reasoning", "error", ["error-detection-center"], { detail });
+      finalizeMetrics(run, emit, "error", started);
+      RUNS.delete(run.runId);
+      return;
+    }
+
+    const turn = parseTurn(raw);
+    if (turn.thought) {
+      emit(agentEvent(run, "thought", { round: run.round, text: turn.thought }));
+    }
+
+    // Force-answer round (stall-breaker / exhaustion handoff): ignore any tool
+    // the model emitted, take its text as the final answer.
+    if (run.forceAnswer) {
+      const answer = turn.final || turn.thought || "I gathered what I could but couldn't pull a clean answer together.";
+      await finishWithAnswer(run, emit, answer, "blocked", started);
+      return;
+    }
+
+    // No tool → the model is finishing. Intent-without-action guard: if it
+    // produced neither a tool nor an answer, nudge it once to actually answer.
+    if (!turn.tool) {
+      const answer = turn.final;
+      if (!answer && run.intentNudges < MAX_INTENT_NUDGES) {
+        run.intentNudges += 1;
+        run.transcript.push(
+          "(You ended the step without a tool call AND without an answer. Give the user a direct final answer now.)",
+        );
+        continue;
+      }
+      await finishWithAnswer(run, emit, answer || "(I don't have an answer for that.)", "done", started);
+      return;
+    }
+
+    // ── Stall / loop breaker (Terminus-style) ──────────────────────────────
+    const sig = `${turn.tool.action}:${JSON.stringify(turn.tool.args)}`;
+    if (run.recentSigs.includes(sig)) run.stuckRounds += 1;
+    else run.stuckRounds = 0;
+    run.recentSigs.push(sig);
+    if (run.recentSigs.length > 6) run.recentSigs.shift();
+    const count = (run.toolTypeCounts.get(turn.tool.action) ?? 0) + 1;
+    run.toolTypeCounts.set(turn.tool.action, count);
+    if (run.stuckRounds >= STUCK_ROUND_LIMIT || count >= RUNAWAY_TOOL_LIMIT) {
+      run.forceAnswer = true;
+      run.transcript.push(
+        "(You are repeating tool calls without converging. STOP calling tools. Write your best final answer from what you already have, or state plainly what is blocking you.)",
+      );
+      continue;
+    }
+
+    // ── Execute the tool (or pause for confirmation) ───────────────────────
+    const outcome = await runTool(run, turn.tool, turn.thought, emit, started);
+    if (outcome === "paused") return; // parked for a confirm decision
+    // else: result appended to transcript; loop to the next round.
+  }
+
+  // Round cap reached while still working → one graceful wrap-up.
+  run.forceAnswer = true;
+  run.transcript.push(
+    "(You have run out of steps. Summarise what you accomplished and what remains, as your final answer.)",
+  );
+  try {
+    const raw = await connector.send(buildUserPrompt(run), { system, format: "json", temperature: 0.2 });
+    const turn = parseTurn(raw);
+    await finishWithAnswer(run, emit, turn.final || turn.thought || "I ran out of steps before finishing.", "exhausted", started);
+  } catch {
+    await finishWithAnswer(run, emit, "I ran out of steps before finishing this task.", "exhausted", started);
+  }
+}
+
+type ToolOutcome = "continued" | "paused";
+
+async function runTool(
+  run: AgentRun,
+  tool: ToolCall,
+  rationale: string,
+  emit: AgentEmit,
+  started: number,
+): Promise<ToolOutcome> {
+  run.toolCalls += 1;
+  const { action, args } = tool;
+  const region = regionForAction(action);
+
+  // deep-reason: run the full 7-step pipeline and feed its grounded answer back.
+  if (action === DEEP_REASON_ID) {
+    const query = typeof args.query === "string" && args.query.trim() ? args.query.trim() : run.prompt;
+    emit(agentEvent(run, "tool-start", { round: run.round, tool: { actionId: action, args, risk: "safe" } }));
+    const answer = await runDeepReason(run, query, emit);
+    const tEvt: AgentToolEvent = { actionId: action, args, risk: "safe", ok: true, summary: answer.slice(0, 280), authorizedVia: "safe" };
+    emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
+    pushResult(run, action, args, true, answer.slice(0, 1200));
+    return "continued";
+  }
+
+  // Resolve against the registry (static) or the dynamic skill registry.
+  const staticDef = getActionDef(action);
+  const dynDef = !staticDef && isDynamicAction(action) ? getDynamicAction(action) : null;
+  const def = staticDef ?? dynDef;
+  if (!def) {
+    const tEvt: AgentToolEvent = {
+      actionId: action,
+      args,
+      risk: "safe",
+      ok: false,
+      error: `unknown tool "${action}" — not allowlisted`,
+      authorizedVia: "none",
+    };
+    emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
+    pushResult(run, action, args, false, `unknown tool "${action}" — not in the allowlist; pick a listed tool or finish.`);
+    return "continued";
+  }
+
+  const risk: ActionRiskTier = def.risk;
+  emit(agentEvent(run, "tool-start", { round: run.round, tool: { actionId: action, args, risk } }));
+  emitPipe(run, emit, "project", "progress", [region], { detail: `${action}` });
+
+  const execInput: ExecuteInput = { actionId: action, args };
+
+  if (risk !== "safe") {
+    if (run.mode === "safe-only") {
+      const tEvt: AgentToolEvent = {
+        actionId: action,
+        args,
+        risk,
+        ok: false,
+        error: "needs permission (safe-only mode)",
+        authorizedVia: "none",
+      };
+      emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
+      pushResult(run, action, args, false, `"${action}" needs permission and was NOT run (safe-only mode). Continue without it or finish.`);
+      return "continued";
+    }
+    if (run.mode === "ask") {
+      // Pause: park the run and surface a confirm request. The turn ends here;
+      // POST /api/agent/confirm resumes via resumeAgentRun.
+      run.pending = { action, args, risk, rationale };
+      emit(
+        agentEvent(run, "confirm-request", {
+          round: run.round,
+          confirm: {
+            runId: run.runId,
+            actionId: action,
+            title: staticDef?.title ?? dynDef?.title ?? action,
+            args,
+            rationale,
+            risk,
+          },
+        }),
+      );
+      finalizeMetrics(run, emit, "paused", started);
+      return "paused";
+    }
+    // scope mode: run only within the granted ceiling, via the honest channel.
+    if (run.scope.includes(risk)) {
+      execInput.sessionScope = { allow: run.scope };
+    } else {
+      const tEvt: AgentToolEvent = {
+        actionId: action,
+        args,
+        risk,
+        ok: false,
+        error: "outside granted scope",
+        authorizedVia: "none",
+      };
+      emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
+      pushResult(run, action, args, false, `"${action}" is outside the granted scope and was NOT run. Continue without it or finish.`);
+      return "continued";
+    }
+  }
+
+  return executeAndReport(run, def.risk, execInput, args, region, emit);
+}
+
+// Run a (gated) action through the executor and report it. Shared by autonomous
+// scope/safe execution and the post-approval resume path.
+async function executeAndReport(
+  run: AgentRun,
+  risk: ActionRiskTier,
+  execInput: ExecuteInput,
+  args: Record<string, unknown>,
+  region: LogicalRegionId,
+  emit: AgentEmit,
+): Promise<ToolOutcome> {
+  const action = execInput.actionId;
+  let ok = false;
+  let summary = "";
+  let error: string | undefined;
+  let osDirective: AgentToolEvent["osDirective"];
+  let dataPreview = "";
+  try {
+    const result = await executeAction(execInput);
+    ok = result.ok;
+    summary = result.summary;
+    error = result.error;
+    osDirective = result.osDirective;
+    dataPreview = previewData(result.data);
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+  const authorizedVia = risk === "safe" ? "safe" : execInput.confirmToken ? "confirm-token" : execInput.sessionScope ? "session-scope" : "none";
+  const tEvt: AgentToolEvent = { actionId: action, args, risk, ok, summary, error, authorizedVia, osDirective };
+  emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
+  emitPipe(run, emit, "project", ok ? "complete" : "error", [region], { detail: ok ? summary : error ?? "failed" });
+  pushResult(run, action, args, ok, ok ? `${summary}${dataPreview ? ` | ${dataPreview}` : ""}` : error ?? "failed");
+  return "continued";
+}
+
+async function runDeepReason(run: AgentRun, query: string, emit: AgentEmit): Promise<string> {
+  let answer = "";
+  try {
+    // Forward the sub-pipeline's events to THIS SSE so the visualizer flashes;
+    // runPipeline broadcasts to the WS bus itself, so we don't re-broadcast.
+    await runPipeline({ prompt: query, conversationId: run.conversationId }, (ev) => {
+      emit(ev);
+      if (ev.step === "learning" && ev.status === "complete" && ev.finalAnswer) {
+        answer = ev.finalAnswer;
+      }
+    });
+  } catch (err) {
+    surfaceError("agentLoop.deepReason", err);
+    return `(deep-reason failed: ${err instanceof Error ? err.message : String(err)})`;
+  }
+  return answer || "(no grounded answer was produced)";
+}
+
+async function finishWithAnswer(
+  run: AgentRun,
+  emit: AgentEmit,
+  answer: string,
+  status: AgentRunStatus,
+  started: number,
+): Promise<void> {
+  const text = answer.trim() || "(no answer produced)";
+  // Stream the answer (the connector returned it whole; emit as one delta +
+  // pipeline frames so the existing visualizer + any pipeline-shaped consumer
+  // light up response-center → learning-center).
+  emitPipe(run, emit, "response", "progress", ["response-center"], { tokensDelta: text });
+  emit(agentEvent(run, "delta", { text }));
+  persistExchange(run, text);
+  emitPipe(run, emit, "learning", "complete", ["learning-feedback-center"], { finalAnswer: text });
+  emit(agentEvent(run, "final", { text }));
+  finalizeMetrics(run, emit, status, started);
+  RUNS.delete(run.runId);
+}
+
+function finalizeMetrics(run: AgentRun, emit: AgentEmit, status: AgentRunStatus, started: number): void {
+  emit(
+    agentEvent(run, "metrics", {
+      metrics: {
+        rounds: run.round,
+        toolCalls: run.toolCalls,
+        status,
+        durationMs: Date.now() - started,
+      },
+    }),
+  );
+}
+
+function persistExchange(run: AgentRun, answer: string): void {
+  try {
+    upsertMemoryPoint({
+      sourceType: "conversation",
+      title: run.prompt.slice(0, 80),
+      content: `Q: ${run.prompt}\nA: ${answer}`,
+      contentHash: sha1(`agent:${run.prompt}:${answer}`),
+      importance: 0.5,
+      metadata: { source: "agent-loop", runId: run.runId, conversationId: run.conversationId },
+    });
+  } catch (err) {
+    surfaceError("agentLoop.persist", err);
+  }
+}
+
+// ── Public: resume a paused (ask-mode) run after a confirm decision ──────────
+export async function resumeAgentRun(decision: AgentConfirmDecision, emit: AgentEmit): Promise<boolean> {
+  const run = RUNS.get(decision.runId);
+  if (!run || !run.pending) return false;
+  const pending = run.pending;
+  run.pending = undefined;
+  const started = run.createdAt;
+
+  // Optionally widen the grant for the rest of the run (scope-style escalation).
+  if (decision.grantScope && decision.grantScope.allow.length > 0) {
+    run.scope = decision.grantScope.allow;
+    if (run.mode === "ask") run.mode = "scope"; // future confirm-tier calls now auto-run within the grant
+  }
+
+  emit(agentEvent(run, "agent-start", { text: run.prompt, round: run.round }));
+  const region = regionForAction(pending.action);
+
+  if (!decision.approve) {
+    const tEvt: AgentToolEvent = {
+      actionId: pending.action,
+      args: pending.args,
+      risk: pending.risk,
+      ok: false,
+      error: "denied by user",
+      authorizedVia: "none",
+    };
+    emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
+    pushResult(run, pending.action, pending.args, false, `User DENIED permission to run "${pending.action}". Continue without it or finish.`);
+  } else {
+    // The human just approved THIS exact plan → mint an honest, plan-bound
+    // confirm token (confirmed=true, authorizedVia=confirm-token).
+    const token = mintConfirmToken(pending.action, pending.args);
+    await executeAndReport(
+      run,
+      pending.risk,
+      { actionId: pending.action, args: pending.args, confirmToken: token },
+      pending.args,
+      region,
+      emit,
+    );
+  }
+
+  await runAgentLoop(run, emit);
+  return true;
+}

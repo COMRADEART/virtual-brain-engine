@@ -646,17 +646,34 @@ CREATE INDEX IF NOT EXISTS idx_causal_links_effect ON causal_links(effect_class)
 -- = a valid plan-bound token was presented (NOT "a human approved"). Distinct
 -- from agent_audit, which is the autonomous-agent allow-all trail.
 CREATE TABLE IF NOT EXISTS action_log (
-  id          TEXT PRIMARY KEY,
-  action_id   TEXT NOT NULL,
-  args        TEXT NOT NULL DEFAULT '{}',
-  risk        TEXT NOT NULL,
-  confirmed   INTEGER NOT NULL DEFAULT 0,
-  ok          INTEGER NOT NULL DEFAULT 0,
-  summary     TEXT NOT NULL DEFAULT '',
-  created_at  TEXT NOT NULL
+  id             TEXT PRIMARY KEY,
+  action_id      TEXT NOT NULL,
+  args           TEXT NOT NULL DEFAULT '{}',
+  risk           TEXT NOT NULL,
+  confirmed      INTEGER NOT NULL DEFAULT 0,
+  -- How the action was authorised: 'safe' | 'confirm-token' | 'session-scope' |
+  -- 'none'. Distinct from `confirmed` (strictly "a valid confirm token was
+  -- presented"): the agent loop's granted-session-scope path runs a confirm-tier
+  -- action with confirmed=0 but authorized_via='session-scope', so the trail
+  -- never forges a per-plan human approval. (migration 0008 backfills legacy DBs.)
+  authorized_via TEXT NOT NULL DEFAULT 'none',
+  ok             INTEGER NOT NULL DEFAULT 0,
+  summary        TEXT NOT NULL DEFAULT '',
+  created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_action_log_time   ON action_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_action_log_action ON action_log(action_id, created_at DESC);
+
+-- Dynamic action/skill registry. Stores skill definitions registered at runtime
+-- (e.g., from GitHub code). Each skill has a Zod schema and optional handler code.
+CREATE TABLE IF NOT EXISTS dynamic_actions (
+  id              TEXT PRIMARY KEY,
+  definition_json TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'deleted'
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dynamic_actions_status ON dynamic_actions(status);
 
 -- Computer-wide memory ingestion (Phase 2). Per-source consent is OPT-IN: a
 -- source with no row here is treated as disabled, so nothing is captured until

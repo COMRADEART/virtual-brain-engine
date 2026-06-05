@@ -9,6 +9,7 @@
     "start:server": "npm --prefix server run start",
     "server:smoke": "node scripts/server-smoke.mjs",
     "ask:smoke": "node scripts/ask-smoke.mjs",
+    "agent:smoke": "node scripts/agent-smoke.mjs",
     "actions:smoke": "node scripts/actions-smoke.mjs",
     "models:smoke": "node scripts/models-smoke.mjs",
     "web:smoke": "node scripts/web-ingest-smoke.mjs",

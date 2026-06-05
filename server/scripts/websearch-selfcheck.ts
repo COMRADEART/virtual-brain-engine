@@ -19,7 +19,11 @@ process.env.BRAIN_DATA_DIR = tmp;
 process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 // Pin LOCAL_ONLY to the secure default so hybridEnabled()/CONFIG reflect it; the
 // egress branches that need it flipped pass an explicit per-call localOnly.
-delete process.env.LOCAL_ONLY;
+// Must SET it (not delete it): config.ts loads the repo-root .env via dotenv, so
+// a developer .env with LOCAL_ONLY=false would otherwise reintroduce false here
+// and falsely fail the "purely local by default" assertions. dotenv does not
+// override an already-set env var, so setting it first pins it deterministically.
+process.env.LOCAL_ONLY = "true";
 
 const { openDb, isVectorAvailable } = await import("../src/db/sqlite.js");
 const { CONFIG } = await import("../src/config.js");

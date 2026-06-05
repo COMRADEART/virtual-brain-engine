@@ -37,7 +37,8 @@ import type {
 } from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
 import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
-import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionSpec } from "../../shared/actions";
+import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionRiskTier, ActionSpec } from "../../shared/actions";
+import type { AgentConfirmDecision, AgentConfirmMode, AgentStreamFrame } from "../../shared/agent";
 import type { IngestItem, IngestRunResult, IngestSourceId, IngestStatus } from "../../shared/ingest";
 import type { ModelPullState, ModelsView } from "../../shared/models";
 import type { WebResearchView, WebSearchOutcome } from "../../shared/web";
@@ -120,6 +121,49 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(res.status, text || res.statusText);
   }
   return (await res.json()) as T;
+}
+
+// Shared SSE reader: POST a JSON body, parse `event:`/`data:` blocks, and yield
+// each parsed `data` payload until the `event: done` sentinel. Used by the
+// agent-loop streams (POST /api/agent and /api/agent/confirm).
+async function* sseStream<T>(path: string, body: unknown, signal?: AbortSignal): AsyncGenerator<T> {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream", "X-Brain-Local": "1" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep = buffer.indexOf("\n\n");
+      while (sep >= 0) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const eventLine = block.split("\n").find((l) => l.startsWith("event:"));
+        const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+        if (dataLine) {
+          if (eventLine?.slice(6).trim() === "done") return;
+          try {
+            yield JSON.parse(dataLine.slice(5).trim()) as T;
+          } catch {
+            // skip malformed
+          }
+        }
+        sep = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export interface HealthResponse {
@@ -766,6 +810,31 @@ export const apiClient = {
     } finally {
       reader.releaseLock();
     }
+  },
+
+  // ----- Agentic loop: the brain's "main thinking" (FRIDAY) -----------------
+  // POST /api/agent returns SSE. Triage sends a plain question to the 7-step
+  // pipeline; a multi-step / tool / "do X" request runs the ReAct loop. Each
+  // frame is an AgentEvent (has `type`) or a bare PipelineEvent (has `step`) —
+  // discriminate on shape. A confirm-tier action mid-run yields a
+  // `confirm-request` AgentEvent and pauses; resume with confirmAgent().
+  agent(
+    input: {
+      prompt: string;
+      conversationId?: string;
+      confirmMode?: AgentConfirmMode;
+      scope?: { allow: ActionRiskTier[] };
+      forceLoop?: boolean;
+    },
+    signal?: AbortSignal,
+  ): AsyncGenerator<AgentStreamFrame> {
+    return sseStream<AgentStreamFrame>("/api/agent", input, signal);
+  },
+
+  // Approve/deny a paused confirm-tier action and resume the loop (continues
+  // streaming the same kinds of frames).
+  confirmAgent(input: AgentConfirmDecision, signal?: AbortSignal): AsyncGenerator<AgentStreamFrame> {
+    return sseStream<AgentStreamFrame>("/api/agent/confirm", input, signal);
   },
 };
 

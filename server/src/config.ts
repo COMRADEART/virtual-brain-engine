@@ -94,6 +94,22 @@ export interface ServerConfig {
   // so all observations accrue to it; a per-ARM gate would deadlock the non-
   // heuristic arms, which get zero pulls until the slot is warm.)
   banditWarmAt: number;
+  // --- Agentic loop ("main thinking") ---------------------------------------
+  // The Odysseus-style multi-round ReAct loop behind POST /api/agent. It runs
+  // ALONGSIDE the 7-step pipeline (a triage router picks which a request hits)
+  // and runs every tool through the SAME permissioned executor.
+  // Max reasoning rounds before the loop is cut off and asked to wrap up. Each
+  // round is one LLM call (+ at most one tool). Bounded so a wedged model can't
+  // spin forever; clamped to 1..50.
+  agentMaxRounds: number;
+  // Default confirm-tier handling when a request doesn't specify confirmMode.
+  // "ask" pauses for per-action approval; "scope" runs within a granted ceiling;
+  // "safe-only" never runs confirm-tier autonomously. Default "ask" (safest).
+  agentConfirmMode: "ask" | "scope" | "safe-only";
+  // When true (default), POST /api/agent runs a cheap triage router that sends a
+  // plain question straight to the 7-step pipeline and only multi-step / tool /
+  // "do X" requests into the loop. Set AGENT_TRIAGE=false to always use the loop.
+  agentTriage: boolean;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -162,6 +178,9 @@ export const CONFIG: ServerConfig = {
   rerankerEnabled: bool("RERANKER", true),
   adaptiveController: bool("ADAPTIVE_CONTROLLER", false),
   banditWarmAt: Math.max(1, num("BANDIT_WARM_AT", 30)),
+  agentMaxRounds: Math.min(50, Math.max(1, num("AGENT_MAX_ROUNDS", 12))),
+  agentConfirmMode: oneOf("AGENT_CONFIRM_MODE", ["ask", "scope", "safe-only"] as const, "ask"),
+  agentTriage: bool("AGENT_TRIAGE", true),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;

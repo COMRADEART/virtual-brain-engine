@@ -181,6 +181,119 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       })
       .strict(),
   },
+  // --- Git actions -------------------------------------------------------------
+  "git-clone": {
+    id: "git-clone",
+    title: "Clone a GitHub repository",
+    description: "Clone a git repository (https only) to a sandboxed temp directory. Use this to fetch code from GitHub before reading or modifying files.",
+    risk: "confirm",
+    surface: "server",
+    params: { url: "the git repository URL (https://github.com/owner/repo)", branch: "optional branch to checkout" },
+    schema: z
+      .object({
+        url: z
+          .string()
+          .url()
+          .refine((u) => /^https?:\/\//i.test(u), "must be an https URL"),
+        branch: z.string().max(100).optional(),
+      })
+      .strict(),
+  },
+  "git-list-files": {
+    id: "git-list-files",
+    title: "List repository files",
+    description: "List the files and folders in a cloned repository.",
+    risk: "confirm",
+    surface: "server",
+    params: { path: "absolute path to the cloned repository" },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+      })
+      .strict(),
+  },
+  "git-read-file": {
+    id: "git-read-file",
+    title: "Read a file from repository",
+    description: "Read the contents of a file from a cloned repository.",
+    risk: "confirm",
+    surface: "server",
+    params: { path: "absolute path to the file" },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+      })
+      .strict(),
+  },
+  "git-write-file": {
+    id: "git-write-file",
+    title: "Write a file to repository",
+    description: "Write content to a file in a cloned repository. Creates the file if it doesn't exist, overwrites if it does.",
+    risk: "confirm",
+    surface: "server",
+    params: { path: "absolute path to write", content: "the file content" },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+        content: z.string().max(500_000),
+      })
+      .strict(),
+  },
+  "git-status": {
+    id: "git-status",
+    title: "Show repository changes",
+    description: "Show the current git status (modified, staged, untracked files) in a cloned repository.",
+    risk: "confirm",
+    surface: "server",
+    params: { path: "absolute path to the cloned repository" },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+      })
+      .strict(),
+  },
+  "git-commit": {
+    id: "git-commit",
+    title: "Commit changes",
+    description: "Commit staged changes in a cloned repository with a message. Optionally push to remote.",
+    risk: "confirm",
+    surface: "server",
+    params: { path: "absolute path to the repository", message: "commit message", push: "whether to push after commit (default false)" },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+        message: z.string().min(1).max(500),
+        push: z.boolean().optional(),
+      })
+      .strict(),
+  },
+  "git-branches": {
+    id: "git-branches",
+    title: "List branches",
+    description: "List all branches in a cloned repository.",
+    risk: "confirm",
+    surface: "server",
+    params: { path: "absolute path to the cloned repository" },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+      })
+      .strict(),
+  },
+  "git-checkout": {
+    id: "git-checkout",
+    title: "Checkout a branch",
+    description: "Checkout a different branch in a cloned repository.",
+    risk: "confirm",
+    surface: "server",
+    params: { path: "absolute path to the repository", branch: "branch name to checkout" },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+        branch: z.string().min(1).max(100),
+      })
+      .strict(),
+  },
 };
 
 export function listActionDefs(): ActionDef[] {

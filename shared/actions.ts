@@ -41,7 +41,17 @@ export type ActionId =
   // an osDirective; the actual OS call runs in Tauri (capability-scoped), never
   // in the headless server.
   | "open-path"
-  | "open-url";
+  | "open-url"
+  // Git actions — clone, read, write, commit to GitHub repositories. Used by the
+  // autonomous skill builder to fetch code from GitHub and create new skills.
+  | "git-clone"
+  | "git-list-files"
+  | "git-read-file"
+  | "git-write-file"
+  | "git-status"
+  | "git-commit"
+  | "git-branches"
+  | "git-checkout";
 
 export const ACTION_IDS: ActionId[] = [
   "search-memory",
@@ -57,6 +67,14 @@ export const ACTION_IDS: ActionId[] = [
   "write-file",
   "open-path",
   "open-url",
+  "git-clone",
+  "git-list-files",
+  "git-read-file",
+  "git-write-file",
+  "git-status",
+  "git-commit",
+  "git-branches",
+  "git-checkout",
 ];
 
 // Where an action actually executes. "server" actions run a handler in the Node
@@ -66,6 +84,19 @@ export type ActionSurface = "server" | "os";
 // "safe"    = read-only / no side effects → runs without confirmation.
 // "confirm" = writes or has side effects → requires a valid confirm token.
 export type ActionRiskTier = "safe" | "confirm";
+
+// How a (gated) execution was authorised — recorded in the audit trail so the
+// log stays HONEST about what kind of approval actually happened:
+//   "safe"          — read-only action, no approval needed.
+//   "confirm-token" — a valid, plan-bound, single-use confirm token was
+//                     presented (a human approved this specific plan via the
+//                     confirm card).
+//   "session-scope" — the autonomous agent loop ran a confirm-tier action under
+//                     a risk ceiling the user granted for the whole run. This is
+//                     COARSE approval, NOT per-plan — so it is deliberately NOT a
+//                     confirm token, and `confirmed` stays false on its log row.
+//   "none"          — the action was refused (no valid authorisation).
+export type ActionAuthorization = "safe" | "confirm-token" | "session-scope" | "none";
 
 export interface ActionSpec {
   id: ActionId;
@@ -121,6 +152,10 @@ export interface ActionLogEntry {
   args: Record<string, unknown>;
   risk: ActionRiskTier;
   confirmed: boolean;
+  // How the action was authorised. Older rows (pre-agent-loop) have no value;
+  // readers should treat a missing value as derived from `confirmed`
+  // ("confirm-token" when confirmed and risk!=="safe", else "safe").
+  authorizedVia?: ActionAuthorization;
   ok: boolean;
   summary: string;
   createdAt: string;

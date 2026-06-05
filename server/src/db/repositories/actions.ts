@@ -6,13 +6,18 @@
 
 import { ulid } from "ulid";
 import { openDb } from "../sqlite.js";
-import type { ActionLogEntry, ActionRiskTier } from "../../../../shared/actions.js";
+import type { ActionAuthorization, ActionLogEntry, ActionRiskTier } from "../../../../shared/actions.js";
 
 export interface ActionLogInput {
   actionId: string;
   args: Record<string, unknown>;
   risk: ActionRiskTier;
   confirmed: boolean;
+  // How the action was authorised. Optional for back-compat with the few
+  // callers that predate the agent loop; defaults to a value derived from
+  // `confirmed` + `risk` so the column is never written as a bare "none" for a
+  // genuinely-authorised action.
+  authorizedVia?: ActionAuthorization;
   ok: boolean;
   summary: string;
 }
@@ -23,9 +28,16 @@ interface ActionLogRow {
   args: string;
   risk: string;
   confirmed: number;
+  authorized_via: string;
   ok: number;
   summary: string;
   created_at: string;
+}
+
+function deriveAuthorizedVia(input: ActionLogInput): ActionAuthorization {
+  if (input.authorizedVia) return input.authorizedVia;
+  if (input.confirmed) return "confirm-token";
+  return input.risk === "safe" ? "safe" : "none";
 }
 
 function safeParseArgs(value: string): Record<string, unknown> {
@@ -44,6 +56,7 @@ function rowToEntry(row: ActionLogRow): ActionLogEntry {
     args: safeParseArgs(row.args),
     risk: row.risk as ActionRiskTier,
     confirmed: row.confirmed === 1,
+    authorizedVia: (row.authorized_via || "none") as ActionAuthorization,
     ok: row.ok === 1,
     summary: row.summary,
     createdAt: row.created_at,
@@ -54,15 +67,17 @@ export function insertActionLog(input: ActionLogInput): ActionLogEntry {
   const db = openDb();
   const id = ulid();
   const createdAt = new Date().toISOString();
+  const authorizedVia = deriveAuthorizedVia(input);
   db.prepare(
-    `INSERT INTO action_log (id, action_id, args, risk, confirmed, ok, summary, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO action_log (id, action_id, args, risk, confirmed, authorized_via, ok, summary, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.actionId,
     JSON.stringify(input.args),
     input.risk,
     input.confirmed ? 1 : 0,
+    authorizedVia,
     input.ok ? 1 : 0,
     input.summary,
     createdAt,
@@ -73,6 +88,7 @@ export function insertActionLog(input: ActionLogInput): ActionLogEntry {
     args: input.args,
     risk: input.risk,
     confirmed: input.confirmed,
+    authorizedVia,
     ok: input.ok,
     summary: input.summary,
     createdAt,

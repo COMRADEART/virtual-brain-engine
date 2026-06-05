@@ -27,6 +27,7 @@
     "websearch:selfcheck": "tsx scripts/websearch-selfcheck.ts",
     "rag:selfcheck": "tsx scripts/rag-selfcheck.ts",
     "rl:selfcheck": "tsx scripts/rl-selfcheck.ts",
+    "agent:selfcheck": "tsx scripts/agent-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },

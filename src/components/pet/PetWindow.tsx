@@ -12,6 +12,7 @@ import { apiClient } from "../../engine/apiClient";
 import { MOOD_COLOR, MOOD_LABEL, moodFor, type Mood } from "./petMood";
 import type { AgentRuntimeState } from "../../../shared/pipeline";
 import type { PersonalityState } from "../../../shared/phase2";
+import type { AgentConfirmRequest } from "../../../shared/agent";
 
 const COLLAPSED: [number, number] = [220, 240];
 const EXPANDED: [number, number] = [320, 440];
@@ -39,13 +40,6 @@ interface Exchange {
   answer: string;
 }
 
-interface PendingPlan {
-  actionId: string;
-  args: Record<string, unknown>;
-  confirmToken?: string;
-  rationale: string;
-}
-
 export function PetWindow(): JSX.Element {
   const [lastState, setLastState] = useState<AgentRuntimeState | null>(null);
   const [personality, setPersonality] = useState<PersonalityState | null>(null);
@@ -55,8 +49,9 @@ export function PetWindow(): JSX.Element {
   const [input, setInput] = useState("");
   const [exchange, setExchange] = useState<Exchange | null>(null);
   const [asking, setAsking] = useState(false);
-  // A resolved confirm-tier action awaiting the user's explicit Run/Cancel.
-  const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
+  // A confirm-tier action the agent loop paused on, awaiting Run/Cancel. The
+  // run is parked server-side under confirm.runId; we resume it via confirmAgent.
+  const [pendingConfirm, setPendingConfirm] = useState<AgentConfirmRequest | null>(null);
   const resetTimer = useRef<number | null>(null);
   const askAbort = useRef<AbortController | null>(null);
 
@@ -135,111 +130,139 @@ export function PetWindow(): JSX.Element {
     void invokeQuiet("show_main_window");
   }, []);
 
-  // Stream a question through the 7-step /api/ask pipeline into the current
-  // exchange. Mirrors the UnifiedPanel contract: tokens on "response" progress,
-  // the validated answer on "learning" complete. Assumes the exchange + asking
-  // flags are already set by the caller.
-  const streamAsk = useCallback(async (question: string) => {
-    askAbort.current?.abort();
-    const controller = new AbortController();
-    askAbort.current = controller;
-    let streamed = "";
-    try {
-      for await (const event of apiClient.ask({ prompt: question }, controller.signal)) {
-        if (event.step === "response" && event.status === "progress" && event.tokensDelta) {
-          streamed += event.tokensDelta;
-          setExchange((c) => (c ? { ...c, answer: streamed } : c));
+  // Drive the agentic loop (the brain's "main thinking") and render its stream
+  // into the current exchange. The loop THINKS and ACTS in steps: tool activity
+  // shows live; the streamed/final answer fills the chat. A confirm-tier action
+  // pauses with a `confirm-request` frame — we park it and surface Run/Cancel.
+  // Bare PipelineEvents (has `step`) are visualizer telemetry and skipped here.
+  // `resume` continues a paused run after the user's decision.
+  const streamAgent = useCallback(
+    async (
+      question: string,
+      resume?: { runId: string; approve: boolean },
+    ) => {
+      askAbort.current?.abort();
+      const controller = new AbortController();
+      askAbort.current = controller;
+      let answer = "";
+      const tools: string[] = [];
+      const render = () => {
+        const body = answer || tools.join("\n") || "thinking…";
+        setExchange((c) => (c ? { ...c, answer: body } : c));
+      };
+      try {
+        const stream = resume
+          ? apiClient.confirmAgent({ runId: resume.runId, approve: resume.approve }, controller.signal)
+          : apiClient.agent({ prompt: question }, controller.signal);
+        for await (const frame of stream) {
+          if (!("type" in frame)) continue; // PipelineEvent telemetry → visualizer only
+          switch (frame.type) {
+            case "thought":
+              if (!answer && frame.text) setSubtitle(frame.text);
+              break;
+            case "tool-start":
+              if (frame.tool) {
+                tools.push(`⚙ ${frame.tool.actionId}…`);
+                render();
+              }
+              break;
+            case "tool-result":
+              if (frame.tool) {
+                tools[tools.length - 1] =
+                  `${frame.tool.ok ? "✓" : "✗"} ${frame.tool.actionId}: ${frame.tool.ok ? frame.tool.summary ?? "done" : frame.tool.error ?? "failed"}`;
+                // os-surface actions return a directive the OS op runs here.
+                if (frame.tool.ok && frame.tool.osDirective) {
+                  void invokeQuiet(frame.tool.osDirective.command, frame.tool.osDirective.args);
+                }
+                render();
+              }
+              break;
+            case "confirm-request":
+              if (frame.confirm) {
+                setPendingConfirm(frame.confirm);
+                setExchange((c) =>
+                  c ? { ...c, answer: `${frame.confirm?.rationale || "Run this action?"}\n→ ${frame.confirm?.title}` } : c,
+                );
+              }
+              return; // pause — wait for the user's Run/Cancel
+            case "delta":
+              answer += frame.text ?? "";
+              render();
+              break;
+            case "final":
+              answer = frame.text ?? answer;
+              render();
+              break;
+            case "error":
+              answer = answer || `⚠ ${frame.detail ?? "agent error"}`;
+              render();
+              break;
+            default:
+              break;
+          }
         }
-        if (event.step === "learning" && event.status === "complete" && event.finalAnswer) {
-          streamed = event.finalAnswer;
-          setExchange((c) => (c ? { ...c, answer: event.finalAnswer as string } : c));
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setExchange((c) => (c ? { ...c, answer: answer || `⚠ ${msg}` } : c));
         }
-        if (event.status === "error") {
-          setExchange((c) => (c ? { ...c, answer: streamed || `⚠ ${event.detail ?? "pipeline error"}` } : c));
-        }
+      } finally {
+        if (askAbort.current === controller) askAbort.current = null;
       }
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setExchange((c) => (c ? { ...c, answer: streamed || `⚠ ${msg}` } : c));
-      }
-    } finally {
-      if (askAbort.current === controller) askAbort.current = null;
-    }
-  }, []);
+    },
+    [],
+  );
 
-  // Single entry point for the chat box: try to resolve the text as an
-  // allowlisted COMMAND first. A safe command runs immediately; a confirm-tier
-  // command parks as a pendingPlan for explicit Run/Cancel; anything that isn't
-  // a command falls through to the /api/ask question pipeline.
+  // Single entry point for the chat box: everything goes through the agentic
+  // loop. A plain question is triaged to the fast 7-step pipeline server-side; a
+  // command / multi-step / "do X" request runs the loop, which executes tools
+  // through the permissioned executor (pausing for confirm-tier approvals).
   const submit = useCallback(
     async (raw: string) => {
       const text = raw.trim();
       if (!text || asking) return;
       if (!expanded) applyExpanded(true);
       setInput("");
-      setPendingPlan(null);
+      setPendingConfirm(null);
       setExchange({ question: text, answer: "…" });
       setAsking(true);
       try {
-        const resolved = await apiClient.resolveAction(text);
-        if (resolved.plan) {
-          const { actionId, args, rationale } = resolved.plan;
-          if (resolved.needsConfirm) {
-            setPendingPlan({ actionId, args, confirmToken: resolved.confirmToken, rationale });
-            setExchange({ question: text, answer: rationale || `Run command “${actionId}”?` });
-            return;
-          }
-          const result = await apiClient.executeAction({ actionId, args });
-          if (result.ok && result.osDirective) {
-            void invokeQuiet(result.osDirective.command, result.osDirective.args);
-          }
-          setExchange({ question: text, answer: result.ok ? result.summary : `⚠ ${result.error ?? "failed"}` });
-          return;
-        }
-        // Not a command → answer it as a question.
-        await streamAsk(text);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setExchange((c) => (c ? { ...c, answer: `⚠ ${msg}` } : c));
+        await streamAgent(text);
       } finally {
         setAsking(false);
       }
     },
-    [asking, expanded, applyExpanded, streamAsk],
+    [asking, expanded, applyExpanded, streamAgent],
   );
 
-  // Confirm + run a parked confirm-tier plan. The confirm token (minted at
-  // resolve time, plan-bound + single-use) is what the server's gate requires.
+  // Approve the paused confirm-tier action and resume the loop. The human just
+  // approved THIS exact plan, so the server mints an honest, plan-bound confirm
+  // token on resume.
   const runPending = useCallback(async () => {
-    if (!pendingPlan || asking) return;
-    const plan = pendingPlan;
-    setPendingPlan(null);
+    if (!pendingConfirm || asking) return;
+    const runId = pendingConfirm.runId;
+    setPendingConfirm(null);
     setAsking(true);
     setExchange((c) => (c ? { ...c, answer: "working…" } : c));
     try {
-      const result = await apiClient.executeAction({
-        actionId: plan.actionId,
-        args: plan.args,
-        confirmToken: plan.confirmToken,
-      });
-      // os-surface actions return a directive; the OS op runs here in Tauri.
-      if (result.ok && result.osDirective) {
-        void invokeQuiet(result.osDirective.command, result.osDirective.args);
-      }
-      setExchange((c) => (c ? { ...c, answer: result.ok ? result.summary : `⚠ ${result.error ?? "failed"}` } : c));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setExchange((c) => (c ? { ...c, answer: `⚠ ${msg}` } : c));
+      await streamAgent("", { runId, approve: true });
     } finally {
       setAsking(false);
     }
-  }, [pendingPlan, asking]);
+  }, [pendingConfirm, asking, streamAgent]);
 
-  const cancelPending = useCallback(() => {
-    setPendingPlan(null);
-    setExchange((c) => (c ? { ...c, answer: "cancelled" } : c));
-  }, []);
+  // Deny the action and let the loop continue (it wraps up without it).
+  const cancelPending = useCallback(async () => {
+    if (!pendingConfirm) return;
+    const runId = pendingConfirm.runId;
+    setPendingConfirm(null);
+    setAsking(true);
+    try {
+      await streamAgent("", { runId, approve: false });
+    } finally {
+      setAsking(false);
+    }
+  }, [pendingConfirm, streamAgent]);
 
   const mood: Mood = useMemo(() => moodFor(lastState, personality), [lastState, personality]);
   const color = MOOD_COLOR[mood];
@@ -404,12 +427,12 @@ export function PetWindow(): JSX.Element {
               <div className="pet-chat-empty">{summary || subtitle}</div>
             )}
           </div>
-          {pendingPlan ? (
+          {pendingConfirm ? (
             <div className="pet-quick" role="group" aria-label="Confirm action">
               <button type="button" disabled={asking} onClick={() => void runPending()}>
                 run ✓
               </button>
-              <button type="button" disabled={asking} onClick={cancelPending}>
+              <button type="button" disabled={asking} onClick={() => void cancelPending()}>
                 cancel
               </button>
             </div>
