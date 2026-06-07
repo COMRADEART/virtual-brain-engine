@@ -24,6 +24,8 @@ import { fetchAndIngestUrl } from "../ingest/index.js";
 import { isExcludedPath } from "../ingest/governance.js";
 import { webSearch } from "../web/search.js";
 import { webResearch } from "../web/research.js";
+import { githubSearch } from "../github/discovery.js";
+import { discoverAndLearn } from "../github/index.js";
 import { getDefaultConnectorInstance } from "../connectors/registry.js";
 import { runScan, scanState } from "../scanner/indexer.js";
 import { surfaceError } from "../util/diagnostics.js";
@@ -190,6 +192,58 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
     return {
       summary: `Researched "${query}" via ${r.provider} — learned ${r.ingested} new memor${r.ingested === 1 ? "y" : "ies"}${dup} from ${r.results.length} page${r.results.length === 1 ? "" : "s"}`,
       data: { provider: r.provider, ingested: r.ingested, deduped: r.deduped, results: r.results },
+    };
+  },
+  // --- GitHub project discovery ----------------------------------------------
+  // "Find popular GitHub repos" — discover only, no persistence. Egress gated
+  // inside githubSearch (LOCAL_ONLY + host pin); a blocked search returns a
+  // clear reason rather than throwing.
+  "github-search": async (args) => {
+    const query = String(args.query);
+    const minStars = typeof args.minStars === "number" ? args.minStars : undefined;
+    const language = typeof args.language === "string" ? args.language : undefined;
+    const limit = typeof args.limit === "number" ? args.limit : undefined;
+    const r = await githubSearch(query, { minStars, language, limit });
+    if (!r.ok) {
+      return { summary: `Couldn't search GitHub — ${r.reason}`, data: r };
+    }
+    return {
+      summary: `Found ${r.repos.length} GitHub repo${r.repos.length === 1 ? "" : "s"} for "${query}"`,
+      data: r.repos.map((repo) => ({
+        fullName: repo.fullName,
+        stars: repo.stars,
+        url: repo.url,
+        language: repo.language,
+        description: repo.description.slice(0, 200),
+      })),
+    };
+  },
+  // "Learn from popular GitHub repos" — discover + read each README into memory.
+  // The default connector's embedder (if any) is passed so learned READMEs join
+  // the vector index. Egress gated inside discoverAndLearn.
+  "github-learn": async (args) => {
+    const query = String(args.query);
+    const minStars = typeof args.minStars === "number" ? args.minStars : undefined;
+    const language = typeof args.language === "string" ? args.language : undefined;
+    const limit = typeof args.limit === "number" ? args.limit : undefined;
+    const conn = getDefaultConnectorInstance();
+    const embed = conn?.embed ? conn.embed.bind(conn) : undefined;
+    const r = await discoverAndLearn(query, { minStars, language, limit, embed });
+    if (!r.ok) {
+      return { summary: `Couldn't learn from GitHub for "${query}" — ${r.reason}`, data: r };
+    }
+    if (r.ingested === 0) {
+      return {
+        summary: r.reason
+          ? `Found ${r.repos.length} repos for "${query}" but learned nothing new — ${r.reason}`
+          : `Found ${r.repos.length} repos for "${query}" but learned nothing new`,
+        data: { repos: r.repos.length, reposLearned: r.reposLearned, ingested: r.ingested, deduped: r.deduped },
+      };
+    }
+    const dup = r.deduped > 0 ? `, ${r.deduped} already known` : "";
+    return {
+      summary: `Learned from ${r.reposLearned} of ${r.repos.length} GitHub repos for "${query}" — ${r.ingested} new memor${r.ingested === 1 ? "y" : "ies"}${dup}`,
+      data: { repos: r.repos.length, reposLearned: r.reposLearned, ingested: r.ingested, deduped: r.deduped },
     };
   },
   // --- System actions --------------------------------------------------------

@@ -13,6 +13,7 @@ import { gatherCuriosity } from "../core/curiosity.js";
 import { createCognitiveEvolutionEngine } from "../core/evolution.js";
 import { createImaginationEngine } from "../core/imagination.js";
 import { createPersistentOrganism } from "../core/organism.js";
+import { createBrainState } from "../core/brainState.js";
 import { createSafetyGate } from "../core/safety.js";
 import { createCognitiveSwarm } from "../core/swarm.js";
 import { broadcast } from "../ws/brainBus.js";
@@ -170,6 +171,12 @@ function toWireMessage(event: BrainEvent): BrainBusMessage | null {
         reason: event.reason,
         timestamp: event.at,
       };
+    case "brain-state":
+      return {
+        type: "brain-state",
+        snapshot: event.snapshot,
+        timestamp: event.at,
+      };
   }
 }
 
@@ -209,6 +216,21 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   const unorganism = bus.onAny((event) => organism.observeBrainEvent(event));
   const stopOrganismAutonomy = organism.startAutonomy();
   organism.wake();
+
+  // Central cognitive loop. Created on the same process bus so its throttled
+  // `brain-state` events fan out through the bridge above. The decay heartbeat
+  // is autonomous thought: it ages the working-memory workspace so stale items
+  // fade between queries. Failure-isolated — a tick error must never crash boot.
+  const brainState = createBrainState(bus);
+  const BRAIN_STATE_TICK_MS = 60_000;
+  const brainStateTick = setInterval(() => {
+    try {
+      brainState.tickDecay(BRAIN_STATE_TICK_MS);
+    } catch (err) {
+      console.warn("[brain-core] brain-state decay tick failed:", err);
+    }
+  }, BRAIN_STATE_TICK_MS);
+  if (typeof brainStateTick.unref === "function") brainStateTick.unref();
 
   const runtime = new AgentRuntime({ bus, safety: createSafetyGate() });
   runtime.register(new ObserverAgent());
@@ -262,6 +284,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       stopDreaming();
       stopEvolutionLoop();
       stopOrganismAutonomy();
+      clearInterval(brainStateTick);
       await runtime.stop();
     },
   };

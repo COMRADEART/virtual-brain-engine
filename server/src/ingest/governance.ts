@@ -15,8 +15,10 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g,
   // AWS access key id.
   /\bAKIA[0-9A-Z]{16}\b/g,
-  // GitHub tokens.
+  // GitHub tokens — classic/OAuth (ghp_/gho_/ghu_/ghs_/ghr_) ...
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+  // ... and fine-grained personal access tokens (github_pat_…, 2023+).
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
   // Slack tokens.
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
   // JWTs.

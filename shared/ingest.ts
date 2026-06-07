@@ -14,7 +14,7 @@
 //     memory brain.
 //   - Local-only + audited: ingestion never egresses; every run is logged.
 
-export type IngestSourceId = "clipboard" | "recent-docs" | "app-usage" | "manual" | "web";
+export type IngestSourceId = "clipboard" | "recent-docs" | "app-usage" | "manual" | "web" | "github";
 
 export interface IngestSourceSpec {
   id: IngestSourceId;
@@ -41,6 +41,13 @@ export const INGEST_SOURCES: IngestSourceSpec[] = [
     id: "web",
     title: "Web pages",
     description: "Read a URL and learn its text. Needs LOCAL_ONLY=false (egresses).",
+    osBacked: false,
+    egress: true,
+  },
+  {
+    id: "github",
+    title: "GitHub projects",
+    description: "Discover popular repos (>1k stars) by topic and learn their READMEs. Needs LOCAL_ONLY=false (egresses).",
     osBacked: false,
     egress: true,
   },

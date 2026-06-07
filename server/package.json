@@ -18,6 +18,7 @@
     "graph:selfcheck": "tsx scripts/graph-selfcheck.ts",
     "worldmodel:selfcheck": "tsx scripts/worldmodel-selfcheck.ts",
     "learning:selfcheck": "tsx scripts/learning-selfcheck.ts",
+    "ownmodel:selfcheck": "tsx scripts/ownmodel-selfcheck.ts",
     "civilization:selfcheck": "tsx scripts/civilization-selfcheck.ts",
     "evolution:selfcheck": "tsx scripts/evolution-selfcheck.ts",
     "actions:selfcheck": "tsx scripts/actions-selfcheck.ts",
@@ -28,6 +29,9 @@
     "rag:selfcheck": "tsx scripts/rag-selfcheck.ts",
     "rl:selfcheck": "tsx scripts/rl-selfcheck.ts",
     "agent:selfcheck": "tsx scripts/agent-selfcheck.ts",
+    "brainstate:selfcheck": "tsx scripts/brainstate-selfcheck.ts",
+    "github:selfcheck": "tsx scripts/github-selfcheck.ts",
+    "keyrotation:selfcheck": "tsx scripts/keyrotation-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },

@@ -29,6 +29,11 @@ export type ActionId =
   // Both egress, so both are confirm-tier and gated by LOCAL_ONLY.
   | "web-search"
   | "research-web"
+  // GitHub project discovery — find popular repos (>1k stars) by topic and learn
+  // their READMEs into memory. Both egress, so both are confirm-tier and gated by
+  // LOCAL_ONLY (see server/src/github).
+  | "github-search"
+  | "github-learn"
   // System actions — "interact with the computer / do tasks". These run a Node
   // handler in the server process (same machine as the user). system-info is a
   // read-only metrics snapshot; the file ops are confirm-tier and path-guarded
@@ -61,6 +66,8 @@ export const ACTION_IDS: ActionId[] = [
   "learn-url",
   "web-search",
   "research-web",
+  "github-search",
+  "github-learn",
   "system-info",
   "list-directory",
   "read-file",

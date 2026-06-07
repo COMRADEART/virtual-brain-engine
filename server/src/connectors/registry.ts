@@ -109,7 +109,10 @@ const REMOTE_PROVIDERS: Array<{
     id: "nvidia",
     name: "NVIDIA NIM (remote)",
     baseUrl: "https://integrate.api.nvidia.com/v1",
-    hasKey: () => (process.env.NVIDIA_API_KEY ?? "").length > 0,
+    // Seed when EITHER the singular key or the plural rotation pool is set.
+    hasKey: () =>
+      (process.env.NVIDIA_API_KEY ?? "").length > 0 ||
+      (process.env.NVIDIA_API_KEYS ?? "").length > 0,
     model: () => CONFIG.nvidiaChatModel,
   },
   {
@@ -118,7 +121,9 @@ const REMOTE_PROVIDERS: Array<{
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     hasKey: () =>
       (process.env.GEMINI_API_KEY ?? "").length > 0 ||
-      (process.env.GOOGLE_AI_API_KEY ?? "").length > 0,
+      (process.env.GOOGLE_AI_API_KEY ?? "").length > 0 ||
+      (process.env.GEMINI_API_KEYS ?? "").length > 0 ||
+      (process.env.GOOGLE_AI_API_KEYS ?? "").length > 0,
     model: () => CONFIG.geminiChatModel,
   },
 ];
@@ -146,6 +151,31 @@ export function ensureRemoteProviderConnectors(): void {
     });
     cache.delete(provider.id);
   }
+}
+
+// The brain's OWN model (Learning Lab — Phase D). After `ollama create` imports
+// the merged model, seed it as a local Ollama connector — ALWAYS *disabled +
+// non-default* on first seed, so a small-corpus voice adaptation never silently
+// becomes the model /api/ask uses. The user opts in via the picker. Idempotent:
+// re-running preserves a prior enabled/default choice and just refreshes the
+// model name. No embeddingModel → retrieval keeps using the local 768-dim
+// Ollama embedder (the OllamaConnector falls back to CONFIG.ollamaEmbeddingModel),
+// so the vector index stays intact.
+export function ensureOwnModelConnector(modelName: string): ConnectorDescriptor {
+  const id = "own-model";
+  const existing = getConnector(id);
+  const descriptor = upsertConnector({
+    id,
+    name: existing?.name ?? "Brain's own model (local)",
+    kind: "ollama",
+    baseUrl: CONFIG.ollamaBaseUrl,
+    model: modelName,
+    embeddingModel: undefined,
+    enabled: existing?.enabled ?? false,
+    isDefault: existing?.isDefault ?? false,
+  });
+  cache.delete(id);
+  return descriptor;
 }
 
 export async function probeAllConnectors(): Promise<void> {

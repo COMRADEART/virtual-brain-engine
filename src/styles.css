@@ -5892,6 +5892,128 @@ input[type="checkbox"] {
   color: var(--text);
 }
 
+/* ---------- Central cognitive loop — Brain State (left aside; bus-gated) ----------
+ * Sits above the Learning Lab on the left edge. Collapsed by default (thin
+ * header) so it never buries the 3D scene; bounded + scrollable when expanded.
+ */
+.brainstate-panel {
+  position: absolute;
+  left: 16px;
+  bottom: 430px;
+  z-index: 6;
+  width: min(330px, calc(100vw - 32px));
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(10, 35, 42, 0.92), rgba(3, 12, 16, 0.9));
+  color: #cfe9f4;
+  font-size: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(14px);
+}
+[data-theme="light"] .brainstate-panel {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--text);
+}
+.brainstate-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  border-bottom: 1px solid rgba(149, 238, 255, 0.14);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.brainstate-head > span { flex: 1; }
+.brainstate-badge {
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: #9fb4c9;
+}
+.brainstate-badge.hi { color: var(--green, #83ffb0); border-color: rgba(131, 255, 176, 0.4); }
+.brainstate-badge.mid { color: var(--cyan, #5df2ff); }
+.brainstate-badge.lo { color: var(--amber, #ffce6b); border-color: rgba(255, 206, 107, 0.4); }
+.brainstate-toggle {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+}
+.brainstate-body { padding: 8px 11px 11px; }
+.brainstate-section { margin-top: 10px; }
+.brainstate-section:first-child { margin-top: 2px; }
+.brainstate-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #8fb0c4;
+}
+.brainstate-empty, .brainstate-note { color: #7f97aa; font-size: 11px; margin: 2px 0; }
+.brainstate-note.warn { color: var(--amber, #ffce6b); }
+.brainstate-err { color: var(--red, #ff6b6b); font-size: 11px; margin-top: 8px; }
+
+/* Confidence gauge */
+.brainstate-gauge-track {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.brainstate-gauge-fill { display: block; height: 100%; border-radius: 999px; }
+.brainstate-gauge-fill.hi { background: var(--green, #83ffb0); }
+.brainstate-gauge-fill.mid { background: var(--cyan, #5df2ff); }
+.brainstate-gauge-fill.lo { background: var(--amber, #ffce6b); }
+.brainstate-gauge-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; color: #8fb0c4; }
+
+/* Attention rows */
+.brainstate-attn, .brainstate-wm, .brainstate-goals, .brainstate-metrics {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 5px;
+}
+.brainstate-attn-row { display: flex; align-items: center; gap: 7px; }
+.brainstate-attn-score { font-variant-numeric: tabular-nums; color: var(--cyan, #5df2ff); width: 30px; }
+.brainstate-attn-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brainstate-attn-bars { display: flex; align-items: flex-end; gap: 2px; height: 16px; width: 56px; flex-shrink: 0; }
+.brainstate-attn-seg { width: 8px; min-height: 1px; border-radius: 1px; background: rgba(149, 238, 255, 0.5); align-self: flex-end; }
+.brainstate-attn-seg.seg-goal { background: #83ffb0; }
+.brainstate-attn-seg.seg-emo { background: #ffce6b; }
+.brainstate-attn-seg.seg-unc { background: #c89bff; }
+.brainstate-attn-seg.seg-surv { background: #ff8f8f; }
+
+/* Working-memory rows */
+.brainstate-wm-row { display: flex; align-items: center; gap: 7px; }
+.brainstate-wm-kind {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: #7f97aa; width: 46px; flex-shrink: 0;
+}
+.brainstate-wm-row.kind-open-question .brainstate-wm-kind { color: var(--amber, #ffce6b); }
+.brainstate-wm-row.kind-query .brainstate-wm-kind { color: var(--cyan, #5df2ff); }
+.brainstate-wm-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brainstate-wm-track { width: 44px; height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; flex-shrink: 0; }
+.brainstate-wm-fill { display: block; height: 100%; background: var(--cyan, #5df2ff); }
+
+/* Goals */
+.brainstate-goal-row { display: flex; align-items: center; gap: 7px; }
+.brainstate-goal-pri { font-variant-numeric: tabular-nums; color: #8fb0c4; width: 24px; }
+.brainstate-goal-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brainstate-goal-status { font-size: 9px; text-transform: uppercase; color: #7f97aa; }
+.brainstate-goal-status.st-active { color: var(--green, #83ffb0); }
+
+/* Learning metrics */
+.brainstate-metrics { grid-auto-flow: row; }
+.brainstate-metrics li { color: #b9d2e0; }
+.brainstate-metrics strong { color: #eaf6fb; }
+
 /* ---------- Phase 1 IdleAgent ticker (bottom-center, dim, ephemeral) ----------
  * Deliberately faint so the brain "thinking idly" feels like a background hum,
  * not a notification. Auto-fades 12s after a new idle-thought arrives.

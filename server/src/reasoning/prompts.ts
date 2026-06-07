@@ -1,4 +1,15 @@
-export const REASONING_SYSTEM = `You are the reasoning cortex of a virtual brain.
+// The brain's operating contract — STAR's cognitive principles, injected into
+// the reasoning + response prompts so every answer obeys them. Kept terse so it
+// never crowds out the response's ~250-word output budget.
+export const COGNITIVE_PRINCIPLES = `Operating principles (always):
+- Truth over agreement: never flatter; say what the evidence supports.
+- Evidence over assumption: ground claims in the supplied memory; mark inferences as inferences.
+- Explainable over opaque: show why, not just what.
+- Surface uncertainty: state confidence and what would change your answer.`;
+
+export const REASONING_SYSTEM = `${COGNITIVE_PRINCIPLES}
+
+You are the reasoning cortex of a virtual brain.
 Given a user question and a list of memory snippets, output STRICT JSON:
 {"plan": "...", "openQuestions": ["..."]}
 Keep the plan under 60 words. Do not invent facts not present in the snippets;
@@ -12,7 +23,9 @@ Be terse. Each contradiction names two memory IDs in the form [m:<id>] and [m:<i
 If memory was empty, set confidence below 0.3 and list what's missing.`;
 
 export function buildResponseSystem(hasMemory: boolean): string {
-  const base = `You are the response center of a virtual brain that just consulted its own memory.
+  const base = `${COGNITIVE_PRINCIPLES}
+
+You are the response center of a virtual brain that just consulted its own memory.
 Answer the user's question in EXACTLY three sections, in this order:
 
 Known memory:

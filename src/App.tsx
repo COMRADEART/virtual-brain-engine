@@ -7,6 +7,7 @@ import { PipelineOverlay } from "./components/PipelineOverlay";
 import { DigitalTwinPanel } from "./components/DigitalTwinPanel";
 import { PerceptionPanel } from "./components/PerceptionPanel";
 import { LearningLabPanel } from "./components/LearningLabPanel";
+import { BrainStatePanel } from "./components/BrainStatePanel";
 import { IdleThoughtTicker } from "./components/IdleThoughtTicker";
 import { RegionControls } from "./components/RegionControls";
 import { UnifiedPanel } from "./components/UnifiedPanel";
@@ -357,6 +358,7 @@ useEffect(() => {
           />
           <PerceptionPanel />
           <LearningLabPanel />
+          <BrainStatePanel />
           <IdleThoughtTicker />
           <UnifiedPanel
             tab={unifiedTab}

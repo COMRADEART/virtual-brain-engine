@@ -456,6 +456,124 @@ def train_start(body: TrainIn) -> dict[str, Any]:
     return dict(_train_status)
 
 
+# ---------------------------------------------------------------------------
+# /ownmodel/* — the brain's OWN model (Learning Lab — Phase D: own-LLM).
+#
+# LoRA continued-pretraining over a small open base (default Qwen2.5-0.5B) on the
+# brain's own corpus (shipped by the Node side), merged into a standalone HF dir
+# the Node side serves via `ollama create`. Honest scope: adapts VOICE/domain,
+# does NOT replace RAG. torch/transformers/peft import LAZILY inside
+# /ownmodel/start so the worker still boots without ML deps.
+# ---------------------------------------------------------------------------
+
+_ownmodel_lock = threading.Lock()
+_ownmodel_thread: threading.Thread | None = None
+# Keys mirror shared/learning.OwnModelStatus so the Node client maps 1:1.
+_ownmodel_status: dict[str, Any] = {
+    "state": "idle",
+    "step": 0,
+    "totalSteps": 0,
+    "loss": None,
+    "baseModel": None,
+    "outputDir": None,
+    "ggufPath": None,
+    "modelName": None,
+    "served": False,
+    "corpusChars": None,
+    "trainableParams": None,
+    "device": None,
+    "message": None,
+    "updatedAt": None,
+}
+
+_OWN_MIN_CORPUS_CHARS = 1000
+
+
+class OwnModelIn(BaseModel):
+    corpus: str = Field(..., description="Training corpus — the brain's own memories.")
+    steps: int | None = Field(default=None, ge=1, le=100_000)
+    baseModel: str | None = Field(default=None, description="HF base model id to adapt.")
+    force: bool = Field(default=False, description="Restart even if a run is in progress.")
+
+
+def _ownmodel_deps_ok() -> bool:
+    return all(
+        importlib.util.find_spec(mod) is not None for mod in ("torch", "transformers", "peft")
+    )
+
+
+@app.get("/ownmodel/status")
+def ownmodel_status() -> dict[str, Any]:
+    out = dict(_ownmodel_status)
+    # A booted worker WITHOUT the training deps can't build an own-model — report
+    # that honestly rather than sitting at "idle". Once a run has happened the
+    # real state (running/merging/done/error) takes precedence.
+    if out["state"] == "idle" and not _ownmodel_deps_ok():
+        out["state"] = "unavailable"
+        out["message"] = "torch/transformers/peft not installed — pip install -r requirements-ml.txt"
+    return out
+
+
+@app.post("/ownmodel/start")
+def ownmodel_start(body: OwnModelIn) -> dict[str, Any]:
+    global _ownmodel_thread
+    # Lazy import — torch/transformers/peft (and the trainer) only load here.
+    try:
+        from finetune.trainer import run_finetune
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"own-model training deps not installed ({exc}). "
+                "Install worker/requirements-ml.txt to build the brain's own model."
+            ),
+        ) from exc
+
+    if len(body.corpus) < _OWN_MIN_CORPUS_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"corpus too small to train ({len(body.corpus)} chars, "
+                f"need >= {_OWN_MIN_CORPUS_CHARS})."
+            ),
+        )
+
+    with _ownmodel_lock:
+        # Single in-flight run, enforced on THREAD LIVENESS — same rationale as
+        # /train/start: we can't safely kill a Python thread, so a live run owns
+        # the status dict and force can't preempt it.
+        if _ownmodel_thread is not None and _ownmodel_thread.is_alive():
+            out = dict(_ownmodel_status)
+            if body.force:
+                out["message"] = "an own-model run is already in flight — force ignored until it finishes"
+            return out
+        _ownmodel_status.update(
+            state="running",
+            step=0,
+            totalSteps=body.steps or 0,
+            loss=None,
+            baseModel=body.baseModel,
+            outputDir=None,
+            ggufPath=None,
+            modelName=None,
+            served=False,
+            corpusChars=len(body.corpus),
+            trainableParams=None,
+            device=None,
+            message="starting…",
+            updatedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        thread = threading.Thread(
+            target=run_finetune,
+            args=(body.corpus, _ownmodel_status, body.steps, body.baseModel),
+            daemon=True,
+        )
+        _ownmodel_thread = thread
+        thread.start()
+
+    return dict(_ownmodel_status)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 

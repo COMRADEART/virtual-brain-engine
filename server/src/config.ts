@@ -110,6 +110,17 @@ export interface ServerConfig {
   // plain question straight to the 7-step pipeline and only multi-step / tool /
   // "do X" requests into the loop. Set AGENT_TRIAGE=false to always use the loop.
   agentTriage: boolean;
+  // --- GitHub project discovery ("learn from popular repos") -----------------
+  // Optional GitHub API token. When set, it is sent ONLY in the Authorization
+  // header (never a URL/query/log) and raises GitHub's low unauthenticated rate
+  // limit (search 10→30/min, core 60→5000/hr). Read from process.env at call
+  // time; NEVER stored in the DB. Empty = unauthenticated (works, just slower).
+  githubToken: string;
+  // Minimum stars a repo must have to be discovered/ingested ("more than 1k").
+  githubMinStars: number;
+  // Max repos a single discovery/learn run touches — caps the README fetch
+  // budget so one query can't spam GitHub (single page, no multi-page crawl).
+  githubMaxRepos: number;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -181,6 +192,9 @@ export const CONFIG: ServerConfig = {
   agentMaxRounds: Math.min(50, Math.max(1, num("AGENT_MAX_ROUNDS", 12))),
   agentConfirmMode: oneOf("AGENT_CONFIRM_MODE", ["ask", "scope", "safe-only"] as const, "ask"),
   agentTriage: bool("AGENT_TRIAGE", true),
+  githubToken: str("GITHUB_TOKEN", ""),
+  githubMinStars: Math.max(1, num("GITHUB_MIN_STARS", 1000)),
+  githubMaxRepos: Math.min(50, Math.max(1, num("GITHUB_MAX_REPOS", 10))),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;

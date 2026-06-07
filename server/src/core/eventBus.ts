@@ -30,6 +30,7 @@ import type {
   OrganismLifecycleState,
   OrganismSnapshot,
 } from "../../../shared/organism.js";
+import type { BrainStateSnapshot } from "../../../shared/brainState.js";
 
 /**
  * Internal events emitted by agents. These are distinct from the frontend
@@ -162,6 +163,15 @@ export type BrainEvent =
       target: string;
       curiosity: number;
       reason: string;
+      at: string;
+    }
+  | {
+      // Central cognitive loop — emitted (throttled) whenever the unified
+      // BrainState changes (perceive/attend/recordReasoning/tickDecay). The
+      // bridge in brainCore.ts fans it to the browser so the BrainStatePanel +
+      // 3D scene reflect the live attention map / working memory / confidence.
+      kind: "brain-state";
+      snapshot: BrainStateSnapshot;
       at: string;
     };
 

@@ -36,6 +36,7 @@ import type {
   WorkerStatus,
 } from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
+import type { BrainStateSnapshot } from "../../shared/brainState";
 import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
 import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionRiskTier, ActionSpec } from "../../shared/actions";
 import type { AgentConfirmDecision, AgentConfirmMode, AgentStreamFrame } from "../../shared/agent";
@@ -565,6 +566,13 @@ export const apiClient = {
 
   organism(): Promise<OrganismSnapshot> {
     return json<OrganismSnapshot>(`/api/organism`);
+  },
+
+  // Central cognitive loop — the unified BrainState snapshot (attention map +
+  // working memory + goals + confidence + priorUncertainty + learning). Also
+  // streams over the bus as { type: "brain-state" }; this is the poll fallback.
+  brainState(): Promise<BrainStateSnapshot> {
+    return json<BrainStateSnapshot>(`/api/brain/state`);
   },
 
   organismWake(): Promise<{ snapshot: OrganismSnapshot }> {

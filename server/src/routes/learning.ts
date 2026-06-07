@@ -14,6 +14,11 @@ import { getFeedbackStats } from "../db/repositories/feedback.js";
 import { FEATURE_LABELS, FEATURE_VERSION, zeroWeights } from "../reasoning/rankerModel.js";
 import { WARM_AT } from "../reasoning/ranker.js";
 import { getLlmTrainerStatus, startLlmTraining } from "../learning/llmTrainerClient.js";
+import {
+  getOwnModelStatus,
+  serveOwnModel,
+  startOwnModelTraining,
+} from "../learning/ownModelClient.js";
 import { getUsageSummary } from "../learning/usage.js";
 
 export const learningRouter = Router();
@@ -55,4 +60,32 @@ learningRouter.post("/learning/llm/start", async (req, res) => {
     return;
   }
   res.json(await startLlmTraining(parsed.data));
+});
+
+// --- Phase D: the brain's OWN model (LoRA continued-pretraining → Ollama) ---
+//   GET  /api/learning/ownmodel/status  own-model trainer status
+//   POST /api/learning/ownmodel/start   assemble the corpus + kick LoRA CPT
+//   POST /api/learning/ownmodel/serve   import the merged model into Ollama +
+//                                        seed an opt-in connector
+learningRouter.get("/learning/ownmodel/status", async (_req, res) => {
+  res.json(await getOwnModelStatus());
+});
+
+const startOwnModelSchema = z.object({
+  steps: z.number().int().min(1).max(100_000).optional(),
+  baseModel: z.string().min(1).max(200).optional(),
+  force: z.boolean().optional(),
+});
+
+learningRouter.post("/learning/ownmodel/start", async (req, res) => {
+  const parsed = startOwnModelSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  res.json(await startOwnModelTraining(parsed.data));
+});
+
+learningRouter.post("/learning/ownmodel/serve", async (_req, res) => {
+  res.json(await serveOwnModel());
 });

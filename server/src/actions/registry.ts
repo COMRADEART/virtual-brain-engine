@@ -113,6 +113,51 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       })
       .strict(),
   },
+  // --- GitHub project discovery ("learn from popular repos") -----------------
+  "github-search": {
+    id: "github-search",
+    title: "Find popular GitHub repos",
+    description:
+      "Search GitHub for the most-starred repositories about a topic (default >1k stars). Returns name, stars, URL and description. Egresses, so gated by LOCAL_ONLY.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      query: "the topic/keywords to search GitHub for",
+      minStars: "minimum stars (default 1000)",
+      language: "optional language filter (e.g. TypeScript)",
+      limit: "max repos, 1-50 (default 10)",
+    },
+    schema: z
+      .object({
+        query: z.string().min(1).max(200),
+        minStars: z.number().int().min(1).max(1_000_000).optional(),
+        language: z.string().max(30).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      })
+      .strict(),
+  },
+  "github-learn": {
+    id: "github-learn",
+    title: "Learn from popular GitHub repos",
+    description:
+      "Find the most-starred GitHub repos about a topic (default >1k stars) AND read their READMEs into memory so the brain learns them — then they can be cited in future answers. Use for 'learn about X from github', 'find popular repos for X'. Egresses, so gated by LOCAL_ONLY.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      query: "the topic to find popular repos for and learn",
+      minStars: "minimum stars (default 1000)",
+      language: "optional language filter (e.g. TypeScript)",
+      limit: "max repos to learn, 1-50 (default 10)",
+    },
+    schema: z
+      .object({
+        query: z.string().min(1).max(200),
+        minStars: z.number().int().min(1).max(1_000_000).optional(),
+        language: z.string().max(30).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      })
+      .strict(),
+  },
   // --- System actions (Node handlers in the server process) ------------------
   "system-info": {
     id: "system-info",

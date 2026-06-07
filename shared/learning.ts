@@ -53,6 +53,45 @@ export interface LlmTrainerStatus {
   updatedAt: string | null;
 }
 
+// Phase D — the brain's OWN model. A LoRA continued-pretraining pass over a
+// small open base (default Qwen2.5-0.5B) on the brain's memory corpus, merged
+// and served through Ollama as an opt-in connector. Distinct from the Phase C
+// from-scratch trainer (LlmTrainerStatus): this produces a model the brain can
+// actually reason with — adapts VOICE/domain; RAG stays the knowledge path.
+export type OwnModelState =
+  | "idle"
+  | "running"
+  | "merging"
+  | "done"
+  | "error"
+  | "unavailable";
+
+export interface OwnModelStatus {
+  state: OwnModelState;
+  step: number;
+  totalSteps: number;
+  /** Latest accumulated training loss, null before the first step. */
+  loss: number | null;
+  /** HF base model id being adapted (e.g. "Qwen/Qwen2.5-0.5B"). */
+  baseModel: string | null;
+  /** Absolute path of the merged HF model dir once training completes. */
+  outputDir: string | null;
+  /** Absolute path of the exported GGUF (what Ollama imports), once available. */
+  ggufPath: string | null;
+  /** Ollama model name once served (e.g. "star-brain"). */
+  modelName: string | null;
+  /** True once the merged model has been imported into Ollama + seeded as a connector. */
+  served: boolean;
+  /** Characters of personal corpus the model trained on. */
+  corpusChars: number | null;
+  /** Trainable (LoRA) parameter count. */
+  trainableParams: number | null;
+  /** "cuda" or "cpu" — what the worker trained on. */
+  device: string | null;
+  message: string | null;
+  updatedAt: string | null;
+}
+
 export interface FeedbackStats {
   up: number;
   down: number;

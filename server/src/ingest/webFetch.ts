@@ -146,7 +146,12 @@ export function chunkText(text: string, opts: { targetChars?: number; maxChunks?
 
 // --- Capped body read -------------------------------------------------------
 
-async function readCapped(res: Response, maxBytes: number): Promise<string | null> {
+// Read a response body as UTF-8 text, capped at maxBytes (returns null when the
+// body exceeds the cap — refused, not truncated). Streams when the body exposes a
+// reader so a multi-GB response can't be buffered into memory; falls back to
+// res.text() for fakes/streams without a reader. Exported so other egressing
+// fetchers (e.g. github/discovery.ts) share the same OOM guard.
+export async function readCapped(res: Response, maxBytes: number): Promise<string | null> {
   const body = (res as { body?: ReadableStream<Uint8Array> | null }).body;
   if (body && typeof body.getReader === "function") {
     const reader = body.getReader();

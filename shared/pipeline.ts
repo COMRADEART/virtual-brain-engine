@@ -21,6 +21,7 @@ import type {
   OrganismSnapshot,
 } from "./organism";
 import type { BrainBusVisualMessage } from "./vision";
+import type { BrainStateSnapshot } from "./brainState";
 
 export type LogicalRegionId =
   | "memory-core"
@@ -152,4 +153,9 @@ export type BrainBusMessage =
       feedback: { up: number; down: number; total: number };
       trainedCount: number;
       timestamp: string;
-    };
+    }
+  // --- Central cognitive loop (brainState.ts → brainCore.ts bridge) ---
+  // Emitted (throttled) whenever the unified BrainState changes, so the
+  // BrainStatePanel reflects the live attention map / working memory /
+  // confidence without polling.
+  | { type: "brain-state"; snapshot: BrainStateSnapshot; timestamp: string };

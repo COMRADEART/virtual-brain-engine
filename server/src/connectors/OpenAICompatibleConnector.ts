@@ -13,58 +13,94 @@ function hostnameOf(url: string): string {
   }
 }
 
-// First non-empty value. Treats "" the same as unset, so a blank `GEMINI_API_KEY=`
-// line in .env doesn't shadow a real GOOGLE_AI_API_KEY (??-chaining would, since
-// "" isn't nullish).
-function firstNonEmpty(...vals: Array<string | undefined>): string {
-  for (const v of vals) {
-    if (v && v.length > 0) {
-      return v;
-    }
+// Split a "a, b ,c" env value into ["a","b","c"], dropping blanks. A single
+// value with no comma yields a one-element pool, so the plural and singular
+// env vars are handled uniformly.
+function splitKeys(raw: string | undefined): string[] {
+  if (!raw) {
+    return [];
   }
-  return "";
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
-// Resolve the bearer key by host. Local OpenAI-compatible runtimes need no key
-// (or any string); the two free remote providers each read their own env var so
-// you can hold both keys at once. Keys are read from process.env only — never
-// persisted to the DB. Returns null when no key is configured (the local path).
-function resolveApiKey(baseUrl: string): string | null {
+// Resolve the bearer-key POOL by host. Local OpenAI-compatible runtimes need no
+// key (or any string), so the pool is empty for them. The free remote providers
+// each read their own env vars — BOTH a plural comma-separated list (rotation:
+// hold 4-5 free keys to ~Nx the rate limit and fail over around a throttled one)
+// AND the legacy singular var (backward compatible). Plural is listed first so a
+// dedicated rotation pool takes precedence in ordering. Keys are read from
+// process.env only — never persisted to the DB. Returns [] when none configured
+// (the local path). Order-preserving dedup so the same key isn't tried twice.
+function resolveApiKeys(baseUrl: string): string[] {
   const host = hostnameOf(baseUrl);
-  let raw = "";
+  let raw: string[];
   if (host === "integrate.api.nvidia.com") {
-    raw = firstNonEmpty(process.env.NVIDIA_API_KEY);
+    raw = [...splitKeys(process.env.NVIDIA_API_KEYS), ...splitKeys(process.env.NVIDIA_API_KEY)];
   } else if (host === "generativelanguage.googleapis.com") {
-    raw = firstNonEmpty(process.env.GEMINI_API_KEY, process.env.GOOGLE_AI_API_KEY);
+    raw = [
+      ...splitKeys(process.env.GEMINI_API_KEYS),
+      ...splitKeys(process.env.GOOGLE_AI_API_KEYS),
+      ...splitKeys(process.env.GEMINI_API_KEY),
+      ...splitKeys(process.env.GOOGLE_AI_API_KEY),
+    ];
   } else {
-    raw = firstNonEmpty(process.env.OPENAI_API_KEY, process.env.LMSTUDIO_API_KEY);
+    raw = [
+      ...splitKeys(process.env.OPENAI_API_KEYS),
+      ...splitKeys(process.env.LMSTUDIO_API_KEYS),
+      ...splitKeys(process.env.OPENAI_API_KEY),
+      ...splitKeys(process.env.LMSTUDIO_API_KEY),
+    ];
   }
-  return raw.length > 0 ? raw : null;
+  return [...new Set(raw)];
 }
 
-// One connector to drive every OpenAI-compatible local server: LM Studio,
-// llama.cpp's llama-server, Jan, GPT4All, vLLM, TGI. baseUrl is required and
-// should be the root that exposes /v1/* (e.g. "http://127.0.0.1:1234/v1" or
-// "http://127.0.0.1:8080").
+// Cooldown windows after a key is rejected. A 429 (rate/quota) is transient, so
+// a short window; a 401/403 (bad/exhausted key) is sticky, so a long one. Both
+// are heuristic — an exhausted-pool sweep ignores cooldowns rather than failing
+// outright (see candidateOrder).
+const COOLDOWN_RATE_MS = 30_000;
+const COOLDOWN_AUTH_MS = 5 * 60_000;
+const COOLDOWN_MAX_MS = 10 * 60_000;
+
+export interface ConnectorRuntimeOptions {
+  // Injected for hermetic selfchecks (no real network). Defaults to global fetch.
+  fetchImpl?: typeof fetch;
+}
+
+// One connector to drive every OpenAI-compatible server (local: LM Studio,
+// llama.cpp's llama-server, Jan, GPT4All, vLLM, TGI; remote: NVIDIA NIM, Gemini's
+// OpenAI endpoint). baseUrl is required and should be the root that exposes /v1/*
+// (e.g. "http://127.0.0.1:1234/v1" or "http://127.0.0.1:8080").
 //
-// Auth: optional. Local runtimes accept any key (LM Studio explicitly accepts
-// the literal "lm-studio"), so we send `Authorization: Bearer <something>`
-// only if the user configured one via OPENAI_API_KEY / LMSTUDIO_API_KEY. The
-// previous default of "lm-studio" was harmless but obscured the no-key path.
+// Auth + key rotation: the API key(s) come from a host-scoped pool (see
+// resolveApiKeys). With 0 keys we send no Authorization header (local runtimes
+// accept that). With 1+ keys, every request round-robins across the pool to
+// spread load, and on a 429/401/403 it transparently FAILS OVER to the next key
+// (the throttled/exhausted one enters a cooldown so subsequent requests skip it).
+// A non-key error (4xx≠auth, 5xx) is surfaced as-is — failing over keys can't fix
+// a malformed request or a provider outage, and would just burn the pool.
 //
 // embed(): only exposed when descriptor.embeddingModel is set. The pipeline's
-// fallback chain ([Phase F]) checks `instance.embed` for presence before
-// trying — defining embed() as a no-op would break that check, so this class
-// dynamically assigns the method in the constructor based on the descriptor.
+// fallback chain ([Phase F]) checks `instance.embed` for presence before trying —
+// defining embed() as a no-op would break that check, so this class dynamically
+// assigns the method in the constructor based on the descriptor.
 export class OpenAICompatibleConnector implements Connector {
   readonly descriptor: ConnectorDescriptor;
   private readonly baseUrl: string;
   private readonly apiRoot: string;
   private readonly defaultModel: string;
-  private readonly apiKey: string | null;
+  private readonly apiKeys: string[];
+  private readonly fetchImpl: typeof fetch;
+  // key → epoch-ms until which the key is skipped on the fresh sweep.
+  private readonly cooldownUntil = new Map<string, number>();
+  // round-robin cursor; advanced past the last key that succeeded.
+  private rrIndex = 0;
   readonly embed?: (text: string, signal?: AbortSignal) => Promise<number[]>;
 
-  constructor(descriptor: ConnectorDescriptor) {
+  constructor(descriptor: ConnectorDescriptor, opts: ConnectorRuntimeOptions = {}) {
     this.descriptor = descriptor;
     if (!descriptor.baseUrl) {
       throw new ConnectorError(
@@ -80,28 +116,94 @@ export class OpenAICompatibleConnector implements Connector {
     // produce a broken URL, which the old endsWith("/v1") check did for Gemini.
     this.apiRoot = /^https?:\/\/[^/]+$/.test(this.baseUrl) ? `${this.baseUrl}/v1` : this.baseUrl;
     this.defaultModel = descriptor.model ?? "";
-    this.apiKey = resolveApiKey(this.baseUrl);
+    this.apiKeys = resolveApiKeys(this.baseUrl);
+    this.fetchImpl = opts.fetchImpl ?? fetch;
     if (descriptor.embeddingModel) {
       const embedModel = descriptor.embeddingModel;
       this.embed = (text: string, signal?: AbortSignal) => this.callEmbed(embedModel, text, signal);
     }
   }
 
+  // Visible for selfchecks: the size of the rotation pool.
+  get keyCount(): number {
+    return this.apiKeys.length;
+  }
+
   private path(suffix: string): string {
     return `${this.apiRoot}${suffix}`;
   }
 
-  private headers(): Record<string, string> {
-    const h: Record<string, string> = { "content-type": "application/json" };
-    if (this.apiKey) {
-      h.authorization = `Bearer ${this.apiKey}`;
+  private baseHeaders(): Record<string, string> {
+    return { "content-type": "application/json" };
+  }
+
+  // Order the pool for this attempt: rotate to the round-robin cursor, then put
+  // not-cooled keys first and cooled keys last (so an exhausted-pool request
+  // still tries everything rather than failing outright).
+  private candidateOrder(now: number): string[] {
+    const keys = this.apiKeys;
+    const start = keys.length > 0 ? this.rrIndex % keys.length : 0;
+    const rotated = [...keys.slice(start), ...keys.slice(0, start)];
+    const fresh = rotated.filter((k) => (this.cooldownUntil.get(k) ?? 0) <= now);
+    const cooled = rotated.filter((k) => (this.cooldownUntil.get(k) ?? 0) > now);
+    return [...fresh, ...cooled];
+  }
+
+  private onKeySuccess(key: string): void {
+    this.cooldownUntil.delete(key);
+    const idx = this.apiKeys.indexOf(key);
+    if (idx >= 0) {
+      this.rrIndex = (idx + 1) % this.apiKeys.length;
     }
-    return h;
+  }
+
+  private markCooldown(key: string, res: Response): void {
+    let ms = res.status === 429 ? COOLDOWN_RATE_MS : COOLDOWN_AUTH_MS;
+    const ra = res.headers.get("retry-after");
+    if (ra) {
+      const secs = Number(ra);
+      if (Number.isFinite(secs) && secs > 0) {
+        ms = Math.min(secs * 1000, COOLDOWN_MAX_MS);
+      }
+    }
+    this.cooldownUntil.set(key, Date.now() + ms);
+  }
+
+  // Issue `init` against `url`, rotating + failing over across the key pool.
+  // Returns the first ok Response; on an all-keys-rejected sweep returns the last
+  // (non-ok) Response so the caller throws with the real upstream status. A
+  // non-auth, non-429 error short-circuits (failover can't help it).
+  private async requestWithFailover(url: string, init: RequestInit): Promise<Response> {
+    if (this.apiKeys.length === 0) {
+      return this.fetchImpl(url, { ...init, headers: this.baseHeaders() });
+    }
+    const order = this.candidateOrder(Date.now());
+    let lastRes: Response | null = null;
+    for (const key of order) {
+      const res = await this.fetchImpl(url, {
+        ...init,
+        headers: { ...this.baseHeaders(), authorization: `Bearer ${key}` },
+      });
+      if (res.ok) {
+        this.onKeySuccess(key);
+        return res;
+      }
+      if (res.status === 429 || res.status === 401 || res.status === 403) {
+        this.markCooldown(key, res);
+        lastRes = res;
+        continue; // throttled/exhausted/invalid key → try the next one
+      }
+      return res; // request- or server-side error: surface it, don't burn the pool
+    }
+    // Every key was rejected. Return the last response so send()/stream() throw a
+    // ConnectorError carrying the real status (e.g. 429) — the loud, honest signal
+    // that the whole pool is throttled, rather than a silent empty answer.
+    return lastRes ?? this.fetchImpl(url, { ...init, headers: this.baseHeaders() });
   }
 
   async listModels(signal?: AbortSignal): Promise<string[]> {
     try {
-      const res = await fetch(this.path("/models"), { headers: this.headers(), signal });
+      const res = await this.requestWithFailover(this.path("/models"), { method: "GET", signal });
       if (!res.ok) {
         return this.defaultModel ? [this.defaultModel] : [];
       }
@@ -133,9 +235,8 @@ export class OpenAICompatibleConnector implements Connector {
       body.response_format = { type: "json_object" };
     }
 
-    const res = await fetch(this.path("/chat/completions"), {
+    const res = await this.requestWithFailover(this.path("/chat/completions"), {
       method: "POST",
-      headers: this.headers(),
       body: JSON.stringify(body),
       signal: opts.signal,
     });
@@ -155,9 +256,11 @@ export class OpenAICompatibleConnector implements Connector {
     }
     messages.push({ role: "user", content: prompt });
 
-    const res = await fetch(this.path("/chat/completions"), {
+    // Failover happens on the initial response status, BEFORE the body is read —
+    // a 429 surfaces as a non-ok Response and rotates to the next key, so by the
+    // time we start consuming the stream we're on a key that returned 200.
+    const res = await this.requestWithFailover(this.path("/chat/completions"), {
       method: "POST",
-      headers: this.headers(),
       body: JSON.stringify({
         model: opts.model ?? this.defaultModel,
         messages,
@@ -212,9 +315,8 @@ export class OpenAICompatibleConnector implements Connector {
   }
 
   private async callEmbed(model: string, text: string, signal?: AbortSignal): Promise<number[]> {
-    const res = await fetch(this.path("/embeddings"), {
+    const res = await this.requestWithFailover(this.path("/embeddings"), {
       method: "POST",
-      headers: this.headers(),
       body: JSON.stringify({ model, input: text }),
       signal,
     });
@@ -241,7 +343,8 @@ export class OpenAICompatibleConnector implements Connector {
       if (models.length === 0) {
         return { ok: false, models, message: "No models loaded" };
       }
-      return { ok: true, models, message: `${models.length} models available` };
+      const keyNote = this.apiKeys.length > 1 ? ` (${this.apiKeys.length}-key rotation pool)` : "";
+      return { ok: true, models, message: `${models.length} models available${keyNote}` };
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) };
     }

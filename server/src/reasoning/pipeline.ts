@@ -51,7 +51,9 @@ import { createHash } from "node:crypto";
 import { getCognitiveSwarm } from "../core/swarm.js";
 import { getImaginationEngine } from "../core/imagination.js";
 import { getPersistentOrganism } from "../core/organism.js";
-import type { SaliencyContext } from "../attention/saliency.js";
+import { getBrainState, shouldBroadenRetrieval } from "../core/brainState.js";
+import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
+import type { AttentionFocus } from "../../../shared/brainState.js";
 import { hybridEnabled, shouldAugment, webResearch } from "../web/research.js";
 import { expandQuery, reciprocalRankFusion } from "./queryExpansion.js";
 import { applyReranker, trainReranker } from "./rerankerModel.js";
@@ -76,6 +78,38 @@ function buildSaliencyContext(query: string): SaliencyContext | null {
     surfaceError("pipeline.buildSaliencyContext", err);
     return null;
   }
+}
+
+// Build the BrainState attention map from the ranked hits. When a saliency
+// context is present we recompute the full per-memory breakdown (cheap + pure)
+// so the BrainStatePanel can show WHY each memory drew attention; otherwise we
+// fall back to the raw retrieval score with a zeroed breakdown. Bounded to the
+// top `limit` hits. Pure-ish (only computeSaliency); never throws into caller.
+function buildAttentionFocuses(
+  hits: VectorSearchHit[],
+  ctx: SaliencyContext | null,
+  limit = 8,
+): AttentionFocus[] {
+  const zero = { novelty: 0, goalRelevance: 0, emotion: 0, survival: 0, uncertainty: 0 };
+  return hits.slice(0, limit).map((hit) => {
+    const label = hit.memory.content.trim().slice(0, 80);
+    if (!ctx) {
+      return { id: hit.memory.id, label, score: Math.max(0, Math.min(1, hit.score)), breakdown: zero };
+    }
+    const b = computeSaliency(hit.memory, ctx);
+    return {
+      id: hit.memory.id,
+      label,
+      score: b.score,
+      breakdown: {
+        novelty: b.novelty,
+        goalRelevance: b.goalRelevance,
+        emotion: b.emotion,
+        survival: b.survival,
+        uncertainty: b.uncertainty,
+      },
+    };
+  });
 }
 
 export interface AskRequest {
@@ -256,6 +290,10 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   }
   insertMessage({ conversationId: cid, role: "user", content: req.prompt, pipelineRunId: runId });
   emitAll(makeEvent(cid, runId, "input", "complete"), emit);
+  // COGNITIVE LOOP — perceive: the brain takes the prompt into its persistent
+  // working memory. Failure-isolated inside the singleton, so this never breaks
+  // the run even if the BrainState DB is unhappy.
+  getBrainState().perceive(req.prompt);
   // MoE router — pick the expert cortices + a depth gate for this query. The
   // lexical route is computed up front (deterministic, no deps); it gets an
   // optional embedding-refined upgrade once the query embedding exists (memory
@@ -286,6 +324,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   let saliencyApplied = false;
   let webAugmentNote = "";
   let multiQueryNote = "";
+  let feedForwardNote = "";
   // RL adaptive controller state for this run (in-memory; decision in the memory
   // step → reward in the learning step). null whenever the controller is off.
   let controllerDecision: ControllerDecision | null = null;
@@ -312,12 +351,28 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       const baseK = controllerOn ? Math.max(...RETRIEVAL_K_ARMS) : DEFAULT_RETRIEVAL_K;
       let raw = vectorSearch(embedding, baseK);
 
+      // COGNITIVE LOOP — BEHAVIORAL feed-forward: read last cycle's uncertainty
+      // ONCE. When the prior cycle was uncertain we BROADEN retrieval this cycle
+      // by forcing multi-query expansion (this genuinely changes WHAT is
+      // retrieved). The same value also feeds saliency's uncertainty term below
+      // (a UI/score signal). Failure-isolated → 0 (neutral) on any fault.
+      let priorUncertainty = 0;
+      try {
+        priorUncertainty = getBrainState().priorUncertainty();
+      } catch (err) {
+        surfaceError("pipeline.priorUncertainty", err);
+      }
+      const broadenForUncertainty = CONFIG.multiQueryRag && shouldBroadenRetrieval(priorUncertainty);
+      if (broadenForUncertainty) feedForwardNote = ` · ff:broaden(${priorUncertainty.toFixed(2)})`;
+
       // The heuristic baselines (what the pipeline would do without the
       // controller). These are ALSO the warm-start the controller falls back to.
       const hybridOn = hybridEnabled();
       const heuristicAugment = hybridOn && shouldAugment(req.prompt, raw).augment;
       const heuristicMultiQuery =
-        CONFIG.multiQueryRag && raw.length > 0 && (raw.length < 3 || (raw[0]?.score ?? 0) < 0.45);
+        CONFIG.multiQueryRag &&
+        raw.length > 0 &&
+        (raw.length < 3 || (raw[0]?.score ?? 0) < 0.45 || broadenForUncertainty);
 
       // RL CONTROLLER (opt-in). Decides augment / retrieval-k / multi-query /
       // model-profile from the bandit (warm-started at the heuristics, so a cold
@@ -388,6 +443,11 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // never woke / empty DB) can never break retrieval — saliency is a
       // refinement, not a critical-path dependency.
       const saliencyCtx = buildSaliencyContext(req.prompt);
+      // Surface the same priorUncertainty as saliency's uncertainty term — a
+      // UI/score signal (the behavioral feed-forward is the broaden gate above).
+      if (saliencyCtx) {
+        saliencyCtx.uncertainty = priorUncertainty;
+      }
       const r = rankHits(raw, saliencyCtx ?? undefined);
       // Lexical query-aware rerank of the top-K (ML). NO-OP until it has trained
       // (returns r.ranked unchanged), so enabling it never regresses a cold brain.
@@ -398,6 +458,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       rankWarm = r.warm;
       rankAlpha = r.alpha;
       saliencyApplied = saliencyCtx !== null;
+      // COGNITIVE LOOP — attend: record the attention map (what the brain
+      // focused on this retrieval) into the persistent BrainState. Built from
+      // the FINAL reranked hits + the saliency breakdown. Failure-isolated.
+      try {
+        getBrainState().attend(buildAttentionFocuses(memoryHits, saliencyCtx));
+      } catch (err) {
+        surfaceError("pipeline.attend", err);
+      }
     } catch (err) {
       memoryError = err instanceof Error ? err.message : String(err);
     }
@@ -414,7 +482,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   const controllerNote = controllerDecision
     ? ` · rl(k=${controllerDecision.retrievalK},${Object.values(controllerDecision.source).includes("policy") ? "policy" : "warmup"})`
     : "";
-  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${multiQueryNote}${webAugmentNote}${controllerNote}`;
+  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${feedForwardNote}${multiQueryNote}${webAugmentNote}${controllerNote}`;
   const memoryDetail = memoryError
     ? memoryError
     : embedder && embedder !== connector
@@ -612,6 +680,16 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       .map((m) => m[1])
       .filter((id) => knownIds.has(id)),
   );
+  // COGNITIVE LOOP — close the cycle: persist this run's confidence + cited
+  // count into BrainState. When confidence is below the floor the loop pushes an
+  // "open-question" working item (DEFERRED metacognition) — it surfaces as a
+  // raised priorUncertainty on the NEXT cycle rather than re-running steps in
+  // this SSE stream. Single failure-isolated last-writer-wins upsert.
+  getBrainState().recordReasoning({
+    prompt: req.prompt,
+    confidence: errorReport.confidence,
+    citedCount: citedIds.size,
+  });
   try {
     // Embed the learned Q+A best-effort so it (a) becomes visible to vector
     // search and (b) can later use the cosine novelty/cluster path. embedder is

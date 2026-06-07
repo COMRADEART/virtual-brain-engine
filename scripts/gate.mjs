@@ -42,6 +42,7 @@ const steps = [
   { label: "graph selfcheck",      args: ["--prefix", "server", "run", "graph:selfcheck"] },
   { label: "worldmodel selfcheck", args: ["--prefix", "server", "run", "worldmodel:selfcheck"] },
   { label: "learning selfcheck",   args: ["--prefix", "server", "run", "learning:selfcheck"] },
+  { label: "ownmodel selfcheck",   args: ["--prefix", "server", "run", "ownmodel:selfcheck"] },
   { label: "civilization selfcheck", args: ["--prefix", "server", "run", "civilization:selfcheck"] },
   { label: "evolution selfcheck", args: ["--prefix", "server", "run", "evolution:selfcheck"] },
   { label: "actions selfcheck",   args: ["--prefix", "server", "run", "actions:selfcheck"] },
@@ -52,6 +53,9 @@ const steps = [
   { label: "rag selfcheck",        args: ["--prefix", "server", "run", "rag:selfcheck"] },
   { label: "rl selfcheck",         args: ["--prefix", "server", "run", "rl:selfcheck"] },
   { label: "agent selfcheck",      args: ["--prefix", "server", "run", "agent:selfcheck"] },
+  { label: "brainstate selfcheck", args: ["--prefix", "server", "run", "brainstate:selfcheck"] },
+  { label: "github selfcheck",     args: ["--prefix", "server", "run", "github:selfcheck"] },
+  { label: "keyrotation selfcheck", args: ["--prefix", "server", "run", "keyrotation:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline
@@ -71,6 +75,7 @@ if (process.env.GATE_ASK_SMOKE === "1") {
   steps.push({ label: "models smoke (live ollama pull)", args: ["run", "models:smoke"] });
   steps.push({ label: "web smoke (egress gate + live fetch)", args: ["run", "web:smoke"] });
   steps.push({ label: "websearch smoke (egress gate + live search)", args: ["run", "websearch:smoke"] });
+  steps.push({ label: "github smoke (egress gate + live discovery)", args: ["run", "github:smoke"] });
 }
 
 if (!existsSync(resolve(repoRoot, "package.json"))) {

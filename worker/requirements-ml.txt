@@ -26,3 +26,15 @@ transformers>=4.44.0
 torch>=2.2.0
 pillow>=10.0.0
 ultralytics>=8.2.0
+
+# Own-model trainer (Learning Lab — Phase D). LoRA continued-pretraining a small
+# open base (default Qwen/Qwen2.5-0.5B, ~1GB downloaded from Hugging Face on the
+# first run) on the brain's memory corpus, merged + served via Ollama. For GPU
+# training install a CUDA torch build instead of the CPU wheel, e.g.:
+#   pip install --index-url https://download.pytorch.org/whl/cu124 torch
+peft>=0.11.0
+# GGUF export for Ollama (worker/finetune/gguf_export.py). `ollama create FROM
+# <safetensors-dir>` mis-imports transformers-5.x output, so we write the GGUF
+# ourselves and import that. sentencepiece is pulled in by some tokenizers.
+gguf>=0.10.0
+sentencepiece>=0.2.0

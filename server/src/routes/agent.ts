@@ -16,6 +16,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { CONFIG } from "../config.js";
 import { runPipeline } from "../reasoning/pipeline.js";
+import { getBrainState } from "../core/brainState.js";
 import { triage } from "../reasoning/triage.js";
 import { runAgentLoop, startAgentRun, resumeAgentRun, type AgentEmit } from "../reasoning/agentLoop.js";
 import type { AgentConfirmMode, AgentEvent } from "../../../shared/agent.js";
@@ -75,6 +76,10 @@ agentRouter.post("/agent", async (req, res) => {
     if (route === "pipeline") {
       await runPipelineAsAgent(prompt, conversationId, emit);
     } else {
+      // COGNITIVE LOOP — perceive on the loop path too (the pipeline path
+      // perceives inside runPipeline). A deep-reason tool call later closes the
+      // cycle via the pipeline; a tool-only run at least holds the request.
+      getBrainState().perceive(prompt);
       const run = startAgentRun({ prompt, conversationId, mode, scope: allow });
       await runAgentLoop(run, emit);
     }
