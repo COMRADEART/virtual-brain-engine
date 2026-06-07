@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Cpu, Database, LayoutGrid, Sparkles, Zap } from "lucide-react";
+import { Activity, Cpu, Database, LayoutGrid, Moon, Sparkles, Sun, Zap } from "lucide-react";
 import { subscribeBrainBus } from "../engine/brainBus";
+import { useTheme } from "../engine/useApiCall";
 import {
   MODE_LABELS,
   PERF_PRESETS,
@@ -38,6 +39,7 @@ export function StatusBar({
     mode === "auto"
       ? `Auto·${PERF_PRESETS[effectiveTier].label}`
       : MODE_LABELS[mode];
+  const [theme, toggleTheme] = useTheme();
   const [stats, setStats] = useState<Stats>({ fps: 0, ramMb: null, tps: 0, mem: 0 });
   // Latest rolling work summary from the SummaryAgent (COMPUTER BRAIN layer).
   const [summary, setSummary] = useState<string>("");
@@ -135,6 +137,14 @@ export function StatusBar({
         title="Cycle performance preset (Light / Balanced / Cinematic / Auto) — P"
       >
         {presetLabel} · {presetNeuronCount(effectiveTier).toLocaleString()}n
+      </button>
+      <button
+        className="stat chip icon-only"
+        onClick={toggleTheme}
+        title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+      >
+        {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
       </button>
     </footer>
   );
