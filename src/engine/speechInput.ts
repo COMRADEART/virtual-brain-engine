@@ -2,6 +2,23 @@
 // versions, so this module declares the minimum shape it needs and bypasses the
 // ambient types entirely. Returns null when the browser doesn't support it (most
 // notably Firefox).
+//
+// ⚠ PRIVACY: on Chrome/Edge the only available implementation
+// (webkitSpeechRecognition) is CLOUD-BACKED — it streams microphone audio to
+// Google's servers for transcription. That silently breaks the project's
+// "zero outbound by default" guarantee. Prefer the LOCAL faster-whisper path
+// (apiClient.perceptionTranscribe via the pet's voiceCapture helpers); callers
+// that still use this module MUST surface its cloud nature (see
+// `isCloudBackedSTT()` and the LocalityBadge voice indicator).
+
+/**
+ * True when the active STT backend egresses audio to the cloud. The only
+ * widely-shipped Web Speech STT engine (Chromium's webkitSpeechRecognition) is
+ * Google-backed, so we treat any available Web Speech STT as cloud-backed.
+ */
+export function isCloudBackedSTT(): boolean {
+  return isSpeechSupported();
+}
 
 interface MinimalSpeechAlt {
   transcript: string;

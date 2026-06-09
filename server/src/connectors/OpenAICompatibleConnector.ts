@@ -129,6 +129,14 @@ export class OpenAICompatibleConnector implements Connector {
     return this.apiKeys.length;
   }
 
+  // Visible for telemetry: which key was last used (round-robin index).
+  get currentKeyIndex(): number {
+    return this.rrIndex > 0 ? this.rrIndex - 1 : 0;
+  }
+
+  // Token usage from the last completed stream (prompt_tokens, completion_tokens).
+  lastUsage: { promptTokens: number; completionTokens: number } | null = null;
+
   private path(suffix: string): string {
     return `${this.apiRoot}${suffix}`;
   }
@@ -265,6 +273,7 @@ export class OpenAICompatibleConnector implements Connector {
         model: opts.model ?? this.defaultModel,
         messages,
         stream: true,
+        stream_options: { include_usage: true },
         temperature: opts.temperature,
         max_tokens: opts.maxTokens,
       }),
@@ -297,10 +306,17 @@ export class OpenAICompatibleConnector implements Connector {
             try {
               const parsed = JSON.parse(payload) as {
                 choices?: Array<{ delta?: { content?: string } }>;
+                usage?: { prompt_tokens?: number; completion_tokens?: number };
               };
               const token = parsed.choices?.[0]?.delta?.content;
               if (token) {
                 yield token;
+              }
+              if (parsed.usage) {
+                this.lastUsage = {
+                  promptTokens: parsed.usage.prompt_tokens ?? 0,
+                  completionTokens: parsed.usage.completion_tokens ?? 0,
+                };
               }
             } catch {
               // Skip malformed event

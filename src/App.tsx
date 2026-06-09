@@ -8,6 +8,7 @@ import { DigitalTwinPanel } from "./components/DigitalTwinPanel";
 import { PerceptionPanel } from "./components/PerceptionPanel";
 import { LearningLabPanel } from "./components/LearningLabPanel";
 import { BrainStatePanel } from "./components/BrainStatePanel";
+import { SelfConsciousnessPanel } from "./components/SelfConsciousnessPanel";
 import { IdleThoughtTicker } from "./components/IdleThoughtTicker";
 import { RegionControls } from "./components/RegionControls";
 import { UnifiedPanel } from "./components/UnifiedPanel";
@@ -55,6 +56,7 @@ const [showEmergentControls, setShowEmergentControls] = useState(true);
   // 3D scene is the centerpiece on first load. The user opens panels they need
   // via the CommandPalette / tab icons; the previous default buried the scene.
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useState(true);
+  const [selfConsciousnessCollapsed, setSelfConsciousnessCollapsed] = useState(true);
   const [unifiedTab, setUnifiedTab] = useState<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("ask");
   const [unifiedCollapsed, setUnifiedCollapsed] = useState(true);
   const [modelHubOpen, setModelHubOpen] = useState(false);
@@ -359,6 +361,7 @@ useEffect(() => {
           <PerceptionPanel />
           <LearningLabPanel />
           <BrainStatePanel />
+          <SelfConsciousnessPanel />
           <IdleThoughtTicker />
           <UnifiedPanel
             tab={unifiedTab}

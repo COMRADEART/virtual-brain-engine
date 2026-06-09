@@ -24,8 +24,9 @@
 import { createHash } from "node:crypto";
 import { ulid } from "ulid";
 import { CONFIG } from "../config.js";
-import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
 import type { Connector } from "../connectors/Connector.js";
+import { isLocalUrl } from "../util/network.js";
 import { getActionDef, listActionSpecs } from "../actions/registry.js";
 import { isDynamicAction, getDynamicAction, listDynamicActions } from "../actions/dynamicRegistry.js";
 import { executeAction, type ExecuteInput } from "../actions/executor.js";
@@ -104,6 +105,63 @@ export function __setAgentConnector(c: Connector | null): void {
 }
 function activeConnector(): Connector | null {
   return connectorOverride ?? getDefaultConnectorInstance();
+}
+
+// Find an enabled, healthy, LOCAL connector other than `exclude` — the
+// degraded fallback target when a remote provider fails (mirrors the pipeline's
+// getEmbedder local-Ollama search, not getDefaultConnectorInstance which would
+// just return the same failing default).
+function findLocalFallback(exclude: Connector): Connector | null {
+  return (
+    listConnectorInstances().find(
+      (c) =>
+        c !== exclude &&
+        c.descriptor.enabled &&
+        c.descriptor.state === "ok" &&
+        c.descriptor.isLocal,
+    ) ?? null
+  );
+}
+
+// Resilient model call for the loop's reasoning rounds. The hot path /api/ask
+// already retries+backs-off+falls-back-to-local; the agent "main thinking" path
+// previously did NOT — a single transient connector.send() failure killed the
+// whole run. This ports that resilience: retry with exponential backoff (more
+// attempts for a remote provider), then on a remote failure fall back to a local
+// connector and emit a degraded note rather than aborting. Never throws.
+async function robustSend(
+  run: AgentRun,
+  connector: Connector,
+  system: string,
+  emit: AgentEmit,
+): Promise<{ ok: true; raw: string } | { ok: false; error: string }> {
+  const isRemote = !isLocalUrl(connector.descriptor.baseUrl ?? "");
+  const retries = isRemote ? CONFIG.remoteRetryAttempts : 1;
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const raw = await connector.send(buildUserPrompt(run), { system, format: "json", temperature: 0.2 });
+      return { ok: true, raw };
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, Math.min(4000, 500 * 2 ** attempt)));
+      }
+    }
+  }
+  if (isRemote && CONFIG.remoteFallback) {
+    const local = findLocalFallback(connector);
+    if (local) {
+      try {
+        const raw = await local.send(buildUserPrompt(run), { system, format: "json", temperature: 0.2 });
+        emit(agentEvent(run, "thought", { round: run.round, text: "[degraded: remote unavailable → local fallback]" }));
+        return { ok: true, raw };
+      } catch (err) {
+        lastError = err;
+      }
+    }
+  }
+  return { ok: false, error: lastError instanceof Error ? lastError.message : String(lastError) };
 }
 
 function sweepRuns(now: number): void {
@@ -383,17 +441,16 @@ export async function runAgentLoop(run: AgentRun, emit: AgentEmit): Promise<void
     emit(agentEvent(run, "round", { round: run.round }));
     emitPipe(run, emit, "reasoning", "start", ["reasoning-cortex"], { detail: `round ${run.round}` });
 
-    let raw: string;
-    try {
-      raw = await connector.send(buildUserPrompt(run), { system, format: "json", temperature: 0.2 });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+    const sent = await robustSend(run, connector, system, emit);
+    if (!sent.ok) {
+      const detail = sent.error;
       emit(agentEvent(run, "error", { detail }));
       emitPipe(run, emit, "reasoning", "error", ["error-detection-center"], { detail });
       finalizeMetrics(run, emit, "error", started);
       RUNS.delete(run.runId);
       return;
     }
+    const raw: string = sent.raw;
 
     const turn = parseTurn(raw);
     if (turn.thought) {
@@ -450,11 +507,11 @@ export async function runAgentLoop(run: AgentRun, emit: AgentEmit): Promise<void
   run.transcript.push(
     "(You have run out of steps. Summarise what you accomplished and what remains, as your final answer.)",
   );
-  try {
-    const raw = await connector.send(buildUserPrompt(run), { system, format: "json", temperature: 0.2 });
-    const turn = parseTurn(raw);
+  const wrap = await robustSend(run, connector, system, emit);
+  if (wrap.ok) {
+    const turn = parseTurn(wrap.raw);
     await finishWithAnswer(run, emit, turn.final || turn.thought || "I ran out of steps before finishing.", "exhausted", started);
-  } catch {
+  } else {
     await finishWithAnswer(run, emit, "I ran out of steps before finishing this task.", "exhausted", started);
   }
 }

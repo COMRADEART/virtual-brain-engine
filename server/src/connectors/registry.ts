@@ -16,6 +16,35 @@ import { isLocalUrl } from "../util/network.js";
 
 const cache = new Map<string, Connector>();
 
+// ── Circuit breaker ────────────────────────────────────────────────────────
+// Tracks consecutive failures per connector. After FAILURE_THRESHOLD failures
+// the circuit opens and the connector is skipped for COOLDOWN_MS.
+const circuitState = new Map<string, { failures: number; openedAt: number }>();
+const FAILURE_THRESHOLD = 5;
+const COOLDOWN_MS = 60_000;
+
+export function circuitRecordFailure(connectorId: string): void {
+  const prev = circuitState.get(connectorId) ?? { failures: 0, openedAt: 0 };
+  prev.failures++;
+  if (prev.failures >= FAILURE_THRESHOLD) prev.openedAt = Date.now();
+  circuitState.set(connectorId, prev);
+}
+
+export function circuitRecordSuccess(connectorId: string): void {
+  circuitState.delete(connectorId);
+}
+
+export function circuitIsOpen(connectorId: string): boolean {
+  const s = circuitState.get(connectorId);
+  if (!s || s.failures < FAILURE_THRESHOLD) return false;
+  if (Date.now() - s.openedAt > COOLDOWN_MS) {
+    // Cooldown expired — allow a probe attempt.
+    circuitState.delete(connectorId);
+    return false;
+  }
+  return true;
+}
+
 function instantiate(descriptor: ConnectorDescriptor): Connector {
   switch (descriptor.kind) {
     case "ollama":

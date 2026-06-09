@@ -22,6 +22,7 @@ import type {
 } from "./organism";
 import type { BrainBusVisualMessage } from "./vision";
 import type { BrainStateSnapshot } from "./brainState";
+import type { SelfConsciousnessState } from "./selfConsciousness";
 
 export type LogicalRegionId =
   | "memory-core"
@@ -158,4 +159,8 @@ export type BrainBusMessage =
   // Emitted (throttled) whenever the unified BrainState changes, so the
   // BrainStatePanel reflects the live attention map / working memory /
   // confidence without polling.
-  | { type: "brain-state"; snapshot: BrainStateSnapshot; timestamp: string };
+  | { type: "brain-state"; snapshot: BrainStateSnapshot; timestamp: string }
+  // --- Self-Consciousness (selfConsciousness.ts → brainCore.ts bridge) ---
+  // Emitted whenever the self-model, affect, or metacognitive state changes
+  // so the SelfConsciousnessPanel reflects live updates without polling.
+  | { type: "self-snapshot"; state: SelfConsciousnessState; timestamp: string };

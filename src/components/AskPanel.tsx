@@ -255,6 +255,7 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
       <div className="ai-row">
         <input
           type="text"
+          aria-label="Ask the brain"
           placeholder='Ask the brain anything…'
           value={prompt}
           disabled={running}
@@ -341,7 +342,7 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
             </ul>
           ) : null}
           {answer && !running && runId ? (
-            <div className="ask-feedback">
+            <div className="ask-feedback" aria-live="polite">
               {feedbackSent !== null ? (
                 <span className="ask-feedback-thanks">
                   {feedbackSent > 0

@@ -3,6 +3,8 @@ import cors from "cors";
 import { createServer } from "node:http";
 import { CONFIG } from "./config.js";
 import { openDb } from "./db/sqlite.js";
+import { cleanupUsageLog } from "./db/repositories/modelUsage.js";
+import { runDedupAudit, mergePair } from "./memory/dedupAudit.js";
 import {
   ensureDefaultConnector,
   ensureRemoteProviderConnectors,
@@ -41,6 +43,8 @@ import { visionRouter } from "./vision/index.js";
 import { perceptionRouter } from "./perception/index.js";
 import { civilizationRouter, civilization, createLocalDescriptor } from "./routes/civilization.js";
 import { phase2Router } from "./routes/phase2.js";
+import { voiceRouter } from "./routes/voice.js";
+import selfRouter from "./routes/self.js";
 
 async function main(): Promise<void> {
   openDb();
@@ -62,6 +66,43 @@ async function main(): Promise<void> {
   ensureRemoteProviderConnectors();
   ensureScanRoot(CONFIG.defaultScanRoot);
   const decayHandles = scheduleDecayTick();
+
+  // Usage log retention: clean up old rows on boot and every 24 hours.
+  const { usageDeleted, routingDeleted } = cleanupUsageLog(CONFIG.usageLogRetentionDays);
+  if (usageDeleted + routingDeleted > 0) {
+    console.log(`[retention] cleaned ${usageDeleted} usage + ${routingDeleted} routing rows older than ${CONFIG.usageLogRetentionDays}d`);
+  }
+  const retentionInterval = setInterval(() => {
+    cleanupUsageLog(CONFIG.usageLogRetentionDays);
+  }, 24 * 60 * 60 * 1000);
+
+  // Memory dedup audit: run on boot + daily. AUDIT-ONLY by default — the audit
+  // scans for near-duplicate candidates and logs the count, but only DELETES
+  // (merges) them when DEDUP_AUTO_MERGE is explicitly enabled. Auto-merge is
+  // irreversible, and at the default 0.92 threshold many distinct-but-related
+  // memories score as near-duplicates, so deleting on boot is opt-in.
+  const runDedup = () => {
+    try {
+      const result = runDedupAudit({
+        similarityThreshold: CONFIG.dedupSimilarityThreshold,
+        maxPairsPerRun: CONFIG.dedupMaxPairs,
+      });
+      if (result.duplicatesFound === 0) return;
+      if (CONFIG.dedupAutoMerge) {
+        for (const p of result.pairs) mergePair(p.keep, p.delete);
+        console.log(`[dedup] merged ${result.duplicatesFound} duplicates from ${result.scanned} memories`);
+      } else {
+        console.log(
+          `[dedup] ${result.duplicatesFound} near-duplicate candidate(s) from ${result.scanned} memories — ` +
+            `auto-merge disabled (set DEDUP_AUTO_MERGE=true to merge; review the threshold first)`,
+        );
+      }
+    } catch (err) {
+      console.error("[dedup] audit failed:", err);
+    }
+  };
+  runDedup(); // run on boot
+  const dedupInterval = setInterval(runDedup, 24 * 60 * 60 * 1000);
 
   // Auto-detect any of the 7 supported local LLM runtimes and reconcile them
   // into the connector table. Then keep probing all known connectors so
@@ -134,8 +175,10 @@ async function main(): Promise<void> {
   app.use("/api", organismRouter);
   app.use("/api", visionRouter);
   app.use("/api", perceptionRouter);
+  app.use("/api", voiceRouter);
   app.use("/api", phase2Router);
   app.use("/api", civilizationRouter);
+  app.use("/api", selfRouter);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const message = err instanceof Error ? err.message : String(err);
@@ -154,6 +197,19 @@ async function main(): Promise<void> {
     console.error("[server] brain core failed to start:", err);
     return null;
   });
+
+  // Own-model auto-train: fire-and-forget; the training runs in the Python
+  // worker background thread so it never blocks server boot. Failures are
+  // caught and logged so a misbehaving trainer can't crash the server.
+  if (CONFIG.autoStartOwnModel) {
+    import("./learning/autoStart.js")
+      .then(({ checkAndStartOwnModelTraining }) =>
+        void checkAndStartOwnModelTraining().catch((err) =>
+          console.warn("[server] own-model auto-train failed:", err),
+        ),
+      )
+      .catch((err) => console.warn("[server] auto-train module load failed:", err));
+  }
 
   server.listen(CONFIG.port, CONFIG.host, () => {
     console.log(`[server] http://${CONFIG.host}:${CONFIG.port} (ws /ws/brain)`);

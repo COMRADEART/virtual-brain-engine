@@ -460,6 +460,11 @@ export function BrainScene({
     rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
 
+    // Accessibility: describe the canvas for screen readers
+    renderer.domElement.setAttribute("aria-label", "Interactive 3D brain visualization showing neural activity, regions, and signal propagation");
+    renderer.domElement.setAttribute("tabindex", "0");
+    renderer.domElement.setAttribute("role", "img");
+
     // Cinematic glow on bright pixels (pulses + lit regions). The threshold
     // keeps the dark background sharp; only pixels well above neutral bloom.
     const composer = new EffectComposer(renderer);

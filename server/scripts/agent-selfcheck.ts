@@ -85,6 +85,41 @@ function scripted(responses: string[]): Connector {
   } satisfies Connector;
 }
 
+// Like scripted(), but send() THROWS for the first `throwsFirst` calls before
+// returning the scripted responses — exercises robustSend's retry/backoff.
+function scriptedFlaky(responses: string[], throwsFirst: number): Connector {
+  let calls = 0;
+  let i = 0;
+  return {
+    descriptor: {
+      id: "stub-flaky",
+      name: "stub-flaky",
+      kind: "ollama",
+      enabled: true,
+      state: "ok",
+      createdAt: "",
+      updatedAt: "",
+      isLocal: true,
+    },
+    async listModels() {
+      return [];
+    },
+    async send() {
+      calls++;
+      if (calls <= throwsFirst) throw new Error("transient connector failure");
+      const r = responses[Math.min(i, responses.length - 1)] ?? "{}";
+      i++;
+      return r;
+    },
+    async *stream() {
+      yield "";
+    },
+    async test() {
+      return { ok: true };
+    },
+  } satisfies Connector;
+}
+
 function collector(): { emit: (f: Frame) => void; frames: Frame[] } {
   const frames: Frame[] = [];
   return { emit: (f) => frames.push(f), frames };
@@ -263,6 +298,21 @@ check("triage: 'research X' → loop", triage("research quantum computing for me
   const tr = toolResults(c.frames, "definitely-not-a-tool");
   check("unknown tool: reported as not-ok, loop continues", tr.length === 1 && tr[0].tool?.ok === false);
   check("unknown tool: loop still finishes", finalText(c.frames) !== undefined);
+}
+
+// ── Resilience: a transient send() failure is RETRIED, not fatal ─────────────
+{
+  // First send() throws; robustSend retries and the second succeeds with a
+  // direct final answer. The run must COMPLETE, not be deleted on the first throw.
+  __setAgentConnector(
+    scriptedFlaky(['{"thought":"answer","tool":null,"final":"Recovered after a transient failure."}'], 1),
+  );
+  const c = collector();
+  const run = startAgentRun({ prompt: "answer me", mode: "ask", scope: [] });
+  await runAgentLoop(run, c.emit);
+  check("retry: a transient connector failure is retried, not fatal", metricsStatus(c.frames) === "done");
+  check("retry: the recovered answer is produced", (finalText(c.frames) ?? "").includes("Recovered"));
+  check("retry: run cleared after completion", getAgentRun(run.runId) === undefined);
 }
 
 __setAgentConnector(null);

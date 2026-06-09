@@ -4,7 +4,7 @@ import type {
   PipelineStatus,
   PipelineStepId,
 } from "../../../shared/pipeline.js";
-import type { MemoryPoint } from "../../../shared/memory.js";
+import type { MemoryPoint, ConversationMessage } from "../../../shared/memory.js";
 import {
   getMemoryCount,
   insertRelation,
@@ -18,7 +18,13 @@ import {
   ensureConversation,
   failPipelineRun,
   insertMessage,
+  listMessages,
 } from "../db/repositories/conversations.js";
+import {
+  buildPromptContextBlock,
+  buildRetrievalText,
+  selectPriorTurns,
+} from "./conversationContext.js";
 import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
 import { Connector, ConnectorError } from "../connectors/Connector.js";
 import { CONFIG } from "../config.js";
@@ -60,6 +66,12 @@ import { applyReranker, trainReranker } from "./rerankerModel.js";
 import { loadRerankerState, saveRerankerState } from "../db/repositories/adaptive.js";
 import { DEFAULT_RETRIEVAL_K, RETRIEVAL_K_ARMS } from "../../../shared/adaptive.js";
 import { surfaceError } from "../util/diagnostics.js";
+import { logModelUsage, logRouting, getProfileSuggestions, updateRoutingProfile, type StepTimings } from "../db/repositories/modelUsage.js";
+import { isLocalUrl } from "../util/network.js";
+import { OpenAICompatibleConnector } from "../connectors/OpenAICompatibleConnector.js";
+import { circuitRecordFailure, circuitRecordSuccess } from "../connectors/registry.js";
+import { getSelfConsciousness } from "../core/selfConsciousness.js";
+import { assessFaithfulness, appendFaithfulnessNote } from "./faithfulness.js";
 
 // Phase 1 (blueprint) — assemble the per-query SaliencyContext from the
 // organism singleton. Returns null if any of the cheap getters fails (the
@@ -290,6 +302,22 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   }
   insertMessage({ conversationId: cid, role: "user", content: req.prompt, pipelineRunId: runId });
   emitAll(makeEvent(cid, runId, "input", "complete"), emit);
+
+  // Conversation continuity — assemble a compact transcript of the PRIOR turns
+  // (excluding THIS run's just-inserted user message) so the otherwise-stateless
+  // pipeline can resolve thin/anaphoric follow-ups ("tell me more", "why?").
+  // Failure-isolated → empty context, never breaks the run.
+  let priorTurns: ConversationMessage[] = [];
+  try {
+    priorTurns = selectPriorTurns(listMessages(cid), runId);
+  } catch (err) {
+    surfaceError("pipeline.conversationContext", err);
+  }
+  const conversationBlock = buildPromptContextBlock(priorTurns);
+
+  // Step timing instrumentation
+  const stepTimings: StepTimings = {};
+  let stepStart = Date.now();
   // COGNITIVE LOOP — perceive: the brain takes the prompt into its persistent
   // working memory. Failure-isolated inside the singleton, so this never breaks
   // the run even if the BrainState DB is unhappy.
@@ -315,6 +343,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   });
 
   // 2. MEMORY
+  stepStart = Date.now();
   emitAll(makeEvent(cid, runId, "memory", "start", { detail: "Embedding question + searching memory" }), emit);
   let memoryHits: VectorSearchHit[] = [];
   let memoryError: string | undefined;
@@ -334,7 +363,10 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   if (embedder?.embed) {
     const embedFn = embedder.embed.bind(embedder);
     try {
-      const embedding = await embedFn(req.prompt);
+      // Thin/anaphoric prompts ("tell me more") embed WITH the recent transcript
+      // prepended so the referent is in the vector query; self-contained prompts
+      // embed verbatim (zero retrieval regression). See conversationContext.ts.
+      const embedding = await embedFn(buildRetrievalText(req.prompt, priorTurns));
       // Embedding-refined route. Independent try/catch so a failure here
       // (prototype embed error, etc.) NEVER falls into the outer catch and
       // skips retrieval — we just keep the lexical route.
@@ -498,6 +530,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   if (memoryHits.length > 0) {
     applyMemoryRetrievalBoost(memoryHits.map((h) => h.memory.id));
   }
+  stepTimings.memory_ms = Date.now() - stepStart;
 
   // Per-cortex model routing (MoE). The controller's chosen profile when on, else
   // the heuristic route profile. A profile with no assigned model resolves to the
@@ -511,6 +544,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // the static reasoning region, so the scene shows where this query was routed.
   const routedRegions: LogicalRegionId[] = [...new Set<LogicalRegionId>([...route.experts, "reasoning-cortex"])];
   const routeSummary = `experts ${route.experts.join(", ")} · difficulty ${route.difficulty.toFixed(2)} · ${route.depth}`;
+  stepStart = Date.now();
   emitAll(makeEvent(cid, runId, "reasoning", "start", { logicalRegions: routedRegions }), emit);
   // What the LLM actually reads: warm-gated high-confidence subset, with the
   // position-bias shuffle applied. Smaller block → less context → faster
@@ -541,7 +575,13 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       const parsed = await chatJson<ReasoningOut>(
         connector,
         REASONING_SYSTEM,
-        `Question:\n${req.prompt}\n\nMemory snippets:\n${memoryList || "(empty)"}`,
+        [
+          conversationBlock,
+          `Question:\n${req.prompt}`,
+          `Memory snippets:\n${memoryList || "(empty)"}`,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
         routedModelName,
       );
       if (parsed) {
@@ -569,6 +609,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     }),
     emit,
   );
+  stepTimings.reasoning_ms = Date.now() - stepStart;
   if (route.depth === "full") {
     swarm.runConsensus(`Compare reasoning plans for: ${req.prompt.slice(0, 180)}`);
   }
@@ -595,6 +636,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   );
 
   // 5. ERROR
+  stepStart = Date.now();
   emitAll(makeEvent(cid, runId, "error", "start"), emit);
   type ErrorOut = { contradictions: string[]; missing: string[]; confidence: number };
   let errorReport: ErrorOut = { contradictions: [], missing: [], confidence: memoryHits.length > 0 ? 0.6 : 0.2 };
@@ -623,12 +665,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     }),
     emit,
   );
+  stepTimings.error_ms = Date.now() - stepStart;
 
   // 6. RESPONSE
   emitAll(makeEvent(cid, runId, "response", "start"), emit);
   const knownIds = new Set(promptHits.map((hit) => hit.memory.id));
   const responseSystem = buildResponseSystem(memoryHits.length > 0);
   const responsePrompt = [
+    conversationBlock,
     `User question:\n${req.prompt}`,
     `Memory snippets you may cite as [m:<id>] (do not invent new ids):`,
     memoryList || "(empty)",
@@ -642,28 +686,208 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   ]
     .filter(Boolean)
     .join("\n\n");
+
+  // Telemetry + fallback: track which model served and whether we fell back.
+  stepStart = Date.now();
   let assembled = "";
+  let telemetryFallback = false;
+  let telemetryError: string | null = null;
+  const isRemote = !isLocalUrl(connector.descriptor.baseUrl ?? "");
+  const telemetryKeyIndex =
+    isRemote && connector instanceof OpenAICompatibleConnector
+      ? connector.currentKeyIndex
+      : null;
+
   try {
-    for await (const token of connector.stream(responsePrompt, {
-      system: responseSystem,
-      temperature: 0.3,
-      model: routedModelName,
-    })) {
-      assembled += token;
-      emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: token }), emit);
+    // Retry loop for remote providers: retry with exponential backoff before fallback.
+    const maxAttempts = isRemote ? CONFIG.remoteRetryAttempts + 1 : 1;
+    let lastError: unknown = null;
+    let retryCount = 0;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        assembled = "";
+        for await (const token of connector.stream(responsePrompt, {
+          system: responseSystem,
+          temperature: 0.3,
+          model: routedModelName,
+        })) {
+          assembled += token;
+          emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: token }), emit);
+        }
+        // Capture token usage from OpenAI-compatible streaming responses.
+        if (connector instanceof OpenAICompatibleConnector && connector.lastUsage) {
+          stepTimings.prompt_tokens = connector.lastUsage.promptTokens;
+          stepTimings.completion_tokens = connector.lastUsage.completionTokens;
+          connector.lastUsage = null;
+        }
+        circuitRecordSuccess(connector.descriptor.id);
+        lastError = null;
+        break; // success
+      } catch (err) {
+        lastError = err;
+        retryCount = attempt + 1;
+        if (attempt < maxAttempts - 1) {
+          // Exponential backoff: 1s, 2s, 4s, ...
+          const delay = 1000 * 2 ** attempt;
+          emitAll(makeEvent(cid, runId, "response", "progress", {
+            tokensDelta: `[retry ${attempt + 1}/${CONFIG.remoteRetryAttempts} in ${delay}ms] `,
+          }), emit);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+    if (retryCount > 0) stepTimings.retry_count = retryCount;
+    if (lastError) {
+      circuitRecordFailure(connector.descriptor.id);
+      throw lastError;
     }
   } catch (err) {
     const message =
       err instanceof ConnectorError ? err.message : err instanceof Error ? err.message : String(err);
-    emitAll(makeEvent(cid, runId, "response", "error", { detail: message }), emit);
-    failPipelineRun(runId, message);
-    return;
+
+    // REMOTE FALLBACK: if the remote provider failed and fallback is enabled,
+    // retry with the local Ollama connector. The response includes a degraded
+    // tag so the user knows they got a weaker answer.
+    if (isRemote && CONFIG.remoteFallback) {
+      try {
+        const localConnector = getDefaultConnectorInstance();
+        if (localConnector) {
+          assembled = "";
+          telemetryFallback = true;
+          emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: "[fallback → local] " }), emit);
+          for await (const token of localConnector.stream(responsePrompt, {
+            system: responseSystem,
+            temperature: 0.3,
+          })) {
+            assembled += token;
+            emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: token }), emit);
+          }
+        }
+      } catch (fallbackErr) {
+        telemetryError = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        emitAll(makeEvent(cid, runId, "response", "error", { detail: telemetryError }), emit);
+        failPipelineRun(runId, telemetryError);
+        // Log the original remote error, not the fallback error
+        logModelUsage({
+          runId,
+          connectorId: connector.descriptor.id,
+          provider: "remote",
+          model: routedModelName ?? connector.descriptor.model ?? "unknown",
+          keyIndex: telemetryKeyIndex,
+          fallback: true,
+          latencyMs: Date.now() - stepStart,
+          stepTimings,
+          error: message,
+        });
+        return;
+      }
+    } else {
+      telemetryError = message;
+      emitAll(makeEvent(cid, runId, "response", "error", { detail: message }), emit);
+      failPipelineRun(runId, message);
+      logModelUsage({
+        runId,
+        connectorId: connector.descriptor.id,
+        provider: isRemote ? "remote" : "local",
+        model: routedModelName ?? connector.descriptor.model ?? "unknown",
+        keyIndex: telemetryKeyIndex,
+        fallback: false,
+        latencyMs: Date.now() - stepStart,
+        stepTimings,
+        error: message,
+      });
+      return;
+    }
   }
-  const finalAnswer = ensureSections(assembled.trim(), knownIds);
+
+  const responseLatencyMs = Date.now() - stepStart;
+  stepTimings.response_ms = responseLatencyMs;
+  let finalAnswer = ensureSections(assembled.trim(), knownIds);
+  // Implicit relevance feedback: which *shown* memories the model actually cited
+  // (validated [m:<id>] markers). Computed here (before the response-complete
+  // emit) so the faithfulness note lands in the answer the client sees.
+  const citedIds = new Set(
+    Array.from(finalAnswer.matchAll(/\[m:([A-Za-z0-9]+)\]/g))
+      .map((m) => m[1])
+      .filter((id) => knownIds.has(id)),
+  );
+  // CITATION FAITHFULNESS (flag-gated, failure-isolated): does each cited memory
+  // actually SUPPORT its claim? Unfaithful citations get a note in Uncertain AND
+  // are dropped from `faithfulCitedIds` so the ranker/reranker stop rewarding
+  // citation PRESENCE alone. A fault here must never cost the answer.
+  let faithfulCitedIds = citedIds;
+  if (CONFIG.citationFaithfulness && citedIds.size > 0) {
+    try {
+      const memoryTextById = new Map(memoryHits.map((h) => [h.memory.id, h.memory.content] as const));
+      const fa = assessFaithfulness(finalAnswer, memoryTextById);
+      if (fa.unfaithful.length > 0) {
+        faithfulCitedIds = new Set(Array.from(citedIds).filter((id) => !fa.unfaithfulIds.has(id)));
+        finalAnswer = appendFaithfulnessNote(finalAnswer, fa);
+      }
+    } catch (err) {
+      surfaceError("pipeline.faithfulness", err);
+    }
+  }
+  // Inject degraded tag when remote fallback was triggered
+  if (telemetryFallback) {
+    const degradedTag = "[degraded: remote fallback to local]";
+    if (finalAnswer.includes("Uncertain:")) {
+      finalAnswer = finalAnswer.replace("Uncertain:", `Uncertain:\n${degradedTag}`);
+    } else {
+      finalAnswer = `${finalAnswer}\n\nUncertain:\n${degradedTag}`;
+    }
+  }
   emitAll(
     makeEvent(cid, runId, "response", "complete", { detail: `${finalAnswer.length} chars` }),
     emit,
   );
+
+  // Log telemetry for this response. Failure-isolated: this runs AFTER the
+  // answer streamed but BEFORE the learning step, so a telemetry-write fault
+  // must never break a successful run or skip memory persistence. (Matches the
+  // hot-path contract used by the faithfulness/conversationContext hooks above.)
+  if (CONFIG.promptVariant) stepTimings.prompt_variant = CONFIG.promptVariant;
+  try {
+    logModelUsage({
+      runId,
+      connectorId: connector.descriptor.id,
+      provider: isRemote ? "remote" : "local",
+      model: routedModelName ?? connector.descriptor.model ?? "unknown",
+      keyIndex: telemetryKeyIndex,
+      fallback: telemetryFallback,
+      latencyMs: responseLatencyMs,
+      stepTimings,
+      error: telemetryError,
+    });
+
+    // Log routing decision for feedback loop
+    logRouting({
+      runId,
+      profile: chosenProfile,
+      model: routedModelName ?? connector.descriptor.model ?? "unknown",
+      experts: JSON.stringify(route.experts),
+      difficulty: route.difficulty,
+      depth: route.depth,
+      citedCount: promptHits.length,
+      retrievedCount: memoryHits.length,
+      confidence: errorReport.confidence,
+      latencyMs: responseLatencyMs,
+    });
+  } catch (err) {
+    surfaceError("pipeline.telemetry", err);
+  }
+
+  // Auto-optimize: if enabled, check if a better model is statistically proven for this profile.
+  if (CONFIG.routingAutoOptimize) {
+    try {
+      const suggestions = getProfileSuggestions();
+      for (const s of suggestions) {
+        if (s.suggestedModel && s.suggestedModel !== s.currentModel && s.currentRuns >= 10 && s.qualityDelta > 0.20) {
+          updateRoutingProfile(s.profile, s.suggestedModel);
+        }
+      }
+    } catch { /* non-critical */ }
+  }
 
   // 7. LEARNING
   emitAll(makeEvent(cid, runId, "learning", "start"), emit);
@@ -673,13 +897,9 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     content: finalAnswer,
     pipelineRunId: runId,
   });
-  // Implicit relevance feedback: which *shown* memories the model actually
-  // cited (validated [m:<id>] markers), not merely what was retrieved.
-  const citedIds = new Set(
-    Array.from(finalAnswer.matchAll(/\[m:([A-Za-z0-9]+)\]/g))
-      .map((m) => m[1])
-      .filter((id) => knownIds.has(id)),
-  );
+  // citedIds (+ the faithfulness-filtered faithfulCitedIds) were computed before
+  // the response-complete emit so the faithfulness note could land in the
+  // streamed answer. They are reused below for the citation graph + training.
   // COGNITIVE LOOP — close the cycle: persist this run's confidence + cited
   // count into BrainState. When confidence is below the floor the loop pushes an
   // "open-question" working item (DEFERRED metacognition) — it surfaces as a
@@ -690,6 +910,18 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     confidence: errorReport.confidence,
     citedCount: citedIds.size,
   });
+  // Feed the completed reasoning cycle to the self-model so its introspection is
+  // grounded in what actually happened (confidence + what was cited) instead of
+  // being blind to its own reasoning. Failure-isolated: a self-model fault must
+  // never break /api/ask, and the engine may be uninitialized in hermetic runs.
+  try {
+    getSelfConsciousness().react({
+      type: "pipeline:reasoning",
+      payload: { confidence: errorReport.confidence, citedCount: citedIds.size },
+    });
+  } catch (err) {
+    surfaceError("pipeline.selfConsciousness", err);
+  }
   try {
     // Embed the learned Q+A best-effort so it (a) becomes visible to vector
     // search and (b) can later use the cosine novelty/cluster path. embedder is
@@ -746,19 +978,22 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // Persist the training snapshot (feature vectors + cited ids) keyed by runId
   // so a later explicit 👍/👎 (POST /api/feedback) can retrain against the same
   // features that produced this ranking. Best-effort — never break the run.
+  // Training signal uses faithfulCitedIds — citations the faithfulness check did
+  // NOT flag as unsupported (identical to citedIds when the flag is off / nothing
+  // flagged), so the ranker/reranker stop rewarding mere citation PRESENCE.
   try {
-    recordRankTrainingLog(runId, rankFeatures, citedIds);
+    recordRankTrainingLog(runId, rankFeatures, faithfulCitedIds);
   } catch (err) {
     console.warn("[pipeline] rank-training-log persist failed:", err);
   }
   // Online ranker update from this query's implicit feedback. Independent of
   // persistence success; no-op when there were no citations.
-  trainFromCitations(rankFeatures, citedIds);
+  trainFromCitations(rankFeatures, faithfulCitedIds);
   // Online lexical-reranker update on the SAME dense citation signal (cited=1 /
   // shown-but-not-cited=0). Best-effort; no-op when there were no citations.
   if (CONFIG.rerankerEnabled) {
     try {
-      saveRerankerState(trainReranker(req.prompt, memoryHits, citedIds, loadRerankerState()));
+      saveRerankerState(trainReranker(req.prompt, memoryHits, faithfulCitedIds, loadRerankerState()));
     } catch (err) {
       surfaceError("pipeline.trainReranker", err);
     }

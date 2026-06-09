@@ -711,6 +711,45 @@ CREATE TABLE IF NOT EXISTS usage_feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_feedback_kind ON usage_feedback(kind, created_at DESC);
 
+-- Model usage telemetry: one row per /api/ask response. Tracks which model
+-- served, which provider (local/remote), latency, whether remote fallback
+-- was triggered, and the key index used (for rotation visibility).
+CREATE TABLE IF NOT EXISTS usage_log (
+  id            TEXT PRIMARY KEY,
+  run_id        TEXT NOT NULL,
+  connector_id  TEXT NOT NULL,
+  provider      TEXT NOT NULL,        -- 'local' | 'remote'
+  model         TEXT NOT NULL,
+  key_index     INTEGER,
+  fallback      INTEGER NOT NULL DEFAULT 0,
+  latency_ms    INTEGER NOT NULL,
+  step_timings  TEXT,                 -- JSON: {memory_ms,reasoning_ms,error_ms,response_ms}
+  error         TEXT,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_log_time     ON usage_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_log_model    ON usage_log(model, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_log_fallback ON usage_log(fallback, created_at DESC);
+
+-- Routing log: one row per pipeline run. Records which MoE profile was chosen,
+-- which model served, the query difficulty, and the quality signals (citations,
+-- confidence) so we can learn which profile-model pairs perform best.
+CREATE TABLE IF NOT EXISTS routing_log (
+  id              TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL,
+  profile         TEXT NOT NULL,
+  model           TEXT,
+  experts         TEXT NOT NULL,       -- comma-separated expert cortex IDs
+  difficulty      REAL NOT NULL,
+  depth           TEXT NOT NULL,       -- 'shallow' | 'full'
+  cited_count     INTEGER NOT NULL DEFAULT 0,
+  retrieved_count INTEGER NOT NULL DEFAULT 0,
+  confidence      REAL NOT NULL DEFAULT 0,
+  latency_ms      INTEGER NOT NULL,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routing_log_profile ON routing_log(profile, created_at DESC);
+
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INTEGER PRIMARY KEY,

@@ -45,6 +45,16 @@ export interface ModelRoutingView {
   available: string[];
 }
 
+// A remote provider (NVIDIA NIM, Gemini, etc.) and its available models.
+export interface RemoteProviderModel {
+  id: string; // connector id (e.g. "nvidia", "google-gemini")
+  name: string; // display name (e.g. "NVIDIA NIM (remote)")
+  baseUrl: string;
+  models: string[]; // model IDs returned by GET /v1/models
+  currentModel: string | null; // the model currently assigned to this connector
+  error: string | null; // non-null when the model list couldn't be fetched
+}
+
 export interface ModelsView {
   // Resolved loopback Ollama daemon, or null when none is reachable/local.
   base: string | null;
@@ -53,4 +63,6 @@ export interface ModelsView {
   installed: string[];
   suggested: SuggestedModel[];
   pull: ModelPullState;
+  // Models from enabled remote providers (NVIDIA NIM, Gemini, etc.).
+  remoteProviders: RemoteProviderModel[];
 }

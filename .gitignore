@@ -16,3 +16,4 @@ worker/.venv/
 __pycache__/
 *.pyc
 server/dist/
+.hermes/

@@ -27,6 +27,11 @@ torch>=2.2.0
 pillow>=10.0.0
 ultralytics>=8.2.0
 
+# Bark (Suno open TTS) for /voice/speak. CPU-friendly neural voice synthesis.
+# First call downloads voice preset data lazily; subsequent calls reuse cache.
+bark>=0.5.0
+scipy>=1.11.0
+
 # Own-model trainer (Learning Lab — Phase D). LoRA continued-pretraining a small
 # open base (default Qwen/Qwen2.5-0.5B, ~1GB downloaded from Hugging Face on the
 # first run) on the brain's memory corpus, merged + served via Ollama. For GPU

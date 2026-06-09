@@ -6,10 +6,14 @@
 // (a static import of that, or of Three.js, regresses the main canvas chunk).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Brain, Maximize2, MessageCircle, Send, X } from "lucide-react";
+import { Activity, Brain, Maximize2, MessageCircle, Mic, Send, Volume2, VolumeX, X } from "lucide-react";
 import { subscribeBrainBus } from "../../engine/brainBus";
 import { apiClient } from "../../engine/apiClient";
 import { MOOD_COLOR, MOOD_LABEL, moodFor, type Mood } from "./petMood";
+import { playPetAudio, stopPetAudio } from "./audioQueue";
+import { appendExchange, updateLastAnswer, type Exchange } from "./chatHistory";
+import { confirmScope } from "./confirmSummary";
+import { usePushToTalk } from "./usePushToTalk";
 import type { AgentRuntimeState } from "../../../shared/pipeline";
 import type { PersonalityState } from "../../../shared/phase2";
 import type { AgentConfirmRequest } from "../../../shared/agent";
@@ -35,11 +39,6 @@ async function invokeQuiet(cmd: string, args?: unknown): Promise<void> {
   }
 }
 
-interface Exchange {
-  question: string;
-  answer: string;
-}
-
 export function PetWindow(): JSX.Element {
   const [lastState, setLastState] = useState<AgentRuntimeState | null>(null);
   const [personality, setPersonality] = useState<PersonalityState | null>(null);
@@ -47,13 +46,16 @@ export function PetWindow(): JSX.Element {
   const [subtitle, setSubtitle] = useState<string>("starting up...");
   const [expanded, setExpanded] = useState(false);
   const [input, setInput] = useState("");
-  const [exchange, setExchange] = useState<Exchange | null>(null);
+  const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [asking, setAsking] = useState(false);
   // A confirm-tier action the agent loop paused on, awaiting Run/Cancel. The
   // run is parked server-side under confirm.runId; we resume it via confirmAgent.
   const [pendingConfirm, setPendingConfirm] = useState<AgentConfirmRequest | null>(null);
+  const [voiceOn, setVoiceOn] = useState(false);
   const resetTimer = useRef<number | null>(null);
   const askAbort = useRef<AbortController | null>(null);
+  const voiceOnRef = useRef(voiceOn);
+  voiceOnRef.current = voiceOn;
 
   useEffect(() => {
     const invoke = tauriInvoke();
@@ -108,6 +110,25 @@ export function PetWindow(): JSX.Element {
         setSubtitle(
           message.projectName ? `summarized ${message.projectName}` : "summarized recent work",
         );
+        return;
+      }
+      // Proactive presence: the IdleAgent already broadcasts what the brain is
+      // mulling when the system is quiet. Surface it as a gentle subtitle and,
+      // when voice is on, let the pet THINK OUT LOUD (best-effort).
+      if (message.type === "idle-thought") {
+        setSubtitle(`⊕ ${message.preview}`);
+        if (voiceOnRef.current && message.preview) {
+          void apiClient
+            .voiceSpeak(message.preview.slice(0, 600))
+            .then((r) => {
+              if (r.audioBase64) void playPetAudio(r.audioBase64);
+            })
+            .catch(() => {});
+        }
+        return;
+      }
+      if (message.type === "exploration-scheduled") {
+        setSubtitle(`exploring ${message.target}`);
       }
     });
   }, []);
@@ -148,7 +169,7 @@ export function PetWindow(): JSX.Element {
       const tools: string[] = [];
       const render = () => {
         const body = answer || tools.join("\n") || "thinking…";
-        setExchange((c) => (c ? { ...c, answer: body } : c));
+        setExchanges((list) => updateLastAnswer(list, body));
       };
       try {
         const stream = resume
@@ -180,8 +201,11 @@ export function PetWindow(): JSX.Element {
             case "confirm-request":
               if (frame.confirm) {
                 setPendingConfirm(frame.confirm);
-                setExchange((c) =>
-                  c ? { ...c, answer: `${frame.confirm?.rationale || "Run this action?"}\n→ ${frame.confirm?.title}` } : c,
+                setExchanges((list) =>
+                  updateLastAnswer(
+                    list,
+                    `${frame.confirm?.rationale || "Run this action?"}\n→ ${frame.confirm?.title}`,
+                  ),
                 );
               }
               return; // pause — wait for the user's Run/Cancel
@@ -192,6 +216,16 @@ export function PetWindow(): JSX.Element {
             case "final":
               answer = frame.text ?? answer;
               render();
+              if (voiceOnRef.current && answer) {
+                try {
+                  const result = await apiClient.voiceSpeak(answer.slice(0, 1500));
+                  if (result.audioBase64) {
+                    void playPetAudio(result.audioBase64);
+                  }
+                } catch {
+                  /* best effort */
+                }
+              }
               break;
             case "error":
               answer = answer || `⚠ ${frame.detail ?? "agent error"}`;
@@ -204,7 +238,7 @@ export function PetWindow(): JSX.Element {
       } catch (err) {
         if (!controller.signal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          setExchange((c) => (c ? { ...c, answer: answer || `⚠ ${msg}` } : c));
+          setExchanges((list) => updateLastAnswer(list, answer || `⚠ ${msg}`));
         }
       } finally {
         if (askAbort.current === controller) askAbort.current = null;
@@ -224,7 +258,8 @@ export function PetWindow(): JSX.Element {
       if (!expanded) applyExpanded(true);
       setInput("");
       setPendingConfirm(null);
-      setExchange({ question: text, answer: "…" });
+      stopPetAudio(); // barge-in: a new question silences any in-flight voice
+      setExchanges((list) => appendExchange(list, { question: text, answer: "…" }));
       setAsking(true);
       try {
         await streamAgent(text);
@@ -235,6 +270,13 @@ export function PetWindow(): JSX.Element {
     [asking, expanded, applyExpanded, streamAgent],
   );
 
+  // Push-to-talk: press-and-hold the mic → record → local faster-whisper STT →
+  // feed the transcript straight into the agentic loop. No cloud STT.
+  const ptt = usePushToTalk(
+    (text) => void submit(text),
+    (msg) => setSubtitle(msg),
+  );
+
   // Approve the paused confirm-tier action and resume the loop. The human just
   // approved THIS exact plan, so the server mints an honest, plan-bound confirm
   // token on resume.
@@ -243,7 +285,7 @@ export function PetWindow(): JSX.Element {
     const runId = pendingConfirm.runId;
     setPendingConfirm(null);
     setAsking(true);
-    setExchange((c) => (c ? { ...c, answer: "working…" } : c));
+    setExchanges((list) => updateLastAnswer(list, "working…"));
     try {
       await streamAgent("", { runId, approve: true });
     } finally {
@@ -340,9 +382,20 @@ export function PetWindow(): JSX.Element {
           flex: 1; min-height: 0; overflow-y: auto; padding: 8px; border-radius: 10px;
           background: rgba(12, 12, 20, 0.6); font-size: 11px; line-height: 1.45; color: #d6d6e6;
         }
+        .pet-chat-turn { margin-bottom: 10px; }
+        .pet-chat-turn:last-child { margin-bottom: 0; }
         .pet-chat-q { color: ${color}; margin-bottom: 4px; }
         .pet-chat-a { white-space: pre-wrap; color: #c7c7da; }
         .pet-chat-empty { color: #6a6a82; font-size: 10px; }
+        .pet-confirm { display: flex; flex-direction: column; gap: 6px; }
+        .pet-confirm-scope {
+          font-size: 10px; line-height: 1.35; color: #c7c7da; padding: 6px 8px;
+          border-radius: 8px; background: rgba(12, 12, 20, 0.6); border: 1px solid ${color}33;
+        }
+        .pet-confirm-risk {
+          display: inline-block; font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em;
+          color: #0a0a0f; background: ${color}; border-radius: 999px; padding: 1px 6px; margin-right: 6px;
+        }
         .pet-quick { display: flex; gap: 4px; flex-wrap: wrap; }
         .pet-quick button {
           font-size: 9px; padding: 3px 7px; border-radius: 999px; cursor: pointer;
@@ -385,6 +438,56 @@ export function PetWindow(): JSX.Element {
         >
           <Maximize2 size={13} />
         </button>
+        {ptt.supported ? (
+          <button
+            type="button"
+            className="pet-iconbtn"
+            title={
+              ptt.transcribing
+                ? "Transcribing…"
+                : ptt.recording
+                  ? "Listening… release to send"
+                  : "Hold to talk"
+            }
+            aria-pressed={ptt.recording}
+            style={ptt.recording ? { background: color, color: "#0a0a0f" } : undefined}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              ptt.start();
+            }}
+            onMouseUp={(e) => {
+              e.stopPropagation();
+              ptt.stop();
+            }}
+            onMouseLeave={() => {
+              if (ptt.recording) ptt.stop();
+            }}
+            onTouchStart={(e) => {
+              e.stopPropagation();
+              ptt.start();
+            }}
+            onTouchEnd={(e) => {
+              e.stopPropagation();
+              ptt.stop();
+            }}
+          >
+            <Mic size={13} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="pet-iconbtn"
+          title={voiceOn ? "Mute voice" : "Enable voice"}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() =>
+            setVoiceOn((v) => {
+              if (v) stopPetAudio(); // muting silences in-flight speech
+              return !v;
+            })
+          }
+        >
+          {voiceOn ? <Volume2 size={13} /> : <VolumeX size={13} />}
+        </button>
       </div>
 
       <div className="pet-drag" onMouseDown={startDrag} title="Drag to move">
@@ -416,25 +519,35 @@ export function PetWindow(): JSX.Element {
       {expanded ? (
         <div className="pet-panel">
           <div className="pet-chat">
-            {exchange ? (
-              <>
-                <div className="pet-chat-q">› {exchange.question}</div>
-                <div className="pet-chat-a">
-                  {exchange.answer || (asking ? "thinking…" : "")}
+            {exchanges.length > 0 ? (
+              exchanges.map((ex, i) => (
+                <div className="pet-chat-turn" key={i}>
+                  <div className="pet-chat-q">› {ex.question}</div>
+                  <div className="pet-chat-a">
+                    {ex.answer || (asking && i === exchanges.length - 1 ? "thinking…" : "")}
+                  </div>
                 </div>
-              </>
+              ))
             ) : (
               <div className="pet-chat-empty">{summary || subtitle}</div>
             )}
           </div>
           {pendingConfirm ? (
-            <div className="pet-quick" role="group" aria-label="Confirm action">
-              <button type="button" disabled={asking} onClick={() => void runPending()}>
-                run ✓
-              </button>
-              <button type="button" disabled={asking} onClick={() => void cancelPending()}>
-                cancel
-              </button>
+            <div className="pet-confirm" role="group" aria-label="Confirm action">
+              <div className="pet-confirm-scope">
+                <span className="pet-confirm-risk">
+                  {confirmScope(pendingConfirm.actionId, pendingConfirm.args, pendingConfirm.risk).riskLabel}
+                </span>
+                {confirmScope(pendingConfirm.actionId, pendingConfirm.args, pendingConfirm.risk).detail}
+              </div>
+              <div className="pet-quick">
+                <button type="button" disabled={asking} onClick={() => void runPending()}>
+                  run ✓
+                </button>
+                <button type="button" disabled={asking} onClick={() => void cancelPending()}>
+                  cancel
+                </button>
+              </div>
             </div>
           ) : (
             <div className="pet-quick">

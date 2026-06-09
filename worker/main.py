@@ -45,23 +45,20 @@ _START_TS = time.monotonic()
 # the underlying model has been loaded by an earlier request. Cold restart =
 # every model goes back to "available" until first call. The server tolerates
 # any state — only the route that needs the missing model 503s.
-_warm: dict[str, bool] = {"whisper": False, "caption": False, "omniparser": False}
+_warm: dict[str, bool] = {"whisper": False, "caption": False, "omniparser": False, "tts": False}
 
 
 def _model_state(
-    feature: Literal["whisper", "caption", "omniparser"],
+    feature: Literal["whisper", "caption", "omniparser", "tts"],
 ) -> Literal["ready", "available", "unavailable"]:
     if _warm.get(feature):
         return "ready"
-    # importlib.util.find_spec is cheap (filesystem only); avoids importing the
-    # actual heavy module just to answer a probe.
     deps = {
         "whisper": ("faster_whisper",),
         "caption": ("transformers", "PIL"),
-        # OmniParser V2 = YOLO (ultralytics) icon/element detector + Florence2
-        # caption (transformers + PIL). All need torch, so "unavailable" is the
-        # common case in a base install.
         "omniparser": ("ultralytics", "transformers", "PIL"),
+        # Bark (Suno's open TTS) — requires torch + transformers + scipy + bark.
+        "tts": ("torch", "transformers", "scipy", "bark"),
     }[feature]
     for mod in deps:
         if importlib.util.find_spec(mod) is None:
@@ -80,6 +77,7 @@ def healthz() -> dict[str, Any]:
             "whisper": _model_state("whisper"),
             "caption": _model_state("caption"),
             "omniparser": _model_state("omniparser"),
+            "tts": _model_state("tts"),
         },
     }
 
@@ -457,13 +455,77 @@ def train_start(body: TrainIn) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# /ownmodel/* — the brain's OWN model (Learning Lab — Phase D: own-LLM).
+# /voice/speak — text -> speech (Bark / Suno open TTS).
 #
-# LoRA continued-pretraining over a small open base (default Qwen2.5-0.5B) on the
-# brain's own corpus (shipped by the Node side), merged into a standalone HF dir
-# the Node side serves via `ollama create`. Honest scope: adapts VOICE/domain,
-# does NOT replace RAG. torch/transformers/peft import LAZILY inside
-# /ownmodel/start so the worker still boots without ML deps.
+# Bark (https://github.com/suno-ai/bark) is a neural TTS model producing natural
+# prosody and voice characteristics. Voice presets are hard-coded speaker IDs;
+# a future iteration could accept a speaker reference for voice cloning.
+# All deps are lazy — torch/transformers/scipy are imported ONLY inside the
+# handler so the worker still boots without ML deps.
+# ---------------------------------------------------------------------------
+
+
+class VoiceIn(BaseModel):
+    text: str = Field(..., description="Text to synthesize.")
+    voice: str | None = Field(
+        default="v2/en_speaker_6",
+        description="Bark voice preset (e.g. v2/en_speaker_6, v2/en_speaker_0).",
+    )
+    # "sculpt" = moderate post-processing (Bark default); "sharp" = crisper
+    # onsets; "neutral" = minimal processing.
+    preset: str = Field(default="sculpt")
+
+
+_tts_model: Any | None = None
+
+
+@app.post("/voice/speak")
+def voice_speak(body: VoiceIn) -> dict[str, Any]:
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="text cannot be empty.")
+
+    try:
+        from bark import SAMPLE_RATE, generate_audio  # type: ignore[import-not-found]
+        from scipy.io.wavfile import write as write_wav  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="bark not installed. Install worker/requirements-ml.txt to enable voice synthesis.",
+        ) from exc
+
+    _warm["tts"] = True
+    started = time.perf_counter()
+
+    voice = body.voice or "v2/en_speaker_6"
+    audio_array = generate_audio(
+        text_prompt=body.text[:1000],
+        history_prompt=voice,
+        text_temp=0.7,
+        waveform_temp=0.7,
+    )
+
+    import numpy as np  # type: ignore[import-not-found]
+
+    audio_int16 = np.array(audio_array * 32767, dtype=np.int16)
+    wav_io = io.BytesIO()
+    write_wav(wav_io, SAMPLE_RATE, audio_int16)
+    wav_io.seek(0)
+    audio_b64 = base64.b64encode(wav_io.read()).decode()
+
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    return {
+        "audioBase64": audio_b64,
+        "mimeType": "audio/wav",
+        "sampleRate": SAMPLE_RATE,
+        "durationSec": round(len(audio_array) / SAMPLE_RATE, 2),
+        "latencyMs": elapsed_ms,
+        "model": "bark",
+        "voice": voice,
+    }
+
+
+# ---------------------------------------------------------------------------
+# /ownmodel/* — the brain's OWN model (Learning Lab — Phase D: own-LLM).
 # ---------------------------------------------------------------------------
 
 _ownmodel_lock = threading.Lock()
@@ -575,6 +637,21 @@ def ownmodel_start(body: OwnModelIn) -> dict[str, Any]:
 
 
 if __name__ == "__main__":  # pragma: no cover
+    import signal
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8789)
+    # Graceful shutdown: uvicorn's default handles SIGTERM/SIGINT well, but we
+    # explicitly configure the signal handlers to ensure clean shutdown during
+    # test runs (prevents "Assertion failed: UV_HANDLE_CLOSING" errors).
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=8789, lifespan="on")
+    )
+
+    def handle_signal(sig: int, frame) -> None:
+        print(f"Received signal {sig}, shutting down gracefully...")
+        server.should_exit = True
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    server.run()

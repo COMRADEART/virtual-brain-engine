@@ -83,6 +83,12 @@ export interface ServerConfig {
   // Trains online on the citation signal; ON by default, degrades to a no-op
   // until it has trained. Set RERANKER=false to disable.
   rerankerEnabled: boolean;
+  // Citation faithfulness: after the response step, check that each [m:<id>]
+  // citation's claim is actually SUPPORTED by the cited memory (cheap lexical
+  // entailment). Unfaithful citations get a note in Uncertain AND are dropped
+  // from the ranker/reranker training signal so the brain stops rewarding
+  // citation PRESENCE alone. OFF by default — opt in with CITATION_FAITHFULNESS=true.
+  citationFaithfulness: boolean;
   // RL adaptive controller: a contextual bandit that learns the augment /
   // retrieval-k / multi-query / model-routing decisions from the dense citation
   // reward. OFF by default — it warm-starts at the heuristics and only helps once
@@ -110,6 +116,22 @@ export interface ServerConfig {
   // plain question straight to the 7-step pipeline and only multi-step / tool /
   // "do X" requests into the loop. Set AGENT_TRIAGE=false to always use the loop.
   agentTriage: boolean;
+  // Optional prompt variant tag for A/B testing. When set, every usage log entry
+  // carries this as `stepTimings.prompt_variant`, enabling per-variant quality
+  // comparison. Empty = no variant tagging. Default: ""
+  promptVariant: string;
+  // Memory dedup audit: similarity threshold (0-1) for near-duplicate detection.
+  dedupSimilarityThreshold: number;
+  // Memory dedup: max pairs to report per audit run.
+  dedupMaxPairs: number;
+  // Memory dedup: actually MERGE (delete the older near-duplicate) on the boot
+  // + daily audit. DEFAULT OFF — auto-merge is irreversible deletion, and at the
+  // default 0.92 cosine threshold real DBs surface many distinct-but-related
+  // memories as "near-duplicates" (two different certs, two different addresses).
+  // When off, the audit still runs and LOGS the candidate count, but deletes
+  // nothing. Opt in only after reviewing candidates (and likely raising the
+  // threshold). Same default-off safety posture as ingest consent / civilization.
+  dedupAutoMerge: boolean;
   // --- GitHub project discovery ("learn from popular repos") -----------------
   // Optional GitHub API token. When set, it is sent ONLY in the Authorization
   // header (never a URL/query/log) and raises GitHub's low unauthenticated rate
@@ -121,6 +143,25 @@ export interface ServerConfig {
   // Max repos a single discovery/learn run touches — caps the README fetch
   // budget so one query can't spam GitHub (single page, no multi-page crawl).
   githubMaxRepos: number;
+  // --- Own-model auto-train --------------------------------------------------
+  // When true, the brain automatically starts LoRA continued-pretraining on its
+  // memory corpus on every server boot (if enough corpus exists and enough time
+  // has passed since the last run). The trained model is seeded as a disabled,
+  // non-default Ollama connector so it never silently becomes the /api/ask
+  // model. OFF by default — training is compute-intensive and you should opt in.
+  autoStartOwnModel: boolean;
+  // Minimum corpus chars required before auto-train will fire.
+  autoStartMinCorpusChars: number;
+  // Minimum milliseconds between auto-train runs (default 7 days).
+  autoStartMinIntervalMs: number;
+  // When true, remote provider failures in /api/ask fall back to local Ollama
+  // instead of surfacing an error. The response includes a [degraded] tag so
+  // the user knows they got a weaker answer. OFF by default — transparent is
+  // safer than silent degradation.
+  remoteFallback: boolean;
+  remoteRetryAttempts: number;
+  routingAutoOptimize: boolean;
+  usageLogRetentionDays: number;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -187,14 +228,26 @@ export const CONFIG: ServerConfig = {
   multiQueryRag: bool("MULTI_QUERY_RAG", true),
   multiQueryVariants: Math.min(3, Math.max(1, num("MULTI_QUERY_VARIANTS", 2))),
   rerankerEnabled: bool("RERANKER", true),
+  citationFaithfulness: bool("CITATION_FAITHFULNESS", false),
   adaptiveController: bool("ADAPTIVE_CONTROLLER", false),
   banditWarmAt: Math.max(1, num("BANDIT_WARM_AT", 30)),
   agentMaxRounds: Math.min(50, Math.max(1, num("AGENT_MAX_ROUNDS", 12))),
   agentConfirmMode: oneOf("AGENT_CONFIRM_MODE", ["ask", "scope", "safe-only"] as const, "ask"),
   agentTriage: bool("AGENT_TRIAGE", true),
+  promptVariant: str("PROMPT_VARIANT", ""),
+  dedupSimilarityThreshold: num("DEDUP_SIMILARITY_THRESHOLD", 0.92),
+  dedupMaxPairs: num("DEDUP_MAX_PAIRS", 50),
+  dedupAutoMerge: bool("DEDUP_AUTO_MERGE", false),
   githubToken: str("GITHUB_TOKEN", ""),
   githubMinStars: Math.max(1, num("GITHUB_MIN_STARS", 1000)),
   githubMaxRepos: Math.min(50, Math.max(1, num("GITHUB_MAX_REPOS", 10))),
+  autoStartOwnModel: bool("AUTO_START_OWN_MODEL", false),
+  autoStartMinCorpusChars: Math.max(0, num("AUTO_START_MIN_CORPUS_CHARS", 10_000)),
+  autoStartMinIntervalMs: Math.max(0, num("AUTO_START_MIN_INTERVAL_MS", 7 * 24 * 60 * 60 * 1000)),
+  remoteFallback: bool("REMOTE_FALLBACK", false),
+  remoteRetryAttempts: Math.min(5, Math.max(0, num("REMOTE_RETRY_ATTEMPTS", 2))),
+  routingAutoOptimize: bool("ROUTING_AUTO_OPTIMIZE", false),
+  usageLogRetentionDays: Math.max(1, num("USAGE_LOG_RETENTION_DAYS", 30)),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;

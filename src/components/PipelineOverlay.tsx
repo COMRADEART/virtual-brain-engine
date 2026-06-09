@@ -28,6 +28,8 @@ interface StepState {
   status: "idle" | "active" | "complete" | "error";
   detail?: string;
   regions: string[];
+  startedAt?: number;
+  elapsedMs?: number;
 }
 
 const INITIAL: Record<PipelineStepId, StepState> = PIPELINE_STEP_ORDER.reduce(
@@ -43,6 +45,17 @@ export function PipelineOverlay(): JSX.Element | null {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [tokenCount, setTokenCount] = useState(0);
   const resetTimer = useRef<number | null>(null);
+  const stepsRef = useRef(steps);
+  stepsRef.current = steps;
+
+  // Clean up the auto-reset timer on unmount
+  useEffect(() => {
+    return () => {
+      if (resetTimer.current !== null) {
+        window.clearTimeout(resetTimer.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     return subscribeBrainBus((message) => {
@@ -55,9 +68,11 @@ export function PipelineOverlay(): JSX.Element | null {
         const next = { ...current };
         const region = event.logicalRegions.map((id) => LOGICAL_REGION_LABELS[id] ?? id);
         if (event.status === "start") {
-          next[event.step] = { status: "active", detail: event.detail, regions: region };
+          next[event.step] = { status: "active", detail: event.detail, regions: region, startedAt: Date.parse(event.timestamp) };
         } else if (event.status === "complete") {
-          next[event.step] = { status: "complete", detail: event.detail, regions: region };
+          const started = current[event.step].startedAt;
+          const elapsed = started ? Date.parse(event.timestamp) - started : undefined;
+          next[event.step] = { status: "complete", detail: event.detail, regions: region, startedAt: started, elapsedMs: elapsed };
         } else if (event.status === "error") {
           next[event.step] = { status: "error", detail: event.detail, regions: region };
         }
@@ -113,7 +128,7 @@ export function PipelineOverlay(): JSX.Element | null {
           {activeRunId ? `run ${activeRunId.slice(-6)}` : ""}
         </small>
       </header>
-      <div className="pipeline-timeline" role="list">
+      <div className="pipeline-timeline" role="list" aria-live="polite" aria-label="Pipeline steps">
         <div className="pipeline-track" aria-hidden="true">
           <div className="pipeline-track-fill" style={{ width: `${cursorPct}%` }} />
         </div>
@@ -126,6 +141,11 @@ export function PipelineOverlay(): JSX.Element | null {
                 <Icon size={14} />
               </div>
               <div className="pipeline-node-label">{label}</div>
+              {state.elapsedMs != null && state.elapsedMs > 0 ? (
+                <small className="pipeline-elapsed">
+                  {state.elapsedMs > 1000 ? `${(state.elapsedMs / 1000).toFixed(1)}s` : `${state.elapsedMs}ms`}
+                </small>
+              ) : null}
             </div>
           );
         })}

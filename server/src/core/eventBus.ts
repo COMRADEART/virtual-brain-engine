@@ -31,6 +31,7 @@ import type {
   OrganismSnapshot,
 } from "../../../shared/organism.js";
 import type { BrainStateSnapshot } from "../../../shared/brainState.js";
+import type { SelfConsciousnessState } from "../../../shared/selfConsciousness.js";
 
 /**
  * Internal events emitted by agents. These are distinct from the frontend
@@ -172,6 +173,14 @@ export type BrainEvent =
       // 3D scene reflect the live attention map / working memory / confidence.
       kind: "brain-state";
       snapshot: BrainStateSnapshot;
+      at: string;
+    }
+  | {
+      // Self-Consciousness — emitted whenever the self-model, affect, or
+      // metacognitive state changes. The bridge fans it to the browser so
+      // the SelfConsciousnessPanel reflects live updates.
+      kind: "self-snapshot";
+      state: SelfConsciousnessState;
       at: string;
     };
 

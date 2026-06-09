@@ -614,8 +614,8 @@ export class BrainVisualEffects {
 
   // ── Post-processing ─────────────────────────────────────────────────────────
   private composer: EffectComposer | null = null;
-  private neuromodPass!: ShaderPass;
-  private filmGrainPass!: ShaderPass;
+  private neuromodPass: ShaderPass | undefined;
+  private filmGrainPass: ShaderPass | undefined;
   private readonly useOwnComposer: boolean;
 
   // ── Per-region cached data ───────────────────────────────────────────────────
@@ -1019,12 +1019,12 @@ export class BrainVisualEffects {
     
     if (this.neuromodPass) {
       this.neuromodPass.dispose();
-      this.neuromodPass = undefined as any;
+      this.neuromodPass = undefined;
     }
-    
+
     if (this.filmGrainPass) {
       this.filmGrainPass.dispose();
-      this.filmGrainPass = undefined as any;
+      this.filmGrainPass = undefined;
     }
     
     if (this.composer) {

@@ -8,7 +8,7 @@
 // receive them with no protocol change.
 
 import type { BrainBusMessage } from "../../../shared/pipeline.js";
-import { getEventBus, type BrainEvent } from "../core/eventBus.js";
+import { getEventBus, nowIso, type BrainEvent } from "../core/eventBus.js";
 import { gatherCuriosity } from "../core/curiosity.js";
 import { createCognitiveEvolutionEngine } from "../core/evolution.js";
 import { createImaginationEngine } from "../core/imagination.js";
@@ -16,6 +16,7 @@ import { createPersistentOrganism } from "../core/organism.js";
 import { createBrainState } from "../core/brainState.js";
 import { createSafetyGate } from "../core/safety.js";
 import { createCognitiveSwarm } from "../core/swarm.js";
+import { initSelfConsciousness } from "../core/selfConsciousness.js";
 import { broadcast } from "../ws/brainBus.js";
 import { getMemoryCount } from "../db/repositories/memory.js";
 import { AgentRuntime } from "./runtime.js";
@@ -177,6 +178,12 @@ function toWireMessage(event: BrainEvent): BrainBusMessage | null {
         snapshot: event.snapshot,
         timestamp: event.at,
       };
+    case "self-snapshot":
+      return {
+        type: "self-snapshot",
+        state: event.state,
+        timestamp: event.at,
+      };
   }
 }
 
@@ -232,6 +239,35 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   }, BRAIN_STATE_TICK_MS);
   if (typeof brainStateTick.unref === "function") brainStateTick.unref();
 
+  // Self-Consciousness engine — observes internal events and builds a
+  // persistent self-model. Reactive only (no autonomous tick), so no
+  // memory/performance overhead when idle. Each handler is failure-isolated.
+  const selfConsciousness = initSelfConsciousness(bus);
+  const unselfLifecycle = bus.on("organism-lifecycle", (e) => {
+    selfConsciousness.react({ type: "goal_change", payload: { title: e.lifecycle, activeGoals: 0 } });
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfBrainState = bus.on("brain-state", (e) => {
+    if (e.snapshot.priorUncertainty > 0.6) {
+      selfConsciousness.react({ type: "confidence_drop", payload: { confidence: e.snapshot.confidence } });
+    }
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfIdle = bus.on("idle-thought", (_e) => {
+    selfConsciousness.react({ type: "idle", payload: {} });
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfDream = bus.on("imagination-dream", (e) => {
+    selfConsciousness.react({ type: "dream", payload: { abstractions: e.abstractions.length } });
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfHealth = bus.on("organism-immune-event", (e) => {
+    if (e.event.severity === "high" || e.event.severity === "critical") {
+      selfConsciousness.react({ type: "health_change", payload: { score: 0.3, reason: e.event.detail } });
+    }
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+
   const runtime = new AgentRuntime({ bus, safety: createSafetyGate() });
   runtime.register(new ObserverAgent());
   runtime.register(new SummaryAgent());
@@ -271,7 +307,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   await runtime.start();
   runtime.startCycle(AGENT_CYCLE_MS);
   console.log(
-    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism)",
+    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism, self-consciousness)",
   );
 
   return {
@@ -280,6 +316,11 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       unswarm();
       unevolution();
       unorganism();
+      unselfLifecycle();
+      unselfBrainState();
+      unselfIdle();
+      unselfDream();
+      unselfHealth();
       stopSwarmHeartbeat();
       stopDreaming();
       stopEvolutionLoop();

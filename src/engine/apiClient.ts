@@ -28,6 +28,19 @@ import type {
   MemoryRelation,
   MemorySourceType,
 } from "../../shared/memory";
+
+export interface ModelUsageEntry {
+  id: string;
+  runId: string;
+  connectorId: string;
+  provider: "local" | "remote";
+  model: string;
+  keyIndex: number | null;
+  fallback: boolean;
+  latencyMs: number;
+  error: string | null;
+  createdAt: string;
+}
 import type {
   CaptionRequest,
   CaptionResult,
@@ -37,6 +50,7 @@ import type {
 } from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
 import type { BrainStateSnapshot } from "../../shared/brainState";
+import type { SelfConsciousnessState } from "../../shared/selfConsciousness";
 import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
 import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionRiskTier, ActionSpec } from "../../shared/actions";
 import type { AgentConfirmDecision, AgentConfirmMode, AgentStreamFrame } from "../../shared/agent";
@@ -575,6 +589,13 @@ export const apiClient = {
     return json<BrainStateSnapshot>(`/api/brain/state`);
   },
 
+  // Self-Consciousness engine: the brain's model of itself — self-model,
+  // metacognition, affect, inner monologue, self-predictions, autobiographical
+  // memory. Also streams over the bus as { type: "self-snapshot" }.
+  selfConsciousness(): Promise<SelfConsciousnessState> {
+    return json<SelfConsciousnessState>(`/api/self/state`);
+  },
+
   organismWake(): Promise<{ snapshot: OrganismSnapshot }> {
     return json(`/api/organism/wake`, { method: "POST" });
   },
@@ -771,6 +792,69 @@ export const apiClient = {
     return json(`/api/models/select`, { method: "POST", body: JSON.stringify({ name }) });
   },
 
+  selectRemoteModel(connectorId: string, model: string): Promise<{ ok: boolean; connector: ConnectorDescriptor }> {
+    return json(`/api/models/select-remote`, { method: "POST", body: JSON.stringify({ connectorId, model }) });
+  },
+
+  refreshRemoteModels(): Promise<{ ok: boolean; remoteProviders: import("../../shared/models").RemoteProviderModel[] }> {
+    return json(`/api/models/remote/refresh`, { method: "POST" });
+  },
+
+  getModelUsage(): Promise<{ totalRuns: number; localRuns: number; remoteRuns: number; fallbackRuns: number; recentRuns: ModelUsageEntry[] }> {
+    return json(`/api/models/usage`);
+  },
+
+  getModelPerformanceStats(days?: number): Promise<{
+    models: Array<{
+      model: string; provider: string; runs: number;
+      avgLatencyMs: number; minLatencyMs: number; maxLatencyMs: number;
+      errorRate: number; fallbackRate: number;
+      avgStepTimings: { memory_ms?: number; reasoning_ms?: number; error_ms?: number; response_ms?: number };
+    }>;
+    overall: { avgLatencyMs: number; p50LatencyMs: number; p95LatencyMs: number; totalRuns: number };
+  }> {
+    const qs = days ? `?days=${days}` : "";
+    return json(`/api/models/stats${qs}`);
+  },
+
+  getRoutingInsights(): Promise<Array<{
+    profile: string; model: string | null; runs: number;
+    avgCitations: number; avgConfidence: number; avgLatencyMs: number; qualityScore: number;
+  }>> {
+    return json(`/api/models/routing-insights`);
+  },
+
+  getKeyStats(): Promise<Array<{
+    keyIndex: number; runs: number; avgLatencyMs: number; errors: number; errorRate: number;
+  }>> {
+    return json(`/api/models/key-stats`);
+  },
+
+  getConfidenceCalibration(): Promise<Array<{
+    bucket: number; avgCitations: number; runs: number;
+  }>> {
+    return json(`/api/models/calibration`);
+  },
+
+  getSearchQuality(): Promise<{
+    avgRetrieved: number; avgCited: number; citationRate: number; runs: number;
+  }> {
+    return json(`/api/models/search-quality`);
+  },
+
+  getConnectorHealth(): Promise<Array<{
+    connectorId: string; runs: number; errors: number; errorRate: number; avgLatencyMs: number; lastUsedAt: string | null;
+  }>> {
+    return json(`/api/models/connector-health`);
+  },
+
+  compareModels(models: string[]): Promise<Array<{
+    model: string; runs: number; avgLatencyMs: number; minLatencyMs: number; maxLatencyMs: number;
+    errors: number; errorRate: number; avgStepTimings: Record<string, number> | null;
+  }>> {
+    return json(`/api/models/compare?models=${encodeURIComponent(models.join(","))}`);
+  },
+
   // POST /api/ask returns SSE. We parse "event:" + "data:" blocks and yield
   // each pipeline event as it arrives.
   async *ask(input: { prompt: string; conversationId?: string }, signal?: AbortSignal): AsyncGenerator<PipelineEvent> {
@@ -843,6 +927,21 @@ export const apiClient = {
   // streaming the same kinds of frames).
   confirmAgent(input: AgentConfirmDecision, signal?: AbortSignal): AsyncGenerator<AgentStreamFrame> {
     return sseStream<AgentStreamFrame>("/api/agent/confirm", input, signal);
+  },
+
+  async voiceSpeak(text: string, voice?: string): Promise<{
+    audioBase64: string;
+    mimeType: string;
+    sampleRate: number;
+    durationSec: number;
+    latencyMs: number;
+    model: string;
+    voice: string;
+  }> {
+    return json(`/api/voice/speak`, {
+      method: "POST",
+      body: JSON.stringify({ text, voice }),
+    });
   },
 };
 
