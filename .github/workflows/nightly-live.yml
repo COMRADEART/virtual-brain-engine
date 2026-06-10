@@ -1,0 +1,62 @@
+# Nightly LIVE gate — the runtime tail the default gate deliberately lacks.
+#
+# History: two runtime-fatal bugs shipped while the (hermetic) gate was green,
+# because the gate boots no LLM. This job installs Ollama on the runner, pulls
+# a small chat model + the embedder, and runs `GATE_ASK_SMOKE=1 npm run gate`,
+# which appends the live smokes: a real `POST /api/ask` through the full
+# 7-step pipeline, the agent loop, action resolution, a live model pull, and
+# the web/websearch/github egress-gate smokes (they prove LOCAL_ONLY blocks
+# first, then do one live fetch). Every smoke skips cleanly when its
+# prerequisite is unreachable, so a flaky mirror degrades instead of failing.
+#
+# CPU-only inference on a runner is slow — that's fine; this is a nightly
+# correctness check, not a latency benchmark.
+
+name: nightly-live
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  live-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama and pull models
+        run: |
+          ollama serve &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break
+            sleep 1
+          done
+          # Small chat model (CPU-viable) + the fixed embedder the vector
+          # index expects (nomic-embed-text, 768d — matches EMBEDDING_DIM).
+          ollama pull llama3.2:1b
+          ollama pull nomic-embed-text
+
+      - name: Run the gate with the live tail
+        env:
+          GATE_ASK_SMOKE: "1"
+          OLLAMA_CHAT_MODEL: "llama3.2:1b"
+        run: npm run gate

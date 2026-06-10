@@ -1,0 +1,47 @@
+# CI gate — the same composite gate developers run locally (`npm run gate`):
+# lint (errors-only) → both typechecks → ~30 hermetic selfchecks → frontend
+# unit tests → server smoke (boots the real server, sweeps every GET).
+#
+# No LLM is required: every selfcheck is hermetic (temp DB via BRAIN_DB_PATH,
+# injected fetch, no network) and ask-smoke is NOT in the default gate. The
+# live-model tail runs in nightly.yml instead.
+#
+# Rust (src-tauri) and the computer-brain workspace are deliberately NOT built
+# here — they need the Tauri Linux system deps and are desktop-only; their
+# check remains the local `cargo check` ritual.
+
+name: gate
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Run the gate
+        run: npm run gate
