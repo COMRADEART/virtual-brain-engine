@@ -162,6 +162,27 @@ export interface ServerConfig {
   remoteRetryAttempts: number;
   routingAutoOptimize: boolean;
   usageLogRetentionDays: number;
+  // --- "Real brain" layer -----------------------------------------------------
+  // Hebbian associative recall: co-cited memories wire together
+  // (memory/hebbian.ts); retrieval passes the relation graph into the ranker
+  // and strong associations pull missed neighbours into the candidate pool.
+  // ON by default — bounded, anchored below real hits, no-op on an empty graph.
+  hebbianRetrieval: boolean;
+  // Predictive processing: predict retrieval quality before the memory step,
+  // learn from the prediction error (surprise → norepinephrine; "expected to
+  // know but didn't" → open question). ON by default — zero perturbation until
+  // the EMA model has enough observations to predict at all.
+  predictiveProcessing: boolean;
+  // Sleep cycle: nightly episodic→semantic distillation + Hebbian decay +
+  // episode segmentation (memory/sleepCycle.ts, memory/episodes.ts). ON by
+  // default; degrades to a no-op report without a connector.
+  sleepCycle: boolean;
+  sleepIntervalHours: number;
+  // Global workspace: subsystems bid (open questions, curiosity, goals); the
+  // winner gets one LLM micro-thought per interval, written back as memory.
+  // ON by default; skipped quietly when no connector is configured.
+  workspaceEnabled: boolean;
+  workspaceIntervalMin: number;
   // --- Scheduled SQLite backup ------------------------------------------------
   // The whole brain lives in one SQLite file; snapshot it with VACUUM INTO on
   // boot + an interval so a disk fault / bad migration is recoverable. ON by
@@ -256,6 +277,12 @@ export const CONFIG: ServerConfig = {
   remoteRetryAttempts: Math.min(5, Math.max(0, num("REMOTE_RETRY_ATTEMPTS", 2))),
   routingAutoOptimize: bool("ROUTING_AUTO_OPTIMIZE", false),
   usageLogRetentionDays: Math.max(1, num("USAGE_LOG_RETENTION_DAYS", 30)),
+  hebbianRetrieval: bool("HEBBIAN_RETRIEVAL", true),
+  predictiveProcessing: bool("PREDICTIVE_PROCESSING", true),
+  sleepCycle: bool("SLEEP_CYCLE", true),
+  sleepIntervalHours: Math.max(1, num("SLEEP_INTERVAL_HOURS", 24)),
+  workspaceEnabled: bool("WORKSPACE", true),
+  workspaceIntervalMin: Math.max(1, num("WORKSPACE_INTERVAL_MIN", 10)),
   backupEnabled: bool("BACKUP_ENABLED", true),
   backupIntervalHours: Math.max(1, num("BACKUP_INTERVAL_HOURS", 24)),
   backupKeep: Math.max(1, num("BACKUP_KEEP", 7)),

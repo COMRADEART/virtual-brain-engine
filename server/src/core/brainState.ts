@@ -314,6 +314,31 @@ class CognitiveLoop {
   }
 
   /**
+   * Hold an explicit open question in working memory (used by the
+   * predictive-processing layer's "expected to know this and didn't" trigger).
+   * Same item shape the low-confidence path pushes; failure-isolated.
+   */
+  noteOpenQuestion(label: string, conversationId?: string): void {
+    const key = stateKeyFor(conversationId);
+    this.touch(key);
+    try {
+      const state = this.read(key);
+      const trimmed = label.trim().slice(0, 80) || "(open question)";
+      // Don't stack duplicates of the same question.
+      if (state.workingMemory.some((w) => w.kind === "open-question" && w.label === trimmed)) return;
+      this.write(key, {
+        ...state,
+        workingMemory: capWorking([
+          { id: `wm-${ulid()}`, label: trimmed, kind: "open-question", activation: 1, at: nowIso() },
+          ...state.workingMemory,
+        ]),
+      });
+    } catch (err) {
+      surfaceError("brainState.noteOpenQuestion", err);
+    }
+  }
+
+  /**
    * 1 - last confidence — the feed-forward signal. Drives `shouldBroadenRetrieval`
    * (the BEHAVIORAL lever: a low-confidence prior cycle forces multi-query
    * expansion next cycle) and is also surfaced as saliency's uncertainty term

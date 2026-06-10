@@ -46,6 +46,7 @@ import {
   getDynamicHandler,
   executeDynamicHandler,
 } from "./dynamicRegistry.js";
+import { probeState, recordActionOutcome } from "./consequences.js";
 
 // Filesystem actions touch the REAL machine (same box as the user), so they are
 // confirm-tier and guarded here: absolute paths only, and the governance
@@ -513,6 +514,10 @@ export async function executeAction(input: ExecuteInput): Promise<ExecuteResult>
     if (!handler) {
       result = { ok: false, actionId, summary: "", error: "no handler for server action", status: 500 };
     } else {
+      // Embodiment: probe the slice of world state the action touches before
+      // and after, so the causal world model learns from OBSERVED outcomes
+      // (actions/consequences.ts). Probe faults degrade to null — never block.
+      const beforeProbe = await probeState(actionId, args).catch(() => null);
       try {
         const out = await handler(args);
         result = { ok: true, actionId, summary: out.summary, data: out.data, status: 200 };
@@ -520,6 +525,8 @@ export async function executeAction(input: ExecuteInput): Promise<ExecuteResult>
         surfaceError(`action:${actionId}`, err);
         result = { ok: false, actionId, summary: "", error: err instanceof Error ? err.message : String(err), status: 500 };
       }
+      const afterProbe = await probeState(actionId, args).catch(() => null);
+      recordActionOutcome({ actionId, ok: result.ok, before: beforeProbe, after: afterProbe });
     }
   }
 

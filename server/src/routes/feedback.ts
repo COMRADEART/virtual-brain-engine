@@ -23,6 +23,13 @@ import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
 import { applyActionFeedback, applyMemoryFeedback } from "../learning/usage.js";
 import { captureSftPair, retractSftPair } from "../db/repositories/sft.js";
 import { broadcast } from "../ws/brainBus.js";
+import { getNeuromodulators } from "../core/neuromodulators.js";
+import {
+  confidenceForRun,
+  loadSelfModelState,
+  observeOutcome,
+  saveSelfModelState,
+} from "../core/selfModel.js";
 
 export const feedbackRouter = Router();
 
@@ -82,6 +89,26 @@ feedbackRouter.post("/feedback", (req, res) => {
     }
   } catch (err) {
     console.warn("[feedback] sft capture failed:", err);
+  }
+
+  // Neuromodulation: explicit feedback is the strongest reward signal — pulse
+  // dopamine. Best-effort like every other step.
+  try {
+    getNeuromodulators().onFeedback(rating);
+  } catch (err) {
+    console.warn("[feedback] neuromodulator pulse failed:", err);
+  }
+
+  // Self-model calibration: this verdict is a REAL outcome for the confidence
+  // the run stated (read back from routing_log). The reliability bins are what
+  // calibrateConfidence() corrects future confidences with.
+  try {
+    const stated = confidenceForRun(runId);
+    if (stated !== null) {
+      saveSelfModelState(observeOutcome(loadSelfModelState(), stated, rating > 0));
+    }
+  } catch (err) {
+    console.warn("[feedback] calibration update failed:", err);
   }
 
   insertFeedback({ runId, rating, comment, conversationId });

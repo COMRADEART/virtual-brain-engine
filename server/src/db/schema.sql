@@ -782,6 +782,22 @@ CREATE TABLE IF NOT EXISTS routing_log (
 );
 CREATE INDEX IF NOT EXISTS idx_routing_log_profile ON routing_log(profile, created_at DESC);
 
+-- Event segmentation: contiguous spans of experience bound into episodes
+-- ("the debugging session", "Tuesday afternoon"). item_ids is a bounded JSON
+-- array of member memory ids; memory_id points at the episode's own
+-- retrievable memory point so vector search can answer "what was I doing X".
+CREATE TABLE IF NOT EXISTS episodes (
+  id          TEXT PRIMARY KEY,
+  started_at  TEXT NOT NULL,
+  ended_at    TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  item_count  INTEGER NOT NULL DEFAULT 0,
+  item_ids    TEXT NOT NULL DEFAULT '[]',
+  memory_id   TEXT,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_episodes_span ON episodes(started_at, ended_at);
+
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INTEGER PRIMARY KEY,

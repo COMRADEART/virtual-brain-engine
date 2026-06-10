@@ -7,7 +7,9 @@ import type {
 import type { MemoryPoint, ConversationMessage } from "../../../shared/memory.js";
 import {
   getMemoryCount,
+  getRelationCount,
   insertRelation,
+  listRelationsAmong,
   upsertMemoryPoint,
   vectorSearch,
   type VectorSearchHit,
@@ -73,6 +75,29 @@ import { circuitRecordFailure, circuitRecordSuccess } from "../connectors/regist
 import { getSelfConsciousness } from "../core/selfConsciousness.js";
 import { assessFaithfulness, appendFaithfulnessNote } from "./faithfulness.js";
 import { formatSnippetForPrompt } from "./untrusted.js";
+import {
+  BASELINE,
+  getNeuromodulators,
+  shouldBroadenFromArousal,
+  wantsFreshData,
+} from "../core/neuromodulators.js";
+import { associativeNeighbors, recordCoCitations } from "../memory/hebbian.js";
+import type { GraphContext } from "./ranker.js";
+import {
+  computeSurprise,
+  loadPredictiveState,
+  observeRetrieval,
+  predictRetrieval,
+  savePredictiveState,
+  type RetrievalPrediction,
+} from "./predictiveProcessing.js";
+import {
+  calibrateConfidence,
+  isWeakDomain,
+  loadSelfModelState,
+  observeCycle,
+  saveSelfModelState,
+} from "../core/selfModel.js";
 
 // Phase 1 (blueprint) — assemble the per-query SaliencyContext from the
 // organism singleton. Returns null if any of the cheap getters fails (the
@@ -355,6 +380,11 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   let webAugmentNote = "";
   let multiQueryNote = "";
   let feedForwardNote = "";
+  let hebbianNote = "";
+  // Predictive processing: what the brain EXPECTED retrieval to do (set in the
+  // memory step), compared against reality in the learning step.
+  let prediction: RetrievalPrediction | null = null;
+  let actualTopScore = 0;
   // RL adaptive controller state for this run (in-memory; decision in the memory
   // step → reward in the learning step). null whenever the controller is off.
   let controllerDecision: ControllerDecision | null = null;
@@ -384,6 +414,18 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       const baseK = controllerOn ? Math.max(...RETRIEVAL_K_ARMS) : DEFAULT_RETRIEVAL_K;
       let raw = vectorSearch(embedding, baseK);
 
+      // PREDICTIVE PROCESSING — record what the brain expected of LOCAL memory
+      // here (top raw vec score, before augmentation), so the learning step can
+      // compute the prediction error. Failure-isolated → no prediction.
+      actualTopScore = raw[0]?.score ?? 0;
+      if (CONFIG.predictiveProcessing) {
+        try {
+          prediction = predictRetrieval(loadPredictiveState(), req.prompt);
+        } catch (err) {
+          surfaceError("pipeline.predict", err);
+        }
+      }
+
       // COGNITIVE LOOP — BEHAVIORAL feed-forward: read last cycle's uncertainty
       // ONCE. When the prior cycle was uncertain we BROADEN retrieval this cycle
       // by forcing multi-query expansion (this genuinely changes WHAT is
@@ -398,14 +440,45 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       const broadenForUncertainty = CONFIG.multiQueryRag && shouldBroadenRetrieval(priorUncertainty);
       if (broadenForUncertainty) feedForwardNote = ` · ff:broaden(${priorUncertainty.toFixed(2)})`;
 
+      // NEUROMODULATION — read the global modulator levels once per run.
+      // Failure-isolated: baseline levels make every consumer a strict no-op.
+      let modulatorLevels = { ...BASELINE };
+      try {
+        modulatorLevels = getNeuromodulators().levels();
+      } catch (err) {
+        surfaceError("pipeline.neuromodLevels", err);
+      }
+      // Norepinephrine (arousal) broadens retrieval the same way a
+      // low-confidence prior cycle does.
+      const broadenForArousal = CONFIG.multiQueryRag && shouldBroadenFromArousal(modulatorLevels);
+      if (broadenForArousal) feedForwardNote += " · ne:broaden";
+      // SELF-MODEL — a measured-weak domain (by the top hit's project) also
+      // broadens: the brain knows where it's blind and compensates.
+      let weakDomainBroaden = false;
+      try {
+        weakDomainBroaden =
+          CONFIG.multiQueryRag && isWeakDomain(loadSelfModelState(), raw[0]?.memory.projectName ?? null);
+      } catch (err) {
+        surfaceError("pipeline.selfModelWeak", err);
+      }
+      if (weakDomainBroaden) feedForwardNote += " · weak-domain:broaden";
+
       // The heuristic baselines (what the pipeline would do without the
       // controller). These are ALSO the warm-start the controller falls back to.
+      // Acetylcholine (uncertainty tone) votes for fresh data over memory; the
+      // vote only matters when the brain is already online (hybridOn carries
+      // the LOCAL_ONLY egress gate — ACh can never bypass it).
       const hybridOn = hybridEnabled();
-      const heuristicAugment = hybridOn && shouldAugment(req.prompt, raw).augment;
+      const heuristicAugment =
+        hybridOn && (shouldAugment(req.prompt, raw).augment || wantsFreshData(modulatorLevels));
       const heuristicMultiQuery =
         CONFIG.multiQueryRag &&
         raw.length > 0 &&
-        (raw.length < 3 || (raw[0]?.score ?? 0) < 0.45 || broadenForUncertainty);
+        (raw.length < 3 ||
+          (raw[0]?.score ?? 0) < 0.45 ||
+          broadenForUncertainty ||
+          broadenForArousal ||
+          weakDomainBroaden);
 
       // RL CONTROLLER (opt-in). Decides augment / retrieval-k / multi-query /
       // model-profile from the bandit (warm-started at the heuristics, so a cold
@@ -470,6 +543,27 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       } else if (hybridOn) {
         webAugmentNote = " · web:off(decision)";
       }
+      // HEBBIAN ASSOCIATIVE RECALL — (a) well-worn association edges pull
+      // missed neighbours into the candidate pool (bounded, score-anchored
+      // below the weakest real hit), and (b) the candidate set's relation
+      // graph feeds the ranker's existing PPR blend so activation spreads over
+      // learned associations. Failure-isolated; an empty graph is a no-op.
+      let graphCtx: GraphContext | undefined;
+      if (CONFIG.hebbianRetrieval && raw.length > 0) {
+        try {
+          const neighbors = associativeNeighbors(raw);
+          if (neighbors.length > 0) {
+            raw = [...raw, ...neighbors];
+            hebbianNote = ` · hebb:+${neighbors.length}`;
+          }
+          graphCtx = {
+            relations: listRelationsAmong(raw.map((h) => h.memory.id)),
+            totalRelations: getRelationCount(),
+          };
+        } catch (err) {
+          surfaceError("pipeline.hebbian", err);
+        }
+      }
       // Assemble the saliency context cheaply. The organism singleton's
       // public getters are the seam; both calls are bounded (~80 row scan +
       // single SELECT). Wrap in try/catch so a misbehaving organism (e.g.
@@ -481,7 +575,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       if (saliencyCtx) {
         saliencyCtx.uncertainty = priorUncertainty;
       }
-      const r = rankHits(raw, saliencyCtx ?? undefined);
+      const r = rankHits(raw, saliencyCtx ?? undefined, graphCtx);
       // Lexical query-aware rerank of the top-K (ML). NO-OP until it has trained
       // (returns r.ranked unchanged), so enabling it never regresses a cold brain.
       memoryHits = CONFIG.rerankerEnabled
@@ -515,7 +609,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   const controllerNote = controllerDecision
     ? ` · rl(k=${controllerDecision.retrievalK},${Object.values(controllerDecision.source).includes("policy") ? "policy" : "warmup"})`
     : "";
-  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${feedForwardNote}${multiQueryNote}${webAugmentNote}${controllerNote}`;
+  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${feedForwardNote}${multiQueryNote}${hebbianNote}${webAugmentNote}${controllerNote}`;
   const memoryDetail = memoryError
     ? memoryError
     : embedder && embedder !== connector
@@ -908,14 +1002,60 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // "open-question" working item (DEFERRED metacognition) — it surfaces as a
   // raised priorUncertainty on the NEXT cycle rather than re-running steps in
   // this SSE stream. Single failure-isolated last-writer-wins upsert.
+  // SELF-MODEL — correct the stated confidence with the MEASURED calibration
+  // curve before it feeds the loop (cold bins pass it through unchanged, so
+  // this is a strict no-op until 👍/👎 evidence accrues), and fold this cycle
+  // into the per-domain competence map. Failure-isolated.
+  let calibratedConfidence = errorReport.confidence;
+  try {
+    const selfState = loadSelfModelState();
+    calibratedConfidence = calibrateConfidence(selfState, errorReport.confidence);
+    saveSelfModelState(
+      observeCycle(selfState, {
+        projectName,
+        confidence: errorReport.confidence,
+        cited: citedIds.size > 0,
+      }),
+    );
+  } catch (err) {
+    surfaceError("pipeline.selfModel", err);
+  }
   getBrainState().recordReasoning(
     {
       prompt: req.prompt,
-      confidence: errorReport.confidence,
+      confidence: calibratedConfidence,
       citedCount: citedIds.size,
     },
     cid,
   );
+  // NEUROMODULATION — one completed cycle pulses the global modulators:
+  // citations → dopamine (reward), contradictions → norepinephrine (arousal),
+  // an ungrounded/uncertain answer → acetylcholine (fresh-data hunger).
+  try {
+    getNeuromodulators().onCycle({
+      confidence: errorReport.confidence,
+      citedCount: citedIds.size,
+      contradictions: errorReport.contradictions.length,
+    });
+  } catch (err) {
+    surfaceError("pipeline.neuromodCycle", err);
+  }
+  // PREDICTIVE PROCESSING — compare expectation against reality. Surprise
+  // pulses norepinephrine; "expected to KNOW this and didn't" holds an open
+  // question in working memory; the EMA model trains on every cycle.
+  if (CONFIG.predictiveProcessing) {
+    try {
+      const actual = { topScore: actualTopScore, confidence: errorReport.confidence };
+      if (prediction) {
+        const sr = computeSurprise(prediction, actual);
+        if (sr.surprise > 0) getNeuromodulators().onSurprise(sr.surprise);
+        if (sr.knowledgeGap) getBrainState().noteOpenQuestion(req.prompt, cid);
+      }
+      savePredictiveState(observeRetrieval(loadPredictiveState(), req.prompt, actual));
+    } catch (err) {
+      surfaceError("pipeline.predictiveObserve", err);
+    }
+  }
   // Feed the completed reasoning cycle to the self-model so its introspection is
   // grounded in what actually happened (confidence + what was cited) instead of
   // being blind to its own reasoning. Failure-isolated: a self-model fault must
@@ -995,6 +1135,10 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // Online ranker update from this query's implicit feedback. Independent of
   // persistence success; no-op when there were no citations.
   trainFromCitations(rankFeatures, faithfulCitedIds);
+  // HEBBIAN — memories cited TOGETHER in this answer wire together
+  // ("associates" edges; faithfulness-filtered so unfaithful citations don't
+  // reinforce associations). Internally bounded + failure-isolated.
+  recordCoCitations([...faithfulCitedIds]);
   // Online lexical-reranker update on the SAME dense citation signal (cited=1 /
   // shown-but-not-cited=0). Best-effort; no-op when there were no citations.
   if (CONFIG.rerankerEnabled) {

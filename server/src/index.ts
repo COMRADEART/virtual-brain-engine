@@ -15,6 +15,8 @@ import { ensureScanRoot } from "./db/repositories/scan.js";
 import { checkEmbeddingDimMismatch } from "./db/repositories/memory.js";
 import { attachBrainBus } from "./ws/brainBus.js";
 import { scheduleDecayTick } from "./memory/consolidationEngine.js";
+import { runSleepCycle } from "./memory/sleepCycle.js";
+import { buildEpisodes } from "./memory/episodes.js";
 import { scheduleBackups } from "./backup/index.js";
 import { startBrainCore } from "./agents/brainCore.js";
 import { healthRouter } from "./routes/health.js";
@@ -109,6 +111,31 @@ async function main(): Promise<void> {
   };
   runDedup(); // run on boot
   const dedupInterval = setInterval(runDedup, 24 * 60 * 60 * 1000);
+
+  // Sleep cycle: episodic→semantic distillation + Hebbian association decay +
+  // event segmentation, nightly (SLEEP_INTERVAL_HOURS). First pass is delayed
+  // so boot stays fast; a missing connector degrades to a no-op report. Also
+  // triggerable via POST /api/brain/sleep.
+  let sleepInterval: NodeJS.Timeout | null = null;
+  let sleepKickoff: NodeJS.Timeout | null = null;
+  if (CONFIG.sleepCycle) {
+    const runSleep = (): void => {
+      void runSleepCycle()
+        .then((report) => {
+          const episodes = buildEpisodes();
+          console.log(
+            `[sleep] distilled ${report.distilled} fact(s) from ${report.groups} group(s), demoted ${report.demoted}, ` +
+              `hebbian -${report.hebbian.pruned} pruned · episodes +${episodes.stored}` +
+              (report.reason ? ` (${report.reason})` : ""),
+          );
+        })
+        .catch((err) => console.warn("[sleep] cycle failed:", err));
+    };
+    sleepKickoff = setTimeout(runSleep, 15 * 60 * 1000);
+    sleepKickoff.unref();
+    sleepInterval = setInterval(runSleep, CONFIG.sleepIntervalHours * 60 * 60 * 1000);
+    sleepInterval.unref();
+  }
 
   // Auto-detect any of the 7 supported local LLM runtimes and reconcile them
   // into the connector table. Then keep probing all known connectors so
@@ -227,7 +254,11 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     clearInterval(reconcileInterval);
+    clearInterval(retentionInterval);
+    clearInterval(dedupInterval);
     if (backupInterval) clearInterval(backupInterval);
+    if (sleepInterval) clearInterval(sleepInterval);
+    if (sleepKickoff) clearTimeout(sleepKickoff);
     clearInterval(decayHandles.spreadingActivation);
     clearInterval(decayHandles.decayTick);
     void brain?.shutdown();

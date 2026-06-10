@@ -266,6 +266,30 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Event segmentation — episodes table for DBs that predate it. Fresh DBs
+    // get it from schema.sql's CREATE TABLE IF NOT EXISTS; this is the
+    // create-on-legacy path (same pattern as 0004-causal-links).
+    id: 9,
+    name: "0009-episodes",
+    run: (db) => {
+      if (!tableExists(db, "episodes")) {
+        db.exec(`
+          CREATE TABLE episodes (
+            id          TEXT PRIMARY KEY,
+            started_at  TEXT NOT NULL,
+            ended_at    TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            item_count  INTEGER NOT NULL DEFAULT 0,
+            item_ids    TEXT NOT NULL DEFAULT '[]',
+            memory_id   TEXT,
+            created_at  TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_episodes_span ON episodes(started_at, ended_at)");
+      }
+    },
+  },
 ];
 
 // Exported for the perception/memory selfchecks: they need to apply the

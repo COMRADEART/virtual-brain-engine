@@ -32,6 +32,7 @@ import {
   personalisedPageRank,
   type GraphTraversalOptions,
 } from "../memory/graphTraversal.js";
+import { getNeuromodulators, learningRateScale } from "../core/neuromodulators.js";
 
 // Saliency blend weight. Additive on top of the existing (1-alpha)*heur +
 // alpha*learned score, then re-normalised. Small enough that the saliency
@@ -287,10 +288,19 @@ export function trainFromCitations(
   } catch (err) {
     console.warn("[ranker] loss record failed:", err);
   }
+  // Neuromodulation: dopamine scales the online learning rate (reward →
+  // consolidate harder, drought → learn cautiously). Baseline dopamine gives
+  // exactly 1.0, and any modulator fault degrades to the unscaled LR.
+  let lr = LR;
+  try {
+    lr = LR * learningRateScale(getNeuromodulators().levels());
+  } catch {
+    // unscaled
+  }
   let weights = s.weights;
   for (const [id, x] of featuresById) {
     const y = citedIds.has(id) ? 1 : 0;
-    weights = sgdStep(weights, x, y, LR, L2);
+    weights = sgdStep(weights, x, y, lr, L2);
   }
   cached = {
     version: FEATURE_VERSION,

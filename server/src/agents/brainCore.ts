@@ -14,6 +14,8 @@ import { createCognitiveEvolutionEngine } from "../core/evolution.js";
 import { createImaginationEngine } from "../core/imagination.js";
 import { createPersistentOrganism } from "../core/organism.js";
 import { createBrainState } from "../core/brainState.js";
+import { runWorkspaceCycle } from "../core/workspace.js";
+import { CONFIG } from "../config.js";
 import { createSafetyGate } from "../core/safety.js";
 import { createCognitiveSwarm } from "../core/swarm.js";
 import { initSelfConsciousness } from "../core/selfConsciousness.js";
@@ -239,6 +241,20 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   }, BRAIN_STATE_TICK_MS);
   if (typeof brainStateTick.unref === "function") brainStateTick.unref();
 
+  // Global workspace — directed cognition between queries. Every interval the
+  // bidders (open questions, curiosity, goals) compete and the winner gets one
+  // LLM micro-thought, written back as memory + broadcast as an idle-thought.
+  // Skips quietly when no connector / no bids; failures never crash the core.
+  let workspaceTick: NodeJS.Timeout | null = null;
+  if (CONFIG.workspaceEnabled) {
+    workspaceTick = setInterval(() => {
+      void runWorkspaceCycle().catch((err) =>
+        console.warn("[brain-core] workspace cycle failed:", err),
+      );
+    }, CONFIG.workspaceIntervalMin * 60_000);
+    if (typeof workspaceTick.unref === "function") workspaceTick.unref();
+  }
+
   // Self-Consciousness engine — observes internal events and builds a
   // persistent self-model. Reactive only (no autonomous tick), so no
   // memory/performance overhead when idle. Each handler is failure-isolated.
@@ -326,6 +342,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       stopEvolutionLoop();
       stopOrganismAutonomy();
       clearInterval(brainStateTick);
+      if (workspaceTick) clearInterval(workspaceTick);
       await runtime.stop();
     },
   };

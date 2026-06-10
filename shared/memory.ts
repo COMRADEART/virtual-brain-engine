@@ -27,7 +27,9 @@ export type MemoryRelationKind =
   | "follows" // chronological link
   | "contradicts"
   | "supports"
-  | "belongs-to-conversation";
+  | "belongs-to-conversation"
+  | "associates" // Hebbian co-citation edge — strengthened when two memories are cited together, decays with disuse
+  | "distilled-from"; // semantic (sleep-distilled) memory -> source episode
 
 export interface MemoryRelation {
   id: string;
