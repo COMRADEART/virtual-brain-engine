@@ -17,3 +17,6 @@ __pycache__/
 *.pyc
 server/dist/
 .hermes/
+# Sidecar bundle outputs (rebuilt by `npm run sidecar:build`)
+src-tauri/binaries/
+src-tauri/resources/server/

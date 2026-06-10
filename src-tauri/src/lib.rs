@@ -6,6 +6,7 @@ mod llm_probe;
 mod os_actions;
 mod phase2;
 mod screen_capture;
+mod sidecars;
 mod system_monitor;
 
 use commands::{
@@ -77,6 +78,11 @@ pub fn run() {
 
             log::info!("Virtual Brain Engine started");
             log::info!("App data directory: {:?}", app_data_dir);
+
+            // One-app mode: in a bundled build, spawn + supervise the Node
+            // brain server (binaries/brain-server + resources/server). No-op
+            // in dev or when :8787 is already served.
+            sidecars::start_server_sidecar(app.handle());
 
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -169,6 +175,15 @@ pub fn run() {
             get_vision_config,
             save_vision_config,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Kill the supervised brain-server on app exit — without this the
+            // Node process outlives the shell.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<std::sync::Arc<sidecars::SidecarState>>() {
+                    state.kill();
+                }
+            }
+        });
 }
