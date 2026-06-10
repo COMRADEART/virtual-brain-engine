@@ -15,20 +15,41 @@ import { SignalSimulation } from "../engine/signalSimulation";
 import { SpikingEngine } from "../engine/SpikingEngine";
 import { HybridCognitiveCore } from "../engine/cognition/HybridCognitiveCore";
 import { isSpikingCapable } from "../engine/types";
+import { detectSpikingCapability } from "../engine/spikingCapability";
+import { MemoryBrainBridge } from "../engine/MemoryBrainBridge";
 import {
   BrainVisualEffects,
   applyVisualEffectsToGraph,
 } from "../engine/BrainVisualEffects";
 
-// ─── Engine toggle ────────────────────────────────────────────────────────
-// `SpikingEngine` is now an alias for AdvancedBrainCore (Izhikevich neurons over
-// a small-world/rich-club connectome with neuromodulation, oscillations,
-// predictive coding, memory, and homeostasis). It is headless-verified bounded
-// and performant (~1.4 ms/step @ 2k neurons) — the old main-thread hang is gone —
-// but its in-browser rendering path has not yet been visually verified, so it
-// stays opt-in. Default false → the lightweight scripted SignalSimulation runs.
-// Opt in WITHOUT a rebuild by appending `?useSpiking=true` to the URL.
-const USE_SPIKING_ENGINE = false;
+// ─── Engine selection (Phase 4: spiking substrate is now the DEFAULT) ──────
+// `SpikingEngine` is an alias for AdvancedBrainCore (Izhikevich neurons over a
+// small-world/rich-club connectome with neuromodulation, oscillations,
+// predictive coding, memory, and homeostasis). It is the default brain on
+// GPU-capable hardware; the lightweight scripted SignalSimulation is the
+// no-GPU fallback.
+//
+// "Behind useAutoQuality/adaptiveQuality" (the roadmap wording) is interpreted
+// as: GPU *capability* gates the engine CHOICE (software WebGL renders the
+// spiking shaders black — see spikingCapability.ts), while auto-quality scales
+// the spiking engine's COST through the existing PerfPreset path (density / DPR
+// / bloom / maxPulses). We do NOT swap engines on an FPS dip — that would force
+// a full graph+renderer rebuild mid-session; cost-scaling via PerfPreset is the
+// established, cheaper lever and the spiking engine already honours it.
+//
+// URL overrides (no rebuild): `?useSpiking=false` forces the fallback (the
+// escape hatch the headless SwiftShader/Basic-Render smoke and flaky GPUs use),
+// `?useSpiking=true` forces spiking, `?useHybrid=true` selects the hybrid
+// cognitive engine (which implies the spiking substrate).
+function resolveEngineChoice(): { spiking: boolean; hybrid: boolean } {
+  const search = typeof window !== "undefined" ? window.location.search : "";
+  if (search.includes("useSpiking=false")) {
+    return { spiking: false, hybrid: false }; // hard escape hatch — fallback engine
+  }
+  const hybrid = search.includes("useHybrid=true");
+  const spiking = hybrid || search.includes("useSpiking=true") || detectSpikingCapability();
+  return { spiking, hybrid };
+}
 type SimulationLike = SignalSimulation | SpikingEngine | HybridCognitiveCore;
 import { subscribeBrainBus } from "../engine/brainBus";
 import type { PerfPreset } from "../engine/performancePresets";
@@ -228,6 +249,9 @@ export function BrainScene({
   const perfPresetRef = useRef(perfPreset);
   const composerRef = useRef<EffectComposer | null>(null);
   const bloomPassRef = useRef<UnrealBloomPass | null>(null);
+  // Phase 4 — the memory→brain bridge, live only when the plain spiking engine
+  // is the active simulation (tails the WS pipeline bus → region flashes).
+  const memoryBridgeRef = useRef<MemoryBrainBridge | null>(null);
   // The load-progress callback is read via a ref so the main scene effect
   // doesn't tear down when the parent's callback identity changes.
   const onAnatomyLoadProgressRef = useRef(onAnatomyLoadProgress);
@@ -294,6 +318,18 @@ export function BrainScene({
           simulationRef.current?.flashLogicalRegion(region, gain);
         }, index * 70);
       });
+    });
+  }, []);
+
+  // Model Hub: a downloading model streams into the brain — flash the model-hub
+  // cortex as progress arrives (brighter on completion). Reuses the same
+  // flashLogicalRegion path the idle breathing loop already exercises.
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      if (message.type !== "model-pull") {
+        return;
+      }
+      simulationRef.current?.flashLogicalRegion("model-hub", message.done ? 1.0 : 0.55);
     });
   }, []);
 
@@ -411,10 +447,6 @@ export function BrainScene({
     performanceManager.setCamera(camera);
     performanceManagerRef.current = performanceManager;
 
-    // Determine if we should use the advanced SpikingEngine
-    const useSpikingEngine = window.location.search.includes("useSpiking=true") || USE_SPIKING_ENGINE;
-    void useSpikingEngine;
-    
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
@@ -427,6 +459,11 @@ export function BrainScene({
     renderer.toneMappingExposure = 1.15;
     rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
+
+    // Accessibility: describe the canvas for screen readers
+    renderer.domElement.setAttribute("aria-label", "Interactive 3D brain visualization showing neural activity, regions, and signal propagation");
+    renderer.domElement.setAttribute("tabindex", "0");
+    renderer.domElement.setAttribute("role", "img");
 
     // Cinematic glow on bright pixels (pulses + lit regions). The threshold
     // keeps the dark background sharp; only pixels well above neutral bloom.
@@ -585,7 +622,10 @@ const renderFrame = () => {
     if (simulation && graphRenderer) {
       // Step the simulation
       simulation.step(delta, elapsed);
-      
+      // Phase 4 — decay/forget the live memory traces in lock-step with the
+      // engine so the bridge's flashes ride the same frame (no-op when null).
+      memoryBridgeRef.current?.tick(delta);
+
       // Update graph renderer
       graphRenderer.update(
         simulation,
@@ -791,18 +831,25 @@ const handlePointerClick = (event: PointerEvent) => {
       visualEffectsRef.current = null;
     }
 
-    // Engine selection: the advanced AdvancedBrainCore (aliased as SpikingEngine)
-    // is opt-in. Default stays SignalSimulation; append ?useSpiking=true to the
-    // URL to drive the scene with the biologically-plausible engine live.
-    // The hybrid cognitive engine (System 1 spiking + System 2 reasoning + RL +
-    // meta-learning) is opt-in via ?useHybrid=true. It WRAPS AdvancedBrainCore, so
-    // it implies the spiking substrate and the advanced visual-effects pipeline.
-    const useHybridEngine =
-      typeof window !== "undefined" && window.location.search.includes("useHybrid=true");
-    const useSpikingEngine =
-      USE_SPIKING_ENGINE ||
-      useHybridEngine ||
-      (typeof window !== "undefined" && window.location.search.includes("useSpiking=true"));
+    // Engine selection (Phase 4): the spiking substrate (AdvancedBrainCore,
+    // aliased as SpikingEngine) is the DEFAULT on GPU-capable hardware; software
+    // WebGL falls back to SignalSimulation (see resolveEngineChoice /
+    // spikingCapability.ts). The hybrid cognitive engine (System 1 spiking +
+    // System 2 reasoning + RL + meta-learning) is opt-in via ?useHybrid=true and
+    // WRAPS AdvancedBrainCore, so it implies the spiking substrate + advanced
+    // visual-effects pipeline.
+    const { spiking: useSpikingEngine, hybrid: useHybridEngine } = resolveEngineChoice();
+    // Binary engine-decision observable — the Phase 4 runtime check asserts spiking
+    // actually ENGAGED under VERIFY_GPU=1 (and that the software-renderer smoke
+    // stays on "signal"). Exposed BOTH as a console.info and a `window.__brainEngine`
+    // global: console.info never trips the smoke's console.error counter, and the
+    // global is readable by a CDP probe (page console.info is not surfaced through
+    // verify-canvas's Log.entryAdded hook).
+    const engineName = useHybridEngine ? "hybrid" : useSpikingEngine ? "spiking" : "signal";
+    console.info(`[BrainScene] simulation engine: ${engineName}`);
+    if (typeof window !== "undefined") {
+      (window as unknown as { __brainEngine?: string }).__brainEngine = engineName;
+    }
 
     // NOTE: do NOT force containerRef.style.position = "relative" here. The
     // .brain-scene rule is `position: absolute; inset: 0`, which both fills the
@@ -820,17 +867,20 @@ const adjustedDensity = performanceManager
       seed: Math.round(adjustedDensity * 1000) + 19,
     });
     
-    // Create renderer and simulation
-    const graphRenderer = new NeuralGraphRenderer(graph, performanceManagerRef.current);
+    // Create renderer and simulation. Phase 4 (improvement plan §1B): when the
+    // spiking/hybrid engine is selected, BrainVisualEffects will swap in a
+    // shader material that reads its own per-instance attributes — so the
+    // renderer can short-circuit its expensive per-frame instanceColor +
+    // instanceMatrix rewrites in `update()`. Flagging it at construction lets
+    // the geometry build with the matching `aScale` attribute.
+    const graphRenderer = new NeuralGraphRenderer(graph, performanceManagerRef.current, {
+      colorMode: useSpikingEngine ? "shader" : "legacy",
+    });
     graphRenderer.applyRegionVisibility(visibilityRef.current);
     graphRendererRef.current = graphRenderer;
     scene.add(graphRenderer.group);
 
-    // Enable advanced visual effects if using spiking engine
-    let simulation: SimulationLike;
-    let visualEffects: BrainVisualEffects | null = null;
-
-    simulation = useHybridEngine
+    const simulation: SimulationLike = useHybridEngine
       ? new HybridCognitiveCore(graph, selectedActionId, {
           density: adjustedDensity,
           seed: Math.round(adjustedDensity * 1000) + 19,
@@ -847,9 +897,19 @@ const adjustedDensity = performanceManager
     simulation.setMaxPulses(adjustedMaxPulses);
     simulationRef.current = simulation;
 
-    // Create advanced visual effects
+    // Phase 4 — wire the MemoryBrainBridge to the PLAIN spiking engine. (Hybrid
+    // owns its own memory subsystem and is NOT an `instanceof SpikingEngine`.)
+    // The bridge auto-subscribes to the WS pipeline bus, so a cited memory from
+    // any /api/ask becomes a biologically-routed region flash (hippocampus for
+    // episodic recall, temporal cortex for semantic, etc.). Ticked in the render
+    // loop and disposed alongside the simulation below.
+    if (simulation instanceof SpikingEngine) {
+      memoryBridgeRef.current = new MemoryBrainBridge(simulation);
+    }
+
+    // Create advanced visual effects (spiking engine only)
     if (useSpikingEngine) {
-      visualEffects = new BrainVisualEffects(graph, simulation, {
+      const visualEffects = new BrainVisualEffects(graph, simulation, {
         enableNeuromodTint: true,
         enableNeurotransmitterParticles: true,
         enableRegionBreathing: true,
@@ -884,8 +944,24 @@ const adjustedDensity = performanceManager
     // Dispose the simulation on rebuild/unmount. Matters for HybridCognitiveCore,
     // which unsubscribes from the WS bus and flushes its learned snapshot here.
     return () => {
+      // Phase 4 — tear the memory bridge down FIRST so it unsubscribes from the
+      // WS bus before the engine it flashes is disposed (no flash on a dead engine).
+      memoryBridgeRef.current?.dispose();
+      memoryBridgeRef.current = null;
       const disposable = simulation as { dispose?: () => void };
       if (typeof disposable.dispose === "function") disposable.dispose();
+      // Dispose the advanced visual-effects pipeline (spiking/hybrid mode) too.
+      // Without this the last BrainVisualEffects instance — its geometries,
+      // shader materials and WS subscriptions — leaked on unmount: the
+      // mount-effect cleanup has no reference to it, and the per-density cleanup
+      // above only runs on the NEXT density change. No-op in default mode where
+      // the ref is null.
+      const effects = visualEffectsRef.current;
+      if (effects) {
+        scene.remove(effects.group);
+        effects.dispose();
+        visualEffectsRef.current = null;
+      }
     };
     // Intentionally only depend on neuronDensity (and the stable metrics setter):
     // action/speed/running/visibility changes are handled by the small effects

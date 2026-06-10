@@ -5,13 +5,22 @@ import { InfoPanel } from "./components/InfoPanel";
 import { LogicalRegionIndicator } from "./components/LogicalRegionIndicator";
 import { PipelineOverlay } from "./components/PipelineOverlay";
 import { DigitalTwinPanel } from "./components/DigitalTwinPanel";
+import { PerceptionPanel } from "./components/PerceptionPanel";
+import { LearningLabPanel } from "./components/LearningLabPanel";
+import { BrainStatePanel } from "./components/BrainStatePanel";
+import { MemoryInspectorPanel } from "./components/MemoryInspectorPanel";
+import { SelfConsciousnessPanel } from "./components/SelfConsciousnessPanel";
+import { IdleThoughtTicker } from "./components/IdleThoughtTicker";
 import { RegionControls } from "./components/RegionControls";
 import { UnifiedPanel } from "./components/UnifiedPanel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
 import { StatusBar } from "./components/StatusBar";
 import { VisionCortexPanel } from "./components/vision/VisionCortexPanel";
+import { BrainLegendHUD } from "./components/cognition/BrainLegendHUD";
 import { CognitivePanel } from "./components/cognition/CognitivePanel";
 import { CompactLayout, FocusMode, CommandPalette, useCommandPalette } from "./components/brain-os";
+import { ModelHubPanel } from "./components/ModelHubPanel";
+import { DashboardLayout } from "./components/dashboard/DashboardLayout";
 import { REGION_DEFINITIONS, BRAIN_ACTIONS } from "./data/regionDefinitions";
 import {
   DEFAULT_AUTO_TIER,
@@ -22,6 +31,7 @@ import {
   type PerfPresetId,
 } from "./engine/performancePresets";
 import { useAutoQuality } from "./engine/useAutoQuality";
+import { useClipboardCollector } from "./engine/useClipboardCollector";
 import { useLayoutMode, type LayoutMode } from "./engine/useLayoutMode";
 import type {
   BrainActionId,
@@ -43,9 +53,14 @@ const [selectedActionId, setSelectedActionId] = useState<BrainActionId>("attenti
 const [showEmergentControls, setShowEmergentControls] = useState(true);
   
   // Phase 2 Panel States
+  // Phase 4 (improvement plan §11): UnifiedPanel defaults to collapsed so the
+  // 3D scene is the centerpiece on first load. The user opens panels they need
+  // via the CommandPalette / tab icons; the previous default buried the scene.
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useState(true);
+  const [selfConsciousnessCollapsed, setSelfConsciousnessCollapsed] = useState(true);
   const [unifiedTab, setUnifiedTab] = useState<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("ask");
-  const [unifiedCollapsed, setUnifiedCollapsed] = useState(false);
+  const [unifiedCollapsed, setUnifiedCollapsed] = useState(true);
+  const [modelHubOpen, setModelHubOpen] = useState(false);
 
   const [shellTransparent, setShellTransparent] = useState(true);
   const [signalSpeed, setSignalSpeed] = useState(1.3);
@@ -60,6 +75,9 @@ const [showEmergentControls, setShowEmergentControls] = useState(true);
   const preset = PERF_PRESETS[effectivePresetId];
   const neuronDensity = densityOverride ?? preset.density;
   useAutoQuality(perfMode === "auto", setAutoTier, setFps);
+  // Phase 2b — ambient clipboard ingestion. Self-gates: no-op outside Tauri and
+  // unless the user has consented to the "clipboard" source.
+  useClipboardCollector();
   const { mode: layout, setMode, cycle: cycleLayout } = useLayoutMode();
   const { isOpen: commandPaletteOpen, setIsOpen: setCommandPaletteOpen } = useCommandPalette(layout, perfMode);
 
@@ -211,6 +229,7 @@ useEffect(() => {
       {/* Hybrid-cognition HUD. Self-gates: renders only when a HybridCognitiveCore
           is active (i.e. the app was opened with ?useHybrid=true), in any layout. */}
       <CognitivePanel />
+      <BrainLegendHUD />
       {layout === "compact" && (
         <CompactLayout
           running={running}
@@ -340,6 +359,12 @@ useEffect(() => {
             collapsed={digitalTwinCollapsed}
             onCollapsedChange={setDigitalTwinCollapsed}
           />
+          <PerceptionPanel />
+          <LearningLabPanel />
+          <BrainStatePanel />
+          <MemoryInspectorPanel />
+          <SelfConsciousnessPanel />
+          <IdleThoughtTicker />
           <UnifiedPanel
             tab={unifiedTab}
             onTabChange={setUnifiedTab}
@@ -357,7 +382,21 @@ useEffect(() => {
         </>
       )}
 
+      {layout === "dashboard" && (
+        <DashboardLayout
+          running={running}
+          selectedActionId={selectedActionId}
+          selectedRegionId={selectedRegionId}
+          regionVisibility={regionVisibility}
+          metrics={{ ...metrics, fps }}
+          onRegionSelect={setSelectedRegionId}
+          onActionSelect={setSelectedActionId}
+          onMetricsChange={setMetrics}
+        />
+      )}
+
       <ShortcutsModal />
+      <ModelHubPanel open={modelHubOpen} onClose={() => setModelHubOpen(false)} />
       <CommandPalette
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
@@ -371,6 +410,7 @@ useEffect(() => {
         onToggleDigitalTwin={toggleDigitalTwin}
         onOpenUnifiedTab={openUnifiedTab}
         onToggleUnifiedPanel={toggleUnifiedPanel}
+        onOpenModelHub={() => setModelHubOpen(true)}
       />
     </main>
   );

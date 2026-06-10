@@ -1,0 +1,45 @@
+# Heavy ML deps for the Phase 3 perception sidecar. Kept SEPARATE from the
+# base requirements.txt so the scaffold remains installable on machines that
+# don't need transcription/captioning — they get a working /healthz that just
+# reports models.whisper / models.caption as "unavailable", and the Node
+# server keeps running without these endpoints.
+#
+# Install on top of the base set:
+#   python -m venv .venv
+#   .\.venv\Scripts\Activate.ps1
+#   pip install -r requirements.txt -r requirements-ml.txt
+#
+# Sizes (rough):
+#   faster-whisper        ~5MB (model files download lazily on first call,
+#                                tiny.en is ~75MB)
+#   transformers + torch  ~700MB (CPU wheels) — BLIP base model ~990MB
+#                                downloaded on first /caption call
+#   pillow                ~3MB
+#   ultralytics           ~30MB (YOLO; OmniParser V2 icon/element detector for
+#                                /perceive/frame — pulls torch transitively too;
+#                                Florence2 caption weights download on first call)
+#
+# If you only want one of the features, omit the other line.
+
+faster-whisper>=1.0.3
+transformers>=4.44.0
+torch>=2.2.0
+pillow>=10.0.0
+ultralytics>=8.2.0
+
+# Bark (Suno open TTS) for /voice/speak. CPU-friendly neural voice synthesis.
+# First call downloads voice preset data lazily; subsequent calls reuse cache.
+bark>=0.5.0
+scipy>=1.11.0
+
+# Own-model trainer (Learning Lab — Phase D). LoRA continued-pretraining a small
+# open base (default Qwen/Qwen2.5-0.5B, ~1GB downloaded from Hugging Face on the
+# first run) on the brain's memory corpus, merged + served via Ollama. For GPU
+# training install a CUDA torch build instead of the CPU wheel, e.g.:
+#   pip install --index-url https://download.pytorch.org/whl/cu124 torch
+peft>=0.11.0
+# GGUF export for Ollama (worker/finetune/gguf_export.py). `ollama create FROM
+# <safetensors-dir>` mis-imports transformers-5.x output, so we write the GGUF
+# ourselves and import that. sentencepiece is pulled in by some tokenizers.
+gguf>=0.10.0
+sentencepiece>=0.2.0

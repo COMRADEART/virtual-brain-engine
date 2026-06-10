@@ -5,6 +5,26 @@ import os from "node:os";
 import path from "node:path";
 
 const TARGET_URL = process.env.VERIFY_URL ?? "http://127.0.0.1:5173/";
+// The default-engine gate runs under SwiftShader (`--disable-gpu`) so it works in
+// headless CI. The spiking/hybrid path uses EffectComposer + UnrealBloomPass +
+// custom shaders, which SwiftShader renders black — set VERIFY_GPU=1 (or pass
+// --gpu) to drop `--disable-gpu` and capture them on a real GPU/ANGLE.
+const USE_GPU = process.env.VERIFY_GPU === "1" || process.argv.includes("--gpu");
+// Post-reload settle time before sampling. The sparse spiking/hybrid engines warm
+// up slower than the default engine, so allow overriding via VERIFY_WAIT_MS.
+const RENDER_WAIT_MS = Number(process.env.VERIFY_WAIT_MS ?? 2600);
+// Which Brain OS layout to seed before sampling. Defaults to "full" (the
+// scientific control surface this check has always exercised); override with
+// VERIFY_LAYOUT=dashboard to confirm the dashboard's centre BrainScene draws.
+const VERIFY_LAYOUT = process.env.VERIFY_LAYOUT ?? "full";
+// The FIRST navigate hits a cold Vite dev server, which must transpile the whole
+// React + Three.js + app module graph on demand — that can exceed 8s on Windows
+// and grows as the app does (perception, learning lab, civilization, dashboard…),
+// so give the initial window-load a generous budget. The reload reuses Vite's
+// warm cache, so it stays tight and still catches a genuine hang. Both are
+// env-overridable for slow CI.
+const FIRST_LOAD_MS = Number(process.env.VERIFY_FIRST_LOAD_MS ?? 30000);
+const RELOAD_LOAD_MS = Number(process.env.VERIFY_RELOAD_MS ?? 10000);
 const chromeCandidates = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -59,7 +79,7 @@ async function main() {
     chromePath,
     [
       "--headless=new",
-      "--disable-gpu",
+      ...(USE_GPU ? [] : ["--disable-gpu"]),
       "--disable-background-networking",
       "--disable-default-apps",
       "--disable-extensions",
@@ -105,16 +125,16 @@ async function main() {
     await client.send("Runtime.enable");
     await client.send("Log.enable");
     await client.send("Page.bringToFront");
-    const loadEvent = client.waitForEvent("Page.loadEventFired", 8000);
+    const loadEvent = client.waitForEvent("Page.loadEventFired", FIRST_LOAD_MS);
     await client.send("Page.navigate", { url: TARGET_URL });
     await loadEvent;
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem("brain-layout", JSON.stringify("full"))`,
+      expression: `localStorage.setItem("brain-layout", JSON.stringify(${JSON.stringify(VERIFY_LAYOUT)}))`,
     });
-    const reloadEvent = client.waitForEvent("Page.loadEventFired", 8000);
+    const reloadEvent = client.waitForEvent("Page.loadEventFired", RELOAD_LOAD_MS);
     await client.send("Page.reload", { ignoreCache: true });
     await reloadEvent;
-    await delay(2600);
+    await delay(RENDER_WAIT_MS);
 
     const result = await client.send("Runtime.evaluate", {
       awaitPromise: true,

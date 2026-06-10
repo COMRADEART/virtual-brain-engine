@@ -100,6 +100,13 @@ async function main() {
   try {
     vite = await preflightVite();
     await run(NPM_CMD, ["run", "verify:canvas"]);
+    // The dashboard is the default landing layout, so its centre BrainScene is
+    // the first surface a fresh user sees. The check above seeds the "full"
+    // layout; this pass confirms the dashboard's canvas draws too, so a black
+    // dashboard can't slip through with the gate green.
+    await run(NPM_CMD, ["run", "verify:canvas"], {
+      env: { ...process.env, VERIFY_LAYOUT: "dashboard" },
+    });
     await run(NPM_CMD, ["run", "test:actions"]);
     console.log("[test:all] all smoke tests passed.");
   } catch (err) {

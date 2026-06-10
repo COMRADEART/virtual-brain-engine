@@ -2,6 +2,57 @@
 // registry and by /api/connectors validation so we can refuse non-local
 // baseUrls before they ever round-trip to the model.
 
+// The only remote hosts allowed to bypass the LOCAL_ONLY gate: two free-tier,
+// OpenAI-compatible model providers. Matching is EXACT-host (see
+// isAllowedRemoteHost) so a look-alike like "generativelanguage.googleapis.com.evil.com"
+// is rejected — only these precise hostnames pass.
+const BUILTIN_REMOTE_PROVIDER_HOSTS = new Set<string>([
+  "integrate.api.nvidia.com", // NVIDIA NIM
+  "generativelanguage.googleapis.com", // Google Gemini (OpenAI-compatible endpoint)
+]);
+
+// Memoize the parsed env extension. Read lazily (not at module load) so the
+// value is correct regardless of whether config.ts has populated process.env
+// from .env yet at import time.
+let cachedEnvHosts: { raw: string | undefined; set: Set<string> } | null = null;
+
+function extraRemoteHosts(): Set<string> {
+  const raw = process.env.REMOTE_PROVIDER_ALLOWLIST;
+  if (cachedEnvHosts && cachedEnvHosts.raw === raw) {
+    return cachedEnvHosts.set;
+  }
+  const set = new Set<string>();
+  if (raw) {
+    for (const part of raw.split(",")) {
+      const host = part.trim().toLowerCase();
+      if (host) {
+        set.add(host);
+      }
+    }
+  }
+  cachedEnvHosts = { raw, set };
+  return set;
+}
+
+// True only when `input` is a well-formed URL whose host EXACTLY matches one of
+// the allowlisted remote provider hosts (built-in NVIDIA/Gemini plus any added
+// via REMOTE_PROVIDER_ALLOWLIST). Used alongside isLocalUrl by the connector
+// route/registry guards so the curated providers can be reached while every
+// other non-local URL stays blocked under LOCAL_ONLY=true.
+export function isAllowedRemoteHost(input: string | undefined | null): boolean {
+  if (!input) {
+    return false;
+  }
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return BUILTIN_REMOTE_PROVIDER_HOSTS.has(host) || extraRemoteHosts().has(host);
+}
+
 export function isLocalUrl(input: string | undefined | null): boolean {
   if (!input) {
     // Connectors without a baseUrl (stubs) cannot leak traffic.
@@ -37,9 +88,15 @@ export function isLocalHostname(hostname: string): boolean {
     }
     return false;
   }
-  // IPv6 link-local fe80::/10 and unique-local fc00::/7.
-  if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) {
-    return true;
+  // IPv6 link-local fe80::/10 and unique-local fc00::/7 — ONLY for actual IPv6
+  // literals. A URL-parsed IPv6 host always contains a colon; a DNS name never
+  // does. Without the `includes(":")` guard the bare `fc`/`fd` prefix matches
+  // wrongly classified remote domains (fdroid.org, fc-cdn.example.com, …) as
+  // local, letting them slip past the LOCAL_ONLY egress gate.
+  if (host.includes(":")) {
+    if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) {
+      return true;
+    }
   }
   return false;
 }

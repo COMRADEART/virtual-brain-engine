@@ -26,6 +26,7 @@
 //   that subscribes/unsubscribes mid-dispatch doesn't corrupt the iteration.
 
 import type { BrainRegionId } from "./types";
+import type { Proposal, ResolveResult } from "./proposals";
 
 /** A neuromodulator identifier shared across the advanced subsystem. */
 export type Neuromodulator =
@@ -67,6 +68,11 @@ export interface BrainEventMap {
   "cognition:mode": { mode: "system1" | "system2" | "hybrid"; uncertainty: number };
   /** System 2 emitted one reasoning step (for the introspection feed). */
   "reason:step": { kind: string; explain: string; depth: number; confidence: number };
+  // ── Proposal protocol (blueprint §18.4 / §18.11 / §18.13) ───────────────────
+  /** A faculty bids into the current arbitration round. */
+  "proposal:bid": Proposal;
+  /** The arbiter has resolved the round and announces the winner + ranked set. */
+  "proposal:winner": ResolveResult;
 }
 
 export type BrainEventName = keyof BrainEventMap;

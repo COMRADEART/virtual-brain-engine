@@ -1,8 +1,9 @@
-import { Component, type ReactNode } from "react";
+import { Component, type ReactNode, type ErrorInfo } from "react";
 
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
+  onError?: (error: Error, errorInfo: ErrorInfo) => void;
 }
 
 interface State {
@@ -20,76 +21,55 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  render(): ReactNode {
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    console.error("ErrorBoundary caught an error:", error, errorInfo);
+    this.props.onError?.(error, errorInfo);
+  }
+
+  override render(): ReactNode {
     if (this.state.hasError) {
       if (this.props.fallback) {
         return this.props.fallback;
       }
       return (
         <div
+          role="alert"
+          aria-live="assertive"
           style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(3, 6, 9, 0.95)",
-            color: "#e5fbff",
-            fontFamily: "Bahnschrift, Aptos, Segoe UI, sans-serif",
-            gap: "16px",
-            padding: "24px",
+            padding: "20px",
+            margin: "20px",
+            border: "2px solid #ff6b6b",
+            borderRadius: "8px",
+            backgroundColor: "#fff5f5",
+            color: "#c53030",
+            fontFamily: "system-ui, sans-serif",
           }}
         >
-          <div
-            style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "50%",
-              border: "2px solid rgba(255, 107, 107, 0.6)",
-              background: "rgba(255, 107, 107, 0.1)",
-              display: "grid",
-              placeItems: "center",
-              color: "#ff6b6b",
-              fontSize: "24px",
-            }}
-          >
-            !
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <p
-              style={{
-                margin: "0 0 8px",
-                fontSize: "1.1rem",
-                color: "#f4fdff",
-              }}
-            >
-              Something went wrong
-            </p>
-            <p
-              style={{
-                margin: 0,
-                fontSize: "0.82rem",
-                color: "#86a8ad",
-                maxWidth: "400px",
-              }}
-            >
-              {this.state.error?.message ?? "An unexpected error occurred"}
-            </p>
-          </div>
+          <h2 style={{ margin: "0 0 10px 0" }}>Something went wrong</h2>
+          <p style={{ margin: "0 0 10px 0" }}>
+            An error occurred in this component. The error has been logged.
+          </p>
+          {this.state.error?.message && (
+            <details style={{ whiteSpace: "pre-wrap" }}>
+              <summary style={{ cursor: "pointer" }}>Error details</summary>
+              <pre style={{ fontSize: "12px", overflow: "auto" }}>
+                {this.state.error.message}
+              </pre>
+            </details>
+          )}
           <button
-            onClick={() => window.location.reload()}
+            onClick={() => this.setState({ hasError: false, error: null })}
             style={{
+              marginTop: "10px",
               padding: "8px 16px",
-              border: "1px solid rgba(93, 242, 255, 0.5)",
+              backgroundColor: "#e53e3e",
+              color: "white",
+              border: "none",
               borderRadius: "4px",
-              background: "rgba(93, 242, 255, 0.15)",
-              color: "#e5fbff",
               cursor: "pointer",
-              fontSize: "0.82rem",
             }}
           >
-            Reload page
+            Try again
           </button>
         </div>
       );

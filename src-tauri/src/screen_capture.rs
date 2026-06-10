@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
+use tauri::Manager; // brings AppHandle::path() into scope
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorInfo {
@@ -97,7 +97,8 @@ pub fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
                 x: info.x,
                 y: info.y,
                 is_primary: info.is_primary,
-                name: info.name.clone().unwrap_or_else(|| format!("Monitor {}", i)),
+                // display-info's DisplayInfo has no `name` field; derive one.
+                name: format!("Monitor {}", i),
             }
         })
         .collect();
@@ -134,7 +135,7 @@ pub fn capture_screen(monitor_index: Option<u32>, app: tauri::AppHandle) -> Resu
     {
         let mut cursor = std::io::Cursor::new(&mut png_data);
         let encoder = png::Encoder::new(&mut cursor, width, height);
-        let encoder = encoder.write_header().map_err(|e| format!("PNG encoder error: {}", e))?;
+        let mut encoder = encoder.write_header().map_err(|e| format!("PNG encoder error: {}", e))?;
         encoder
             .write_image_data(&rgba_pixels)
             .map_err(|e| format!("Failed to write PNG data: {}", e))?;
@@ -181,7 +182,7 @@ pub fn get_screen_capture_path(capture_id: String, app: tauri::AppHandle) -> Res
     let filepath = visual_dir.join(&filename);
 
     if filepath.exists() {
-        filepath.to_str().map(|s| s.to_string()).ok_or_else(|| "Invalid path".to_string())
+        filepath.to_str().map(|s| s.to_string()).ok_or_else(|| "Invalid path".to_string()).map(Some)
     } else {
         Ok(None)
     }
@@ -211,7 +212,7 @@ pub fn list_screen_captures(app: tauri::AppHandle, limit: Option<u32>) -> Result
                                     id: filename.replace("capture_", ""),
                                     filename: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
                                     size_bytes: metadata.len() as u64,
-                                    created_at: chrono::DateTime::from(created).timestamp_millis(),
+                                    created_at: chrono::DateTime::<Utc>::from(created).timestamp_millis(),
                                     width: 0,
                                     height: 0,
                                 });
@@ -306,7 +307,7 @@ pub fn capture_region(x: i32, y: i32, width: u32, height: u32, app: tauri::AppHa
     {
         let mut cursor = std::io::Cursor::new(&mut png_data);
         let encoder = png::Encoder::new(&mut cursor, cap_width, cap_height);
-        let encoder = encoder.write_header().map_err(|e| format!("PNG encoder error: {}", e))?;
+        let mut encoder = encoder.write_header().map_err(|e| format!("PNG encoder error: {}", e))?;
         encoder
             .write_image_data(&rgba_pixels)
             .map_err(|e| format!("Failed to write PNG data: {}", e))?;
@@ -319,7 +320,7 @@ pub fn capture_region(x: i32, y: i32, width: u32, height: u32, app: tauri::AppHa
     let filepath = visual_dir.join(&filename);
 
     if let Ok(bytes) = BASE64.decode(&base64_image) {
-        if let Some(_png_bytes) = try_decode_png(&bytes) {
+        if let Some(png_bytes) = try_decode_png(&bytes) {
             let _ = std::fs::write(&filepath, &png_bytes);
         }
     }

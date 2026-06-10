@@ -8,12 +8,15 @@
 // receive them with no protocol change.
 
 import type { BrainBusMessage } from "../../../shared/pipeline.js";
-import { getEventBus, type BrainEvent } from "../core/eventBus.js";
+import { getEventBus, nowIso, type BrainEvent } from "../core/eventBus.js";
+import { gatherCuriosity } from "../core/curiosity.js";
 import { createCognitiveEvolutionEngine } from "../core/evolution.js";
 import { createImaginationEngine } from "../core/imagination.js";
 import { createPersistentOrganism } from "../core/organism.js";
+import { createBrainState } from "../core/brainState.js";
 import { createSafetyGate } from "../core/safety.js";
 import { createCognitiveSwarm } from "../core/swarm.js";
+import { initSelfConsciousness } from "../core/selfConsciousness.js";
 import { broadcast } from "../ws/brainBus.js";
 import { getMemoryCount } from "../db/repositories/memory.js";
 import { AgentRuntime } from "./runtime.js";
@@ -21,6 +24,7 @@ import { ObserverAgent } from "./observerAgent.js";
 import { SummaryAgent } from "./summaryAgent.js";
 import { SchedulerAgent } from "./schedulerAgent.js";
 import { SystemSensorAgent } from "./systemSensorAgent.js";
+import { IdleAgent } from "./idleAgent.js";
 
 // Runtime cadence. 60s keeps the LLM-backed SummaryAgent from running hotter
 // than the 4s observer burst window — activity accumulates, then one rollup.
@@ -151,6 +155,35 @@ function toWireMessage(event: BrainEvent): BrainBusMessage | null {
         event: event.event,
         timestamp: event.at,
       };
+    case "idle-thought":
+      return {
+        type: "idle-thought",
+        memoryId: event.memoryId,
+        preview: event.preview,
+        importance: event.importance,
+        reason: event.reason,
+        timestamp: event.at,
+      };
+    case "exploration-scheduled":
+      return {
+        type: "exploration-scheduled",
+        target: event.target,
+        curiosity: event.curiosity,
+        reason: event.reason,
+        timestamp: event.at,
+      };
+    case "brain-state":
+      return {
+        type: "brain-state",
+        snapshot: event.snapshot,
+        timestamp: event.at,
+      };
+    case "self-snapshot":
+      return {
+        type: "self-snapshot",
+        state: event.state,
+        timestamp: event.at,
+      };
   }
 }
 
@@ -191,16 +224,90 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   const stopOrganismAutonomy = organism.startAutonomy();
   organism.wake();
 
+  // Central cognitive loop. Created on the same process bus so its throttled
+  // `brain-state` events fan out through the bridge above. The decay heartbeat
+  // is autonomous thought: it ages the working-memory workspace so stale items
+  // fade between queries. Failure-isolated — a tick error must never crash boot.
+  const brainState = createBrainState(bus);
+  const BRAIN_STATE_TICK_MS = 60_000;
+  const brainStateTick = setInterval(() => {
+    try {
+      brainState.tickDecay(BRAIN_STATE_TICK_MS);
+    } catch (err) {
+      console.warn("[brain-core] brain-state decay tick failed:", err);
+    }
+  }, BRAIN_STATE_TICK_MS);
+  if (typeof brainStateTick.unref === "function") brainStateTick.unref();
+
+  // Self-Consciousness engine — observes internal events and builds a
+  // persistent self-model. Reactive only (no autonomous tick), so no
+  // memory/performance overhead when idle. Each handler is failure-isolated.
+  const selfConsciousness = initSelfConsciousness(bus);
+  const unselfLifecycle = bus.on("organism-lifecycle", (e) => {
+    selfConsciousness.react({ type: "goal_change", payload: { title: e.lifecycle, activeGoals: 0 } });
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfBrainState = bus.on("brain-state", (e) => {
+    if (e.snapshot.priorUncertainty > 0.6) {
+      selfConsciousness.react({ type: "confidence_drop", payload: { confidence: e.snapshot.confidence } });
+    }
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfIdle = bus.on("idle-thought", (_e) => {
+    selfConsciousness.react({ type: "idle", payload: {} });
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfDream = bus.on("imagination-dream", (e) => {
+    selfConsciousness.react({ type: "dream", payload: { abstractions: e.abstractions.length } });
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+  const unselfHealth = bus.on("organism-immune-event", (e) => {
+    if (e.event.severity === "high" || e.event.severity === "critical") {
+      selfConsciousness.react({ type: "health_change", payload: { score: 0.3, reason: e.event.detail } });
+    }
+    bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
+  });
+
   const runtime = new AgentRuntime({ bus, safety: createSafetyGate() });
   runtime.register(new ObserverAgent());
   runtime.register(new SummaryAgent());
   runtime.register(new SchedulerAgent());
   runtime.register(new SystemSensorAgent());
+  // IdleAgent — wires the organism singleton into the saliency-weighted sample
+  // so an idle thought leans toward goal-relevant memories when the organism
+  // has active goals. The wiring is lazy (call only when act() needs it) so a
+  // not-yet-awakened organism doesn't perturb the agent's init.
+  runtime.register(
+    new IdleAgent({
+      saliencyProvider: () => {
+        try {
+          return {
+            query: "",
+            activeGoals: organism.getActiveGoalTitles(8),
+            organismHealth: organism.getHealthScore(),
+          };
+        } catch {
+          return null;
+        }
+      },
+      // Curiosity = expected information gain over the causal world model.
+      // gatherCuriosity() reads the causal ledger + organism health and scores
+      // the uncertainty frontier. When it crosses CURIOSITY_EXPLORE_THRESHOLD
+      // the IdleAgent fires `exploration-scheduled` instead of an idle thought.
+      curiosityProvider: () => {
+        try {
+          return gatherCuriosity().curiosity;
+        } catch {
+          return null;
+        }
+      },
+    }),
+  );
 
   await runtime.start();
   runtime.startCycle(AGENT_CYCLE_MS);
   console.log(
-    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, cognitive-swarm, imagination, evolution, organism)",
+    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism, self-consciousness)",
   );
 
   return {
@@ -209,10 +316,16 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       unswarm();
       unevolution();
       unorganism();
+      unselfLifecycle();
+      unselfBrainState();
+      unselfIdle();
+      unselfDream();
+      unselfHealth();
       stopSwarmHeartbeat();
       stopDreaming();
       stopEvolutionLoop();
       stopOrganismAutonomy();
+      clearInterval(brainStateTick);
       await runtime.stop();
     },
   };

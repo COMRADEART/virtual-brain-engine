@@ -946,6 +946,23 @@ export class PersistentOrganismEngine {
     return this.recentGoals(80).filter((goal) => goal.status === "active" || goal.status === "blocked");
   }
 
+  /**
+   * Public, cheap accessors for the saliency layer (attention/saliency.ts) —
+   * the pipeline assembles SaliencyContext on every /api/ask, so these need
+   * to stay light. snapshot() does too much (40 goals + identity + health +
+   * energy usage + immune events + ...) for that use.
+   *
+   * `getActiveGoalTitles` reuses the private activeGoals() so the filter
+   * stays single-source.
+   */
+  getActiveGoalTitles(limit = 8): string[] {
+    return this.activeGoals().slice(0, limit).map((g) => g.title);
+  }
+
+  getHealthScore(): number {
+    return this.latestHealth().healthScore;
+  }
+
   private recentGoals(limit: number): PersistentGoal[] {
     const rows = openDb()
       .prepare<

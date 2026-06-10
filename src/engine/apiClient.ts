@@ -28,7 +28,35 @@ import type {
   MemoryRelation,
   MemorySourceType,
 } from "../../shared/memory";
+
+export interface ModelUsageEntry {
+  id: string;
+  runId: string;
+  connectorId: string;
+  provider: "local" | "remote";
+  model: string;
+  keyIndex: number | null;
+  fallback: boolean;
+  latencyMs: number;
+  error: string | null;
+  createdAt: string;
+}
+import type {
+  CaptionRequest,
+  CaptionResult,
+  TranscribeRequest,
+  TranscribeResult,
+  WorkerStatus,
+} from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
+import type { BrainStateSnapshot } from "../../shared/brainState";
+import type { SelfConsciousnessState } from "../../shared/selfConsciousness";
+import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
+import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionRiskTier, ActionSpec } from "../../shared/actions";
+import type { AgentConfirmDecision, AgentConfirmMode, AgentStreamFrame } from "../../shared/agent";
+import type { IngestItem, IngestRunResult, IngestSourceId, IngestStatus } from "../../shared/ingest";
+import type { ModelPullState, ModelsView } from "../../shared/models";
+import type { WebResearchView, WebSearchOutcome } from "../../shared/web";
 import type { SwarmConsensusRound, SwarmNodeDescriptor, SwarmSnapshot, SwarmTask } from "../../shared/swarm";
 import type { TwinView, SimulationResult } from "../../shared/twin";
 import type {
@@ -108,6 +136,49 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(res.status, text || res.statusText);
   }
   return (await res.json()) as T;
+}
+
+// Shared SSE reader: POST a JSON body, parse `event:`/`data:` blocks, and yield
+// each parsed `data` payload until the `event: done` sentinel. Used by the
+// agent-loop streams (POST /api/agent and /api/agent/confirm).
+async function* sseStream<T>(path: string, body: unknown, signal?: AbortSignal): AsyncGenerator<T> {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream", "X-Brain-Local": "1" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep = buffer.indexOf("\n\n");
+      while (sep >= 0) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const eventLine = block.split("\n").find((l) => l.startsWith("event:"));
+        const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+        if (dataLine) {
+          if (eventLine?.slice(6).trim() === "done") return;
+          try {
+            yield JSON.parse(dataLine.slice(5).trim()) as T;
+          } catch {
+            // skip malformed
+          }
+        }
+        sep = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export interface HealthResponse {
@@ -288,6 +359,30 @@ export const apiClient = {
     return json(`/api/memory/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 
+  // Dedup-merge audit trail + undo (memory transparency).
+  memoryTombstones(limit = 100): Promise<{
+    tombstones: Array<{
+      id: string;
+      keptId: string;
+      reason: string;
+      similarity: number | null;
+      title: string | null;
+      contentPreview: string;
+      createdAt: string;
+    }>;
+  }> {
+    return json(`/api/memory/tombstones?limit=${limit}`);
+  },
+
+  restoreTombstone(id: string): Promise<{ ok: boolean }> {
+    return json(`/api/memory/tombstones/${encodeURIComponent(id)}/restore`, { method: "POST" });
+  },
+
+  /** Direct download URL for the plain-text memory corpus export (GET, no auth header needed). */
+  memoryExportUrl(): string {
+    return `${getBaseUrl()}/api/memory/export`;
+  },
+
   triggerScan(): Promise<{ ok: boolean }> {
     return json(`/api/scan/run`, { method: "POST" });
   },
@@ -437,6 +532,21 @@ export const apiClient = {
     return json(`/api/imagination/dream`, { method: "POST" });
   },
 
+  // ----- Phase 3 perception sidecar -----------------------------------------
+  // probe is cheap (200ms timeout server-side). Safe to poll every 10s while a
+  // perception panel is open; not on mount.
+  perceptionStatus(): Promise<WorkerStatus> {
+    return json<WorkerStatus>(`/api/perceive/status`);
+  },
+
+  perceptionTranscribe(req: TranscribeRequest): Promise<TranscribeResult> {
+    return json(`/api/perceive/transcribe`, { method: "POST", body: JSON.stringify(req) });
+  },
+
+  perceptionCaption(req: CaptionRequest): Promise<CaptionResult> {
+    return json(`/api/perceive/caption`, { method: "POST", body: JSON.stringify(req) });
+  },
+
   evolution(): Promise<EvolutionSnapshot> {
     return json<EvolutionSnapshot>(`/api/evolution`);
   },
@@ -494,6 +604,20 @@ export const apiClient = {
 
   organism(): Promise<OrganismSnapshot> {
     return json<OrganismSnapshot>(`/api/organism`);
+  },
+
+  // Central cognitive loop — the unified BrainState snapshot (attention map +
+  // working memory + goals + confidence + priorUncertainty + learning). Also
+  // streams over the bus as { type: "brain-state" }; this is the poll fallback.
+  brainState(): Promise<BrainStateSnapshot> {
+    return json<BrainStateSnapshot>(`/api/brain/state`);
+  },
+
+  // Self-Consciousness engine: the brain's model of itself — self-model,
+  // metacognition, affect, inner monologue, self-predictions, autobiographical
+  // memory. Also streams over the bus as { type: "self-snapshot" }.
+  selfConsciousness(): Promise<SelfConsciousnessState> {
+    return json<SelfConsciousnessState>(`/api/self/state`);
   },
 
   organismWake(): Promise<{ snapshot: OrganismSnapshot }> {
@@ -562,6 +686,199 @@ export const apiClient = {
     });
   },
 
+  // Explicit answer feedback (Learning Lab). rating: +1 helpful / -1 not.
+  // Retrains the online ranker against this run's features + nudges cited
+  // memories' importance, server-side.
+  sendFeedback(input: {
+    runId: string;
+    rating: 1 | -1;
+    comment?: string;
+    conversationId?: string;
+  }): Promise<{
+    ok: boolean;
+    trained: boolean;
+    citedCount: number;
+    feedback: { up: number; down: number; total: number; lastAt: string | null };
+  }> {
+    return json(`/api/feedback`, { method: "POST", body: JSON.stringify(input) });
+  },
+
+  // Learning Lab snapshot: ranker warm-up + labelled weights + loss history +
+  // feedback stats + from-scratch LLM trainer status + usage summary (Phase 4).
+  learningStatus(): Promise<LearningStatus> {
+    return json<LearningStatus>(`/api/learning/status`);
+  },
+
+  // Phase 4 — usefulness verdicts. A memory 👍/👎 nudges its importance (a live
+  // ranker feature → shapes future retrieval); an action verdict is recorded as
+  // resolver-training data. Surfaces (pet, command results) call these.
+  sendMemoryFeedback(memoryId: string, rating: 1 | -1): Promise<{ ok: boolean; importance: number }> {
+    return json(`/api/feedback/memory`, { method: "POST", body: JSON.stringify({ memoryId, rating }) });
+  },
+
+  sendActionFeedback(actionId: string, rating: 1 | -1): Promise<{ ok: boolean }> {
+    return json(`/api/feedback/action`, { method: "POST", body: JSON.stringify({ actionId, rating }) });
+  },
+
+  // Kick the from-scratch PyTorch trainer (Phase C) on the worker sidecar.
+  learningTrainLlm(input: { steps?: number; force?: boolean } = {}): Promise<LlmTrainerStatus> {
+    return json<LlmTrainerStatus>(`/api/learning/llm/start`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  learningLlmStatus(): Promise<LlmTrainerStatus> {
+    return json<LlmTrainerStatus>(`/api/learning/llm/status`);
+  },
+
+  // ----- Phase 3 command/action layer --------------------------------------
+  // Allowlisted action specs (for the UI), NL→plan resolution, gated execution,
+  // and the audit log. resolveAction NEVER executes; executeAction enforces the
+  // confirm-token gate server-side (carry the token from resolveAction for
+  // confirm-tier plans).
+  listActions(): Promise<{ actions: ActionSpec[] }> {
+    return json(`/api/actions`);
+  },
+
+  resolveAction(prompt: string): Promise<ActionResolveResult> {
+    return json(`/api/actions/resolve`, { method: "POST", body: JSON.stringify({ prompt }) });
+  },
+
+  executeAction(input: {
+    actionId: string;
+    args?: Record<string, unknown>;
+    confirmToken?: string;
+  }): Promise<ActionResult> {
+    return json(`/api/actions/execute`, { method: "POST", body: JSON.stringify(input) });
+  },
+
+  actionLog(limit = 50): Promise<{ log: ActionLogEntry[] }> {
+    return json(`/api/actions/log?limit=${limit}`);
+  },
+
+  // ----- Phase 2 computer-wide memory ingestion ----------------------------
+  // Sources are opt-in (default OFF). Governance (consent/exclude/redact/dedup/
+  // audit) is enforced server-side; collectors just push items here.
+  ingestStatus(): Promise<IngestStatus> {
+    return json<IngestStatus>(`/api/ingest/status`);
+  },
+
+  ingestSetConsent(sourceId: IngestSourceId, enabled: boolean): Promise<{ ok: boolean; status: IngestStatus }> {
+    return json(`/api/ingest/consent`, { method: "POST", body: JSON.stringify({ sourceId, enabled }) });
+  },
+
+  ingestPush(sourceId: IngestSourceId, items: IngestItem[]): Promise<IngestRunResult> {
+    return json(`/api/ingest/push`, { method: "POST", body: JSON.stringify({ sourceId, items }) });
+  },
+
+  // "Learn from the internet": fetch a URL server-side and persist its readable
+  // text into memory. Egress is gated by LOCAL_ONLY on the server — when the
+  // brain is local-only this returns a `reason` instead of fetching. The pet's
+  // command box reaches the same capability via the confirm-tier `learn-url`
+  // action (resolveAction → executeAction).
+  ingestWeb(url: string): Promise<IngestRunResult & { title: string | null }> {
+    return json(`/api/ingest/web`, { method: "POST", body: JSON.stringify({ url }) });
+  },
+
+  // ----- Hybrid web (FRIDAY online): local + internet side by side ----------
+  // Both egress and are gated by LOCAL_ONLY server-side — they return
+  // { ok:false, reason } (never a thrown error) when the brain is local-only.
+  // webResearch also READS the top pages into memory (learns them). The pet's
+  // command box reaches the same capability via the confirm-tier web-search /
+  // research-web actions; /api/ask fuses web results automatically when hybrid
+  // mode is on.
+  webSearch(query: string, limit?: number): Promise<WebSearchOutcome> {
+    return json(`/api/web/search`, { method: "POST", body: JSON.stringify({ query, limit }) });
+  },
+
+  webResearch(query: string, maxPages?: number): Promise<WebResearchView> {
+    return json(`/api/web/research`, { method: "POST", body: JSON.stringify({ query, maxPages }) });
+  },
+
+  // ----- Model Hub: download a chat model → wire it into the brain ----------
+  // Pull progress also streams over the bus (type "model-pull") and flashes the
+  // model-hub cortex; pull/status is the poll fallback. select sets the CHAT
+  // model only (embeddings are fixed).
+  models(): Promise<ModelsView> {
+    return json<ModelsView>(`/api/models`);
+  },
+
+  pullModel(name: string): Promise<{ ok: boolean; pull: ModelPullState }> {
+    return json(`/api/models/pull`, { method: "POST", body: JSON.stringify({ name }) });
+  },
+
+  modelPullStatus(): Promise<ModelPullState> {
+    return json<ModelPullState>(`/api/models/pull/status`);
+  },
+
+  selectModel(name: string): Promise<{ ok: boolean }> {
+    return json(`/api/models/select`, { method: "POST", body: JSON.stringify({ name }) });
+  },
+
+  selectRemoteModel(connectorId: string, model: string): Promise<{ ok: boolean; connector: ConnectorDescriptor }> {
+    return json(`/api/models/select-remote`, { method: "POST", body: JSON.stringify({ connectorId, model }) });
+  },
+
+  refreshRemoteModels(): Promise<{ ok: boolean; remoteProviders: import("../../shared/models").RemoteProviderModel[] }> {
+    return json(`/api/models/remote/refresh`, { method: "POST" });
+  },
+
+  getModelUsage(): Promise<{ totalRuns: number; localRuns: number; remoteRuns: number; fallbackRuns: number; recentRuns: ModelUsageEntry[] }> {
+    return json(`/api/models/usage`);
+  },
+
+  getModelPerformanceStats(days?: number): Promise<{
+    models: Array<{
+      model: string; provider: string; runs: number;
+      avgLatencyMs: number; minLatencyMs: number; maxLatencyMs: number;
+      errorRate: number; fallbackRate: number;
+      avgStepTimings: { memory_ms?: number; reasoning_ms?: number; error_ms?: number; response_ms?: number };
+    }>;
+    overall: { avgLatencyMs: number; p50LatencyMs: number; p95LatencyMs: number; totalRuns: number };
+  }> {
+    const qs = days ? `?days=${days}` : "";
+    return json(`/api/models/stats${qs}`);
+  },
+
+  getRoutingInsights(): Promise<Array<{
+    profile: string; model: string | null; runs: number;
+    avgCitations: number; avgConfidence: number; avgLatencyMs: number; qualityScore: number;
+  }>> {
+    return json(`/api/models/routing-insights`);
+  },
+
+  getKeyStats(): Promise<Array<{
+    keyIndex: number; runs: number; avgLatencyMs: number; errors: number; errorRate: number;
+  }>> {
+    return json(`/api/models/key-stats`);
+  },
+
+  getConfidenceCalibration(): Promise<Array<{
+    bucket: number; avgCitations: number; runs: number;
+  }>> {
+    return json(`/api/models/calibration`);
+  },
+
+  getSearchQuality(): Promise<{
+    avgRetrieved: number; avgCited: number; citationRate: number; runs: number;
+  }> {
+    return json(`/api/models/search-quality`);
+  },
+
+  getConnectorHealth(): Promise<Array<{
+    connectorId: string; runs: number; errors: number; errorRate: number; avgLatencyMs: number; lastUsedAt: string | null;
+  }>> {
+    return json(`/api/models/connector-health`);
+  },
+
+  compareModels(models: string[]): Promise<Array<{
+    model: string; runs: number; avgLatencyMs: number; minLatencyMs: number; maxLatencyMs: number;
+    errors: number; errorRate: number; avgStepTimings: Record<string, number> | null;
+  }>> {
+    return json(`/api/models/compare?models=${encodeURIComponent(models.join(","))}`);
+  },
+
   // POST /api/ask returns SSE. We parse "event:" + "data:" blocks and yield
   // each pipeline event as it arrives.
   async *ask(input: { prompt: string; conversationId?: string }, signal?: AbortSignal): AsyncGenerator<PipelineEvent> {
@@ -609,6 +926,46 @@ export const apiClient = {
     } finally {
       reader.releaseLock();
     }
+  },
+
+  // ----- Agentic loop: the brain's "main thinking" (FRIDAY) -----------------
+  // POST /api/agent returns SSE. Triage sends a plain question to the 7-step
+  // pipeline; a multi-step / tool / "do X" request runs the ReAct loop. Each
+  // frame is an AgentEvent (has `type`) or a bare PipelineEvent (has `step`) —
+  // discriminate on shape. A confirm-tier action mid-run yields a
+  // `confirm-request` AgentEvent and pauses; resume with confirmAgent().
+  agent(
+    input: {
+      prompt: string;
+      conversationId?: string;
+      confirmMode?: AgentConfirmMode;
+      scope?: { allow: ActionRiskTier[] };
+      forceLoop?: boolean;
+    },
+    signal?: AbortSignal,
+  ): AsyncGenerator<AgentStreamFrame> {
+    return sseStream<AgentStreamFrame>("/api/agent", input, signal);
+  },
+
+  // Approve/deny a paused confirm-tier action and resume the loop (continues
+  // streaming the same kinds of frames).
+  confirmAgent(input: AgentConfirmDecision, signal?: AbortSignal): AsyncGenerator<AgentStreamFrame> {
+    return sseStream<AgentStreamFrame>("/api/agent/confirm", input, signal);
+  },
+
+  async voiceSpeak(text: string, voice?: string): Promise<{
+    audioBase64: string;
+    mimeType: string;
+    sampleRate: number;
+    durationSec: number;
+    latencyMs: number;
+    model: string;
+    voice: string;
+  }> {
+    return json(`/api/voice/speak`, {
+      method: "POST",
+      body: JSON.stringify({ text, voice }),
+    });
   },
 };
 

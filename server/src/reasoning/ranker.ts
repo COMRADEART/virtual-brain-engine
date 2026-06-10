@@ -1,25 +1,58 @@
 // Glue between the pure LTR model and the pipeline. Owns the cached weight
 // state, the cold-start blend, prompt trimming, and the position-bias guard.
+//
+// Phase 2 (blueprint §3 / §6 / §17) — Personalized-PageRank over
+// memory_relations is now fused as an OPTIONAL additive feature alongside
+// saliency. It is gated by a density check (`isGraphDenseEnough`) so on a
+// fresh DB with near-empty relations it contributes 0 and the ranker behaves
+// as it did before. As the graph fills (cites edges, semantic-cluster edges,
+// access-pattern co-edges), PPR begins to shift rankings.
 
 import type { VectorSearchHit } from "../db/repositories/memory.js";
+import type { MemoryRelation } from "../../../shared/memory.js";
 import {
   loadRankerState,
+  recordRankerLoss,
   saveRankerState,
   type RankerState,
 } from "../db/repositories/ranker.js";
 import {
   FEATURE_VERSION,
   heuristicScore,
+  logLoss,
   predictProb,
   sgdStep,
   toFeatureVector,
   zeroWeights,
   type RankFeatureInput,
 } from "./rankerModel.js";
+import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
+import {
+  isGraphDenseEnough,
+  personalisedPageRank,
+  type GraphTraversalOptions,
+} from "../memory/graphTraversal.js";
+
+// Saliency blend weight. Additive on top of the existing (1-alpha)*heur +
+// alpha*learned score, then re-normalised. Small enough that the saliency
+// signal can move a tied pair but can't override a strong learned signal
+// (which has been trained on real citations). Tunable.
+const W_SALIENCY = 0.2;
+
+// Graph (PPR) blend weight. Smaller than saliency because PPR is itself a
+// noisy signal on a young graph — but non-zero so a strongly-connected hit
+// can edge ahead of a vec-close-but-isolated one. Tunable.
+const W_GRAPH = 0.15;
+
+// Minimum relation count before PPR is allowed to influence ranking. Below
+// this the graph has too few edges for the random walk to mean anything; the
+// PPR feature stays 0 and the ranker behaves as it did pre-Phase-2.
+const PPR_MIN_RELATIONS = 50;
 
 // Queries-with-citations before the learned model fully takes over from the
-// heuristic (alpha ramps 0 -> 1 linearly across this many).
-const WARM_AT = 20;
+// heuristic (alpha ramps 0 -> 1 linearly across this many). Exported so the
+// Learning Lab status route reports the same warm-up target it trains against.
+export const WARM_AT = 20;
 const LR = 0.05;
 const L2 = 1e-4;
 
@@ -64,22 +97,83 @@ function featureInput(hit: VectorSearchHit, now: number): RankFeatureInput {
   };
 }
 
+/**
+ * Optional graph-traversal context. When supplied, PPR is computed over the
+ * provided relations using the vec scores as the restart distribution; the
+ * result is blended into the ranker score (see W_GRAPH).
+ *
+ * The caller is responsible for fetching `relations` (typically via
+ * `listRelationsAmong(hits.map(h=>h.memory.id))`) — this keeps the ranker
+ * itself dependency-inverted and unit-testable.
+ */
+export interface GraphContext {
+  relations: ReadonlyArray<MemoryRelation>;
+  /** Total relation count in the DB — used for the density gate. */
+  totalRelations: number;
+  /** Optional PPR tuning forwarded to the resolver. */
+  options?: GraphTraversalOptions;
+}
+
 export interface RankResult {
   ranked: VectorSearchHit[];
   featuresById: Map<string, number[]>;
   warm: boolean;
   alpha: number;
+  /** Per-memory saliency breakdown when a SaliencyContext was provided; else empty. */
+  saliencyById: Map<string, number>;
+  /** Per-memory PPR score when a GraphContext was provided AND the graph is dense enough. */
+  graphScoreById: Map<string, number>;
 }
 
 // Re-rank vector hits with the blended score. featuresById is kept so the
 // learning step can label/train over the exact feature vectors that produced
 // this ranking (the full candidate set, not just the trimmed prompt set).
-export function rankHits(hits: VectorSearchHit[]): RankResult {
+//
+// If saliencyCtx is provided, each hit also receives a per-memory saliency
+// signal (novelty + goal-relevance + emotion + survival, see
+// attention/saliency.ts) that's blended additively with the existing score.
+// The saliency layer is OPTIONAL — calling rankHits(hits) without a context
+// keeps the legacy behavior unchanged (no regression risk for the existing
+// ranker selfcheck or pipeline).
+export function rankHits(
+  hits: VectorSearchHit[],
+  saliencyCtx?: SaliencyContext,
+  graphCtx?: GraphContext,
+): RankResult {
   const s = state();
   const now = Date.now();
   const alpha = Math.min(1, s.trainedCount / WARM_AT);
   const warm = s.trainedCount >= WARM_AT;
   const featuresById = new Map<string, number[]>();
+  const saliencyById = new Map<string, number>();
+  const graphScoreById = new Map<string, number>();
+
+  // PPR is computed once over the candidate set when the graph is dense
+  // enough; per-hit lookup is O(1) below. If the gate fails (sparse graph
+  // or no context supplied) we leave graphScoreById empty and W_GRAPH * 0 = 0
+  // — i.e. the ranker reproduces its pre-PPR behaviour.
+  const usePPR =
+    graphCtx !== undefined &&
+    isGraphDenseEnough(graphCtx.totalRelations, PPR_MIN_RELATIONS) &&
+    graphCtx.relations.length > 0;
+  if (usePPR) {
+    const seedWeights = new Map<string, number>();
+    for (const h of hits) seedWeights.set(h.memory.id, h.score);
+    const ppr = personalisedPageRank(graphCtx.relations, seedWeights, graphCtx.options);
+    if (ppr.hasEdges) {
+      // Normalise PPR scores to [0,1] across the hit set so they blend
+      // commensurate with vec/heuristic/learned/saliency.
+      let maxPpr = 0;
+      for (const h of hits) {
+        const v = ppr.scoreById.get(h.memory.id) ?? 0;
+        if (v > maxPpr) maxPpr = v;
+      }
+      const denom = maxPpr > 0 ? maxPpr : 1;
+      for (const h of hits) {
+        graphScoreById.set(h.memory.id, (ppr.scoreById.get(h.memory.id) ?? 0) / denom);
+      }
+    }
+  }
 
   const scored = hits.map((hit) => {
     const fi = featureInput(hit, now);
@@ -87,11 +181,29 @@ export function rankHits(hits: VectorSearchHit[]): RankResult {
     featuresById.set(hit.memory.id, x);
     const learned = predictProb(s.weights, x);
     const heur = heuristicScore(fi);
-    const score = (1 - alpha) * heur + alpha * learned;
+    const base = (1 - alpha) * heur + alpha * learned;
+
+    let blendNumer = base;
+    let blendDenom = 1;
+    if (saliencyCtx) {
+      const sal = computeSaliency(
+        { id: hit.memory.id, content: hit.memory.content, importance: hit.memory.importance },
+        saliencyCtx,
+      );
+      saliencyById.set(hit.memory.id, sal.score);
+      blendNumer += W_SALIENCY * sal.score;
+      blendDenom += W_SALIENCY;
+    }
+    const graphScore = graphScoreById.get(hit.memory.id);
+    if (typeof graphScore === "number") {
+      blendNumer += W_GRAPH * graphScore;
+      blendDenom += W_GRAPH;
+    }
+    const score = blendNumer / blendDenom;
     return { ...hit, score };
   });
   scored.sort((a, b) => b.score - a.score);
-  return { ranked: scored, featuresById, warm, alpha };
+  return { ranked: scored, featuresById, warm, alpha, saliencyById, graphScoreById };
 }
 
 // What the LLM actually sees. Cold start: everything (a regressed warm top-k
@@ -167,6 +279,14 @@ export function trainFromCitations(
     return;
   }
   const s = state();
+  // Record the model's loss on THIS batch before the gradient step — the curve
+  // trends down as the ranker learns across queries (Learning Lab). Best-effort.
+  try {
+    const samples = Array.from(featuresById, ([id, x]) => ({ x, y: citedIds.has(id) ? 1 : 0 }));
+    recordRankerLoss(s.trainedCount, logLoss(s.weights, samples), "citation");
+  } catch (err) {
+    console.warn("[ranker] loss record failed:", err);
+  }
   let weights = s.weights;
   for (const [id, x] of featuresById) {
     const y = citedIds.has(id) ? 1 : 0;
@@ -182,6 +302,62 @@ export function trainFromCitations(
   } catch (err) {
     console.warn("[ranker] persist failed:", err);
   }
+}
+
+// Online update from one answer's EXPLICIT feedback (👍/👎). Unlike
+// trainFromCitations this does NOT advance trainedCount — warm-up stays keyed
+// to query volume; explicit feedback only nudges the weights:
+//   +1 reinforces the cited=1 / shown-but-not-cited=0 contrast (this answer
+//      was good, so the memories it leaned on were the right ones);
+//   -1 teaches that the cited memories were NOT actually good (y=0). Only the
+//      cited rows carry negative information — the non-cited ones weren't used,
+//      so a 👎 says nothing about them.
+// Returns true if a gradient step ran. No-op (returns false) when there were
+// no features or — for 👎 — no citations to penalise.
+export function trainFromFeedback(
+  featuresById: Map<string, number[]>,
+  citedIds: Set<string>,
+  rating: 1 | -1,
+): boolean {
+  if (featuresById.size === 0) {
+    return false;
+  }
+  const samples: Array<{ x: number[]; y: number }> = [];
+  if (rating > 0) {
+    for (const [id, x] of featuresById) {
+      samples.push({ x, y: citedIds.has(id) ? 1 : 0 });
+    }
+  } else {
+    for (const [id, x] of featuresById) {
+      if (citedIds.has(id)) {
+        samples.push({ x, y: 0 });
+      }
+    }
+  }
+  if (samples.length === 0) {
+    return false;
+  }
+  const s = state();
+  try {
+    recordRankerLoss(s.trainedCount, logLoss(s.weights, samples), "feedback");
+  } catch (err) {
+    console.warn("[ranker] loss record failed:", err);
+  }
+  let weights = s.weights;
+  for (const { x, y } of samples) {
+    weights = sgdStep(weights, x, y, LR, L2);
+  }
+  cached = {
+    version: FEATURE_VERSION,
+    weights,
+    trainedCount: s.trainedCount,
+  };
+  try {
+    saveRankerState(cached);
+  } catch (err) {
+    console.warn("[ranker] feedback persist failed:", err);
+  }
+  return true;
 }
 
 // Test seam — drop the in-memory cache so a fresh load is forced.

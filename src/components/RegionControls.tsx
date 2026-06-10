@@ -135,7 +135,7 @@ export function RegionControls({
 
       <section className="control-section">
         <div className="section-title">
-          <Zap size={16} />
+          <Zap size={16} aria-hidden="true" />
           <span>Brain action</span>
         </div>
         <div className="action-grid">
@@ -144,6 +144,7 @@ export function RegionControls({
               className={action.id === selectedActionId ? "action-button active" : "action-button"}
               key={action.id}
               type="button"
+              aria-pressed={action.id === selectedActionId}
               onClick={() => onActionChange(action.id)}
             >
               {action.label}
@@ -154,7 +155,7 @@ export function RegionControls({
 
       <section className="control-section">
         <div className="section-title">
-          <Rotate3D size={16} />
+          <Rotate3D size={16} aria-hidden="true" />
           <span>View</span>
         </div>
         <div className="segmented">
@@ -286,7 +287,7 @@ export function RegionControls({
 
       <section className="control-section region-section">
         <div className="section-title">
-          <Layers3 size={16} />
+          <Layers3 size={16} aria-hidden="true" />
           <span>Regions</span>
         </div>
         <div className="region-list">

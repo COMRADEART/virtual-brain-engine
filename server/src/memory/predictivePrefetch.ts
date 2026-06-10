@@ -1,5 +1,6 @@
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import { ulid } from "ulid";
+import { surfaceError } from "../util/diagnostics.js";
 
 export interface Prediction {
   memoryIds: string[];
@@ -41,7 +42,7 @@ const MIN_CONFIDENCE = 0.3;
 const TEMPORAL_WINDOW_HOURS = 2;
 
 let conversationSequence: string[] = [];
-let lastPrefetchTime = 0;
+const lastPrefetchTime = 0;
 
 export function recordConversationSequence(
   memoryId: string,
@@ -84,10 +85,11 @@ function saveSequencePattern(db: SqliteDatabase): void {
         ).run(id, seq, next, now, now);
       }
     }
-  } catch {
-    // Swallowed: sequence learning is best-effort. This catch is what hid
-    // the missing created_at column (memory_sequence_patterns.created_at is
-    // NOT NULL, no default) — see predictivePrefetch.test.ts.
+  } catch (err) {
+    // Sequence learning is best-effort — but no longer silent. This catch is
+    // what hid the missing created_at column (memory_sequence_patterns.created_at
+    // is NOT NULL, no default) — see predictivePrefetch.test.ts.
+    surfaceError("predictivePrefetch.saveSequencePattern", err);
   }
 }
 
@@ -299,7 +301,8 @@ export function prefetchForQuery(query: string, limit = MAX_PREFETCH): string[] 
       )
       .all(`%${query}%`, limit);
     return rows.map((r) => r.id);
-  } catch {
+  } catch (err) {
+    surfaceError("predictivePrefetch.prefetchForQuery", err);
     return [];
   }
 }
@@ -331,10 +334,11 @@ export function updateTemporalPattern(
          VALUES (?, ?, ?, 1, ?, ?)`,
       ).run(id, memoryId, hour, now.toISOString(), now.toISOString());
     }
-  } catch {
-    // Swallowed: temporal tracking is best-effort. This catch is what hid
-    // the missing created_at column (memory_temporal_patterns.created_at is
-    // NOT NULL, no default) — see predictivePrefetch.test.ts.
+  } catch (err) {
+    // Temporal tracking is best-effort — but no longer silent. This catch is
+    // what hid the missing created_at column (memory_temporal_patterns.created_at
+    // is NOT NULL, no default) — see predictivePrefetch.test.ts.
+    surfaceError("predictivePrefetch.updateTemporalPattern", err);
   }
 }
 

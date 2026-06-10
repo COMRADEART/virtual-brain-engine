@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { getCognitiveEvolutionEngine } from "../core/evolution.js";
+import { optimizeRankerFromLog } from "../core/evolutionOptimizer.js";
 
 export const evolutionRouter = Router();
 
@@ -94,4 +95,31 @@ evolutionRouter.post("/evolution/experiment", (req, res) => {
 
 evolutionRouter.post("/evolution/identity", (_req, res) => {
   res.json(getCognitiveEvolutionEngine().evolveIdentity());
+});
+
+// GENUINE measured evolution: evolve the learned ranker weights against the
+// brain's own labelled citation data and promote a challenger ONLY on a strict
+// held-out win behind the safety gate. Body is optional; optimizeRankerFromLog
+// never throws (returns reason:"error" on any internal failure).
+const optimizeRankerSchema = z.object({
+  seed: z.number().int().optional(),
+  generations: z.number().int().min(1).max(5000).optional(),
+  lambda: z.number().int().min(1).max(512).optional(),
+  sigma: z.number().positive().max(8).optional(),
+  minSamples: z.number().int().min(1).max(100000).optional(),
+});
+
+evolutionRouter.post("/evolution/optimize-ranker", (req, res) => {
+  const parsed = optimizeRankerSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    res.json(optimizeRankerFromLog(parsed.data));
+  } catch (err) {
+    // Defensive: optimizeRankerFromLog already swallows its own errors, but the
+    // route stays robust regardless.
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });

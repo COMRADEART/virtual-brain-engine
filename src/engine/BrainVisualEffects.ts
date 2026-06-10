@@ -33,6 +33,9 @@ attribute float membraneNorm;
 attribute float neuronType;       // 1=excitatory, -1=inhibitory
 attribute float burstStatus;     // 0=normal, 1=bursting
 attribute float memoryTrace;     // 0-1 memory engagement
+// Phase 4 (improvement plan §1B): per-instance visibility/LOD multiplier.
+// Default 1.0 if absent — written by NeuralGraphRenderer.updateAScaleLOD.
+attribute float aScale;
 varying float vMembraneNorm;
 varying float vNeuronType;
 varying float vBurstStatus;
@@ -47,7 +50,7 @@ void main() {
   vMemoryTrace = memoryTrace;
   vNormal = normalMatrix * normal;
 
-  vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position * aScale, 1.0);
   vViewPosition = -mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -458,6 +461,15 @@ const NEUROMOD_SHADER = {
     uniform float uTime;
     varying vec2 vUv;
 
+    // GLSL has no function hoisting — rand() MUST be defined before main() uses
+    // it. It used to live after main(), which fails to compile; because this is a
+    // full-screen post-process pass in the composer chain, an invalid program
+    // blacked out the entire spiking-engine render (verify:canvas: activePixels 0,
+    // "useProgram: program not valid"). Keep this above main().
+    float rand(vec2 co) {
+      return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
     void main() {
       vec4 col = texture2D(tDiffuse, vUv);
       float luminance = dot(col.rgb, vec3(0.299, 0.587, 0.114));
@@ -505,10 +517,6 @@ const NEUROMOD_SHADER = {
       result += vec3(sparkle);
 
       gl_FragColor = vec4(result, col.a);
-    }
-    
-    float rand(vec2 co) {
-      return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
     }
   `,
 };
@@ -606,8 +614,8 @@ export class BrainVisualEffects {
 
   // ── Post-processing ─────────────────────────────────────────────────────────
   private composer: EffectComposer | null = null;
-  private neuromodPass!: ShaderPass;
-  private filmGrainPass!: ShaderPass;
+  private neuromodPass: ShaderPass | undefined;
+  private filmGrainPass: ShaderPass | undefined;
   private readonly useOwnComposer: boolean;
 
   // ── Per-region cached data ───────────────────────────────────────────────────
@@ -1011,12 +1019,12 @@ export class BrainVisualEffects {
     
     if (this.neuromodPass) {
       this.neuromodPass.dispose();
-      this.neuromodPass = undefined as any;
+      this.neuromodPass = undefined;
     }
-    
+
     if (this.filmGrainPass) {
       this.filmGrainPass.dispose();
-      this.filmGrainPass = undefined as any;
+      this.filmGrainPass = undefined;
     }
     
     if (this.composer) {
@@ -1588,6 +1596,17 @@ export function applyVisualEffectsToGraph(
           new THREE.InstancedBufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage),
         );
       }
+    }
+    // Phase 4 (improvement plan §1B): NEURON_VERT now reads `aScale`. The
+    // renderer attaches it in shader mode; if it's missing (legacy renderer
+    // upgraded mid-flight) default to 1.0 so existing visuals don't collapse.
+    if (!geo.getAttribute("aScale")) {
+      const aScale = new Float32Array(count);
+      aScale.fill(1);
+      geo.setAttribute(
+        "aScale",
+        new THREE.InstancedBufferAttribute(aScale, 1).setUsage(THREE.DynamicDrawUsage),
+      );
     }
     effects.attachNeuronGeometry(geo);
   }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Cpu, ExternalLink, Loader2, RefreshCw } from "lucide-react";
+import { CheckCircle2, Cloud, Cpu, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { apiClient, ApiError, type DiscoveredRuntime } from "../engine/apiClient";
+import type { ConnectorDescriptor } from "../../shared/connector";
 
 interface RuntimeRow extends DiscoveredRuntime {
   selectedModel?: string;
@@ -33,6 +34,11 @@ export function RuntimePicker(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busyKind, setBusyKind] = useState<string | null>(null);
+  // Seeded free-tier remote providers (NVIDIA / Gemini). Present only when their
+  // API key was set in .env at server boot; always non-local, opt-in.
+  const [remoteConnectors, setRemoteConnectors] = useState<ConnectorDescriptor[]>([]);
+  const [busyRemote, setBusyRemote] = useState<string | null>(null);
+  const [remoteMsg, setRemoteMsg] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -59,17 +65,23 @@ export function RuntimePicker(): JSX.Element {
     return () => window.clearInterval(id);
   }, [refresh]);
 
-  // Pull the current default connector's id so we can show "Active" on the
-  // matching row.
+  // Pull the connector table so we can (a) show "Active" on the matching row and
+  // (b) populate the remote-provider section with any seeded NVIDIA/Gemini rows.
+  const loadConnectors = useCallback(async () => {
+    try {
+      const { connectors } = await apiClient.listConnectors();
+      const def = connectors.find((c) => c.isDefault && c.enabled);
+      setActiveId(def?.id ?? null);
+      setRemoteConnectors(connectors.filter((c) => !c.isLocal));
+    } catch {
+      // Server unreachable — keep whatever we last had; the local-runtime
+      // refresh path already surfaces the connection error.
+    }
+  }, []);
+
   useEffect(() => {
-    apiClient
-      .listConnectors()
-      .then(({ connectors }) => {
-        const def = connectors.find((c) => c.isDefault && c.enabled);
-        setActiveId(def?.id ?? null);
-      })
-      .catch(() => undefined);
-  }, [runtimes]);
+    void loadConnectors();
+  }, [loadConnectors, runtimes]);
 
   const rows: RuntimeRow[] = useMemo(() => {
     return KNOWN_RUNTIMES.map((meta) => {
@@ -113,6 +125,49 @@ export function RuntimePicker(): JSX.Element {
       }
     },
     [selected],
+  );
+
+  // Make a seeded remote provider the pipeline default. Path-1 select by id —
+  // the server flips is_default + enabled on the existing row.
+  const activateRemote = useCallback(
+    async (connector: ConnectorDescriptor) => {
+      setBusyRemote(connector.id);
+      setError(null);
+      try {
+        const { connector: updated } = await apiClient.selectConnector({ connectorId: connector.id });
+        setActiveId(updated.id);
+        await loadConnectors();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusyRemote(null);
+      }
+    },
+    [loadConnectors],
+  );
+
+  // Verify the key/host without switching to it — the one network call that
+  // actually reaches the provider, triggered explicitly by the user.
+  const testRemote = useCallback(
+    async (id: string) => {
+      setBusyRemote(id);
+      setRemoteMsg((m) => ({ ...m, [id]: "Testing…" }));
+      try {
+        const result = await apiClient.testConnector(id);
+        setRemoteMsg((m) => ({
+          ...m,
+          [id]: result.ok
+            ? result.message ?? "Reachable"
+            : result.message ?? "Test failed",
+        }));
+        await loadConnectors();
+      } catch (err) {
+        setRemoteMsg((m) => ({ ...m, [id]: err instanceof Error ? err.message : String(err) }));
+      } finally {
+        setBusyRemote(null);
+      }
+    },
+    [loadConnectors],
   );
 
   return (
@@ -206,6 +261,73 @@ export function RuntimePicker(): JSX.Element {
           );
         })}
       </ul>
+
+      <header className="status-row" style={{ marginTop: "0.75rem" }}>
+        <Cloud size={14} />
+        <span>Remote providers (free tier)</span>
+      </header>
+      <small className="status-detail">
+        Stronger cloud models, opt-in. Local Ollama stays the default until you pick
+        one. Embeddings always stay local, so retrieval is unaffected.
+      </small>
+      {remoteConnectors.length === 0 ? (
+        <p className="ai-hint">
+          None configured. Add <code>NVIDIA_API_KEY</code> or <code>GEMINI_API_KEY</code>{" "}
+          to your <code>.env</code> (see <code>.env.example</code>) and restart the server.
+          Free keys:{" "}
+          <a href="https://build.nvidia.com" target="_blank" rel="noopener noreferrer" className="runtime-link">
+            build.nvidia.com <ExternalLink size={11} />
+          </a>{" "}
+          /{" "}
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="runtime-link">
+            aistudio.google.com/apikey <ExternalLink size={11} />
+          </a>
+          .
+        </p>
+      ) : (
+        <ul className="runtime-list">
+          {remoteConnectors.map((c) => {
+            const isActive = activeId === c.id;
+            const busy = busyRemote === c.id;
+            return (
+              <li key={c.id} className={`runtime-row ${c.state}`}>
+                <div className="runtime-head">
+                  <span className={`status-dot ${c.state === "ok" ? "live" : "offline"}`} />
+                  <Cloud size={14} />
+                  <strong>{c.name}</strong>
+                  {isActive ? (
+                    <span className="runtime-active" title="Active default">
+                      <CheckCircle2 size={12} /> Active
+                    </span>
+                  ) : null}
+                </div>
+                <div className="runtime-body">
+                  <small className="runtime-model-label">Model: {c.model ?? "—"}</small>
+                  <button
+                    className="ai-icon-button"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void testRemote(c.id)}
+                  >
+                    {busy ? <Loader2 size={12} className="ai-spin" /> : null} Test
+                  </button>
+                  <button
+                    className="ai-send"
+                    type="button"
+                    disabled={busy || isActive}
+                    onClick={() => void activateRemote(c)}
+                  >
+                    {busy ? <Loader2 size={12} className="ai-spin" /> : null}
+                    {isActive ? "In use" : "Use this"}
+                  </button>
+                </div>
+                {remoteMsg[c.id] ? <p className="ai-hint">{remoteMsg[c.id]}</p> : null}
+                {c.lastError && !remoteMsg[c.id] ? <p className="ai-error">{c.lastError}</p> : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

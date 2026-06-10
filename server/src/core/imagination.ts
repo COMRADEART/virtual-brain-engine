@@ -3,7 +3,15 @@ import { openDb } from "../db/sqlite.js";
 import { getEventBus, nowIso, type BrainBus } from "./eventBus.js";
 import { getRecentSnapshots } from "../twin/repository.js";
 import { classifyAction, simulate, type SimHistory } from "../twin/simulationEngine.js";
+import { classifyAbstractionLevel } from "./abstractionLevels.js";
+import {
+  MIN_USABLE_CONFIDENCE,
+  extractEffectsFromReflection,
+  predictEffects,
+  recordObservation,
+} from "./causalMap.js";
 import type {
+  AbstractionLevel,
   CognitiveAbstraction,
   ImaginationFuture,
   ImaginationFutureKind,
@@ -133,6 +141,38 @@ function memoryReliability(influences: MemoryInfluence[]): number {
   const memory = influences.filter((influence) => influence.source === "memory");
   if (memory.length === 0) return 0.34;
   return clamp01(memory.reduce((sum, influence) => sum + influence.weight, 0) / Math.max(1, memory.length));
+}
+
+interface CausalInfluenceResult {
+  blendedRisk: number;
+  influence: MemoryInfluence;
+}
+
+// Bayesian-ish blend between the per-call heuristic risk and the smoothed
+// empirical failure rate from causal_links. Returns null when no usable
+// signal exists (DB miss, never-observed cause, or sub-threshold confidence)
+// — caller falls back to the heuristic risk unchanged.
+function readCausalInfluence(causeClass: string, heuristicRisk: number): CausalInfluenceResult | null {
+  try {
+    const forecast = predictEffects(causeClass);
+    if (forecast.expectedFailureRate === null) return null;
+    if (forecast.failureConfidence < MIN_USABLE_CONFIDENCE) return null;
+    const weight = Math.min(0.5, forecast.failureConfidence);
+    const blendedRisk = clamp01(heuristicRisk * (1 - weight) + forecast.expectedFailureRate * weight);
+    const failureLink = forecast.effects.find((effect) => effect.effectClass === "failure");
+    const obsCount = failureLink?.observations ?? 0;
+    return {
+      blendedRisk,
+      influence: {
+        source: "causal-map",
+        label: `causal world model (${causeClass})`,
+        weight: clamp01(forecast.failureConfidence),
+        detail: `Historical P(failure|${causeClass}) = ${Math.round(forecast.expectedFailureRate * 100)}% over ${obsCount} observation${obsCount === 1 ? "" : "s"}; blended risk ${Math.round(heuristicRisk * 100)}% → ${Math.round(blendedRisk * 100)}%.`,
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 function sideEffectsFor(kind: ImaginationFutureKind, category: string, risk: number): ImaginationSideEffects {
@@ -366,6 +406,16 @@ export class ImaginationEngine {
     }
 
     const base = simulate(action, getRecentSnapshots(60), historyFor(action));
+
+    // Causal world model (blueprint #7): blend empirical P(failure|cause) into
+    // the heuristic risk prior. Weight = failureConfidence capped at 0.5 — we
+    // never let history fully override the per-call digital-twin simulation,
+    // and below MIN_USABLE_CONFIDENCE the empirical term contributes nothing
+    // (≈ first observation in). Pure read; safe to fail silently.
+    const causeClass = classifyAction(action);
+    const causalInfluence = readCausalInfluence(causeClass, base.riskScore);
+    const effectiveBaseRisk = causalInfluence ? causalInfluence.blendedRisk : base.riskScore;
+
     const influences: MemoryInfluence[] = [
       {
         source: "twin",
@@ -379,12 +429,13 @@ export class ImaginationEngine {
         weight: clamp01(1 - base.riskScore * 0.6),
         detail: base.conflicts.length > 0 ? base.conflicts.join("; ") : "No matching recent failure pattern.",
       },
+      ...(causalInfluence ? [causalInfluence.influence] : []),
       ...memoryInfluences(action),
     ];
     const branchKinds: ImaginationFutureKind[] = ["fast", "safe", "rollback", "sandbox", "defer"];
     const futures = branchKinds
       .slice(0, Math.max(3, Math.min(MAX_BRANCHES, input.branchCount ?? 4)))
-      .map((kind) => buildFuture(kind, action, base.riskScore, base.estimatedRuntimeMs, base.conflicts, influences));
+      .map((kind) => buildFuture(kind, action, effectiveBaseRisk, base.estimatedRuntimeMs, base.conflicts, influences));
     const recommendation = recommend(futures);
     const sessionId = `imag-${ulid()}`;
     const session: ImaginationSession = {
@@ -445,6 +496,28 @@ export class ImaginationEngine {
       actualDurationMs: input.actualDurationMs,
       sideEffects: input.sideEffects,
     });
+
+    // Causal world model (blueprint #7): close the predict→observe→update
+    // loop. Every reflection feeds five (cause, effect) increments — one
+    // per effect class — so per-effect probabilities stay calibrated rather
+    // than biased toward 1.0 (which would happen if only the firing effect
+    // were recorded). Best-effort; never block the reflection on DB failure.
+    try {
+      const causeClass = classifyAction(session.action);
+      const dependencyChanges = input.sideEffects?.dependencyChanges ?? 0;
+      const observations = extractEffectsFromReflection({
+        ok: input.ok,
+        actualRisk,
+        accuracy,
+        dependencyChanges,
+      });
+      for (const { effectClass, occurred } of observations) {
+        recordObservation({ causeClass, effectClass, occurred });
+      }
+    } catch (err) {
+      console.warn("[imagination] causal observation failed:", err);
+    }
+
     this.persistTimeline({
       id: `imag-tl-${ulid()}`,
       sessionId: session.id,
@@ -696,9 +769,9 @@ export class ImaginationEngine {
       return openDb()
         .prepare<
           [number],
-          { id: string; concept: string; evidence: string; confidence: number; created_at: string; updated_at: string }
+          { id: string; concept: string; evidence: string; confidence: number; level: number; created_at: string; updated_at: string }
         >(
-          `SELECT id, concept, evidence, confidence, created_at, updated_at
+          `SELECT id, concept, evidence, confidence, level, created_at, updated_at
            FROM cognitive_abstractions ORDER BY confidence DESC, updated_at DESC LIMIT ?`,
         )
         .all(Math.max(1, Math.min(100, limit)))
@@ -707,6 +780,7 @@ export class ImaginationEngine {
           concept: row.concept,
           evidence: safeStringArray(row.evidence),
           confidence: row.confidence,
+          level: clampLevel(row.level),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
         }));
@@ -719,26 +793,35 @@ export class ImaginationEngine {
     const db = openDb();
     const now = nowIso();
     const existing = db
-      .prepare<[string], { id: string; evidence: string; confidence: number; created_at: string }>(
-        `SELECT id, evidence, confidence, created_at FROM cognitive_abstractions WHERE concept = ?`,
+      .prepare<[string], { id: string; evidence: string; confidence: number; level: number; created_at: string }>(
+        `SELECT id, evidence, confidence, level, created_at FROM cognitive_abstractions WHERE concept = ?`,
       )
       .get(concept);
     const mergedEvidence = Array.from(new Set([...(existing ? safeStringArray(existing.evidence) : []), ...evidence])).slice(0, 12);
     const nextConfidence = clamp01(Math.max(existing?.confidence ?? 0, confidence) + mergedEvidence.length * 0.01);
     const id = existing?.id ?? `abstraction-${ulid()}`;
+    // Phase 3 — classify level. A re-dream can only promote, never demote: the
+    // user has already seen a higher-level reading and we don't want a
+    // shorter-evidence pass to silently regress it.
+    const classified = classifyAbstractionLevel(concept, mergedEvidence);
+    const level: AbstractionLevel = (
+      existing ? Math.max(clampLevel(existing.level), classified) : classified
+    ) as AbstractionLevel;
     db.prepare(
-      `INSERT INTO cognitive_abstractions (id, concept, evidence, confidence, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO cognitive_abstractions (id, concept, evidence, confidence, level, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(concept) DO UPDATE SET
          evidence = excluded.evidence,
          confidence = excluded.confidence,
+         level = excluded.level,
          updated_at = excluded.updated_at`,
-    ).run(id, concept, JSON.stringify(mergedEvidence), nextConfidence, existing?.created_at ?? now, now);
+    ).run(id, concept, JSON.stringify(mergedEvidence), nextConfidence, level, existing?.created_at ?? now, now);
     const abstraction = {
       id,
       concept,
       evidence: mergedEvidence,
       confidence: nextConfidence,
+      level,
       createdAt: existing?.created_at ?? now,
       updatedAt: now,
     };
@@ -772,6 +855,17 @@ function safeStringArray(json: string): string[] {
   } catch {
     return [];
   }
+}
+
+// Coerce the raw DB column (any integer) into the typed 0..5 ladder. A NULL
+// or out-of-range value floors to 0 ("sensory") — matching the migration
+// default and keeping callers from having to handle an unbounded number.
+function clampLevel(raw: number | null | undefined): AbstractionLevel {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 0;
+  const i = Math.round(raw);
+  if (i <= 0) return 0;
+  if (i >= 5) return 5;
+  return i as AbstractionLevel;
 }
 
 function inferConcepts(goals: string[]): Array<{ concept: string; evidence: string[]; confidence: number }> {

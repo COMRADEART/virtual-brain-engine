@@ -9,24 +9,50 @@ interface UseApiState<T> {
   busy: boolean;
 }
 
+// Module-level theme store so EVERY useTheme() consumer (StatusBar, ShortcutsModal,
+// …) shares one source of truth — toggling in one place updates all the others and
+// the <html data-theme> attribute, with no divergence between instances.
+function readStoredTheme(): Theme {
+  try {
+    const stored = window.localStorage.getItem("brain-theme");
+    if (stored === "light" || stored === "dark") return stored;
+  } catch {}
+  return "dark";
+}
+
+let currentTheme: Theme = readStoredTheme();
+const themeListeners = new Set<(t: Theme) => void>();
+
+function applyTheme(next: Theme): void {
+  currentTheme = next;
+  try {
+    document.documentElement.setAttribute("data-theme", next);
+  } catch {}
+  try {
+    window.localStorage.setItem("brain-theme", next);
+  } catch {}
+  themeListeners.forEach((listener) => listener(next));
+}
+
+// Apply once at module load so the attribute is set even before any component that
+// uses the hook mounts (the index.html inline script handles the pre-React flash).
+if (typeof document !== "undefined") {
+  document.documentElement.setAttribute("data-theme", currentTheme);
+}
+
 export function useTheme(): [Theme, () => void] {
-  const [theme, setTheme] = useState<Theme>(() => {
-    try {
-      const stored = window.localStorage.getItem("brain-theme");
-      if (stored === "light" || stored === "dark") return stored;
-    } catch {}
-    return "dark";
-  });
+  const [theme, setTheme] = useState<Theme>(currentTheme);
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    try {
-      window.localStorage.setItem("brain-theme", theme);
-    } catch {}
-  }, [theme]);
+    themeListeners.add(setTheme);
+    setTheme(currentTheme);
+    return () => {
+      themeListeners.delete(setTheme);
+    };
+  }, []);
 
   const toggle = useCallback(() => {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
+    applyTheme(currentTheme === "dark" ? "light" : "dark");
   }, []);
 
   return [theme, toggle];

@@ -111,12 +111,18 @@ export function createSummaryMemory(
   const db = openDb();
   const id = ulid();
   const now = new Date().toISOString();
+  // summary_id must be NULL on the summary row itself: it is the consolidated
+  // memory, not a memory that has been summarised away. Binding the new `id`
+  // here (the old behaviour) made the summary self-referential, so every
+  // `WHERE summary_id IS NULL` query (retrieval, consolidation, decay)
+  // silently excluded it. The original row is pointed at this summary
+  // separately via linkSummary(originalId, summary.id).
   db.prepare(
     `INSERT INTO memory_points
        (id, source_type, file_path, project_name, title, content, content_hash,
         embedding_id, importance, created_at, updated_at, metadata, summary_id)
      SELECT ?, source_type, file_path, ?, title, ?, content_hash,
-            NULL, ?, ?, ?, metadata, ?
+            NULL, ?, ?, ?, metadata, NULL
        FROM memory_points WHERE id = ?`,
   ).run(
     id,
@@ -125,7 +131,6 @@ export function createSummaryMemory(
     summaryImportance,
     now,
     now,
-    id,
     originalId,
   );
   const row = db
@@ -145,26 +150,30 @@ export function linkSummary(originalId: string, summaryId: string): void {
 export function getMemoryById(id: string): LifecycleMemory | null {
   const db = openDb();
   const row = db
-    .prepare<[string, string], LifecycleRow>(
+    .prepare<[string], LifecycleRow>(
       `SELECT mp.*,
               (SELECT COUNT(*) FROM memory_relations mr WHERE mr.to_id = mp.id AND mr.kind = 'cites') AS citation_count
        FROM memory_points mp WHERE mp.id = ?`,
     )
-    .get(id, id);
+    .get(id);
   return row ? rowToLifecycle(row) : null;
 }
 
 export function getActiveProjectNames(): string[] {
   const db = openDb();
+  // No bind parameters: the 30-day window is a SQL literal and LIMIT is fixed.
+  // Passing an arg here ("last 30 days") threw "RangeError: Too many parameter
+  // values were provided" and — via the unguarded /memory/consolidate route —
+  // crashed the whole server process.
   const rows = db
-    .prepare<[string], { project_name: string }>(
+    .prepare<[], { project_name: string }>(
       `SELECT DISTINCT project_name FROM memory_points
        WHERE project_name IS NOT NULL
          AND datetime(updated_at) > datetime('now', '-30 days')
        ORDER BY updated_at DESC
        LIMIT 20`,
     )
-    .all("last 30 days");
+    .all();
   return rows.map((r: { project_name: string }) => r.project_name).filter(Boolean) as string[];
 }
 

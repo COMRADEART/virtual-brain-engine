@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, Brain, HelpCircle, Loader2, Send, Sparkles, Square } from "lucide-react";
+import { BookOpen, Brain, HelpCircle, Loader2, Send, Sparkles, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { apiClient, ApiError } from "../engine/apiClient";
 import type { PipelineEvent } from "../../shared/pipeline";
 
@@ -113,6 +113,9 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
   const [citations, setCitations] = useState<Citation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [highlightedCitation, setHighlightedCitation] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [feedbackSent, setFeedbackSent] = useState<1 | -1 | null>(null);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const citationsRef = useRef<HTMLUListElement | null>(null);
 
@@ -138,6 +141,8 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
       setPending("");
       setCitations([]);
       setHighlightedCitation(null);
+      setRunId(null);
+      setFeedbackSent(null);
 
       let streamed = "";
       try {
@@ -148,6 +153,9 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
           if (event.conversationId && event.conversationId !== conversationId) {
             setConversationId(event.conversationId);
             onConversationChange?.(event.conversationId);
+          }
+          if (event.runId) {
+            setRunId(event.runId);
           }
           if (event.step === "memory" && event.status === "complete" && event.citations) {
             setCitations(event.citations);
@@ -193,6 +201,28 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
     setRunning(false);
   }, []);
 
+  const submitFeedback = useCallback(
+    async (rating: 1 | -1) => {
+      if (!runId || feedbackBusy || feedbackSent !== null) {
+        return;
+      }
+      setFeedbackBusy(true);
+      try {
+        await apiClient.sendFeedback({
+          runId,
+          rating,
+          conversationId: conversationId ?? undefined,
+        });
+        setFeedbackSent(rating);
+      } catch {
+        // Feedback is best-effort — a failed write shouldn't disrupt the user.
+      } finally {
+        setFeedbackBusy(false);
+      }
+    },
+    [runId, feedbackBusy, feedbackSent, conversationId],
+  );
+
   const knownIds = useMemo(() => new Set(citations.map((c) => c.memoryId)), [citations]);
   const visibleText = answer || pending;
   const sections = useMemo(() => parseSections(visibleText), [visibleText]);
@@ -225,6 +255,7 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
       <div className="ai-row">
         <input
           type="text"
+          aria-label="Ask the brain"
           placeholder='Ask the brain anything…'
           value={prompt}
           disabled={running}
@@ -309,6 +340,37 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
                 </li>
               ))}
             </ul>
+          ) : null}
+          {answer && !running && runId ? (
+            <div className="ask-feedback" aria-live="polite">
+              {feedbackSent !== null ? (
+                <span className="ask-feedback-thanks">
+                  {feedbackSent > 0
+                    ? "Thanks — the brain reinforced the memories it used."
+                    : "Thanks — the brain will trust those memories less next time."}
+                </span>
+              ) : (
+                <>
+                  <span className="ask-feedback-label">Was this helpful?</span>
+                  <button
+                    type="button"
+                    className="ask-feedback-btn up"
+                    disabled={feedbackBusy}
+                    onClick={() => void submitFeedback(1)}
+                  >
+                    <ThumbsUp size={13} /> Yes
+                  </button>
+                  <button
+                    type="button"
+                    className="ask-feedback-btn down"
+                    disabled={feedbackBusy}
+                    onClick={() => void submitFeedback(-1)}
+                  >
+                    <ThumbsDown size={13} /> No
+                  </button>
+                </>
+              )}
+            </div>
           ) : null}
         </article>
       ) : null}

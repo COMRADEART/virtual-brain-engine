@@ -132,6 +132,19 @@ export function upsertMemoryPoint(input: MemoryUpsertInput): MemoryPoint {
   return rowToMemory(row);
 }
 
+// Content-hash dedup, independent of file_path (the upsert's built-in dedup only
+// fires when a file_path is present). Used by the ingestion pipeline so the same
+// clipboard/doc text isn't stored twice. Backed by the memory_points_hash index.
+export function hasMemoryWithContentHash(hash: string): boolean {
+  const db = openDb();
+  const row = db
+    .prepare<[string], { c: number }>(
+      `SELECT count(*) AS c FROM memory_points WHERE content_hash = ?`,
+    )
+    .get(hash);
+  return (row?.c ?? 0) > 0;
+}
+
 export function getMemoryPoint(id: string): MemoryPoint | null {
   const db = openDb();
   const row = db
@@ -280,6 +293,84 @@ export function getMemoryCount(): number {
   const db = openDb();
   const row = db.prepare("SELECT COUNT(*) as count FROM memory_points").get() as { count: number };
   return row.count;
+}
+
+export interface MemoryCorpus {
+  text: string;
+  chars: number;
+  documents: number;
+}
+
+// Concatenate the brain's own memories into one training corpus for the
+// from-scratch LLM trainer (Learning Lab — Phase C). Newest first, each doc
+// separated by a blank line. `maxChars` caps the export so a huge DB can't
+// blow up the worker payload; `minImportance` lets the caller train on only
+// the memories the brain considers worth keeping.
+export function exportMemoryCorpus(
+  opts: { maxChars?: number; minImportance?: number } = {},
+): MemoryCorpus {
+  const maxChars = opts.maxChars ?? 5_000_000;
+  const minImportance = opts.minImportance ?? 0;
+  const db = openDb();
+  const rows = db
+    .prepare<[number], { title: string | null; content: string }>(
+      `SELECT title, content FROM memory_points
+       WHERE importance >= ?
+       ORDER BY updated_at DESC`,
+    )
+    .all(minImportance);
+  const parts: string[] = [];
+  let chars = 0;
+  let documents = 0;
+  for (const row of rows) {
+    const piece = (row.title ? `${row.title}\n` : "") + row.content;
+    if (chars + piece.length > maxChars) {
+      break;
+    }
+    parts.push(piece);
+    chars += piece.length + 2; // +2 for the "\n\n" separator
+    documents += 1;
+  }
+  return { text: parts.join("\n\n"), chars, documents };
+}
+
+export function getRelationCount(): number {
+  const db = openDb();
+  const row = db.prepare("SELECT COUNT(*) as count FROM memory_relations").get() as { count: number };
+  return row.count;
+}
+
+// Edges whose BOTH endpoints fall within the given node-id set — i.e. the
+// induced subgraph for a sampled node window. Used by the knowledge-graph view.
+export function listRelationsAmong(ids: string[]): MemoryRelation[] {
+  if (ids.length === 0) {
+    return [];
+  }
+  const db = openDb();
+  const placeholders = ids.map(() => "?").join(", ");
+  type Row = {
+    id: string;
+    from_id: string;
+    to_id: string;
+    kind: MemoryRelationKind;
+    weight: number;
+    created_at: string;
+  };
+  const rows = db
+    .prepare<string[], Row>(
+      `SELECT * FROM memory_relations
+       WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders})
+       ORDER BY created_at DESC LIMIT 400`,
+    )
+    .all(...ids, ...ids);
+  return rows.map((row) => ({
+    id: row.id,
+    fromId: row.from_id,
+    toId: row.to_id,
+    kind: row.kind,
+    weight: row.weight,
+    createdAt: row.created_at,
+  }));
 }
 
 export function deleteMemoryPoint(id: string): boolean {

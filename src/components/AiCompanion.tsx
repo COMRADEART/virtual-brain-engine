@@ -30,11 +30,11 @@ import {
   type OllamaMessage,
   type OllamaModelInfo,
 } from "../engine/ollamaClient";
-import {
-  createSpeechSession,
-  isSpeechSupported,
-  type SpeechSession,
-} from "../engine/speechInput";
+import { apiClient } from "../engine/apiClient";
+// LOCAL STT (faster-whisper) — replaces the cloud-backed Web Speech path so the
+// companion's mic never egresses audio to Google. Shared pure capture helpers
+// live with the pet (Phase 1's voice loop).
+import { blobToBase64, isRecordingSupported, pickRecorderMime } from "./pet/voiceCapture";
 import { cancelAllSpeech, isTtsSupported, speakText } from "../engine/speechOutput";
 import type { BrainActionId } from "../engine/types";
 
@@ -109,9 +109,13 @@ export function AiCompanion({ onActionPick }: AiCompanionProps): JSX.Element {
 
   const abortRef = useRef<AbortController | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const speechRef = useRef<SpeechSession | null>(null);
+  // Local-recorder STT refs (replaces the cloud Web Speech session).
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const recordMimeRef = useRef<string>("");
   const [listeningFor, setListeningFor] = useState<"command" | "chat" | null>(null);
-  const speechSupported = useMemo(() => isSpeechSupported(), []);
+  const speechSupported = useMemo(() => isRecordingSupported(), []);
   const ttsSupported = useMemo(() => isTtsSupported(), []);
   // TTS on by default when available so the AI's responses feel like a reply
   // and not a notification. Users can mute via the header toggle.
@@ -189,7 +193,12 @@ export function AiCompanion({ onActionPick }: AiCompanionProps): JSX.Element {
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
-      speechRef.current?.dispose();
+      try {
+        if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+      } catch {
+        /* ignore */
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
       cancelAllSpeech();
     };
   }, []);
@@ -200,32 +209,61 @@ export function AiCompanion({ onActionPick }: AiCompanionProps): JSX.Element {
     cancelAllSpeech();
   }, [tab, collapsed]);
 
+  // Click-to-toggle local recording. Start captures the mic; the second click
+  // (stopListening) stops + transcribes via the LOCAL faster-whisper endpoint
+  // and drops the text into the target input. No cloud STT, no interim results.
   const startListening = useCallback(
     (target: "command" | "chat") => {
-      if (!speechSupported) {
-        return;
-      }
-      speechRef.current?.dispose();
+      if (!speechSupported || listeningFor) return;
       const setInput = target === "command" ? setCommandInput : setChatInput;
       const setError = target === "command" ? setCommandError : setChatError;
-      const session = createSpeechSession({
-        onInterim: (text) => setInput(text),
-        onFinal: (text) => setInput(text),
-        onError: (message) => {
-          setError(`Voice input: ${message}`);
-        },
-        onListeningChange: (listening) => {
-          setListeningFor(listening ? target : null);
-        },
-      });
-      speechRef.current = session;
-      session?.start();
+      chunksRef.current = [];
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then((stream) => {
+          streamRef.current = stream;
+          const mime = pickRecorderMime();
+          recordMimeRef.current = mime;
+          const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+          recorderRef.current = recorder;
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+          };
+          recorder.onstop = () => {
+            streamRef.current?.getTracks().forEach((t) => t.stop());
+            streamRef.current = null;
+            const type = recordMimeRef.current || "audio/webm";
+            const blob = new Blob(chunksRef.current, { type });
+            chunksRef.current = [];
+            setListeningFor(null);
+            if (blob.size === 0) return;
+            void (async () => {
+              try {
+                const audioBase64 = await blobToBase64(blob);
+                const result = await apiClient.perceptionTranscribe({ audioBase64, mimeType: type });
+                const text = result.text?.trim();
+                if (text) setInput(text);
+                else setError("Voice input: no speech detected.");
+              } catch {
+                setError("Voice input unavailable (is the perception worker running?)");
+              }
+            })();
+          };
+          recorder.start();
+          setListeningFor(target);
+        })
+        .catch(() => setError("Voice input: could not access the microphone."));
     },
-    [speechSupported],
+    [speechSupported, listeningFor],
   );
 
   const stopListening = useCallback(() => {
-    speechRef.current?.stop();
+    try {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+    } catch {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      setListeningFor(null);
+    }
   }, []);
 
   const ready = status.kind === "connected" && selectedModel.length > 0;

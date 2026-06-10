@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import { insertRelation } from "../db/repositories/memory.js";
+import { surfaceError } from "../util/diagnostics.js";
+import { cosineSimilarity, getStoredEmbedding, getStoredEmbeddings } from "./embeddingSimilarity.js";
 
 export interface NoveltyResult {
   isNovel: boolean;
@@ -12,6 +14,18 @@ export interface NoveltyResult {
 
 const NOVELTY_BOOST = 0.12;
 const REDUNDANCY_PENALTY = 0.06;
+
+// COSINE thresholds for the embedding match path. Different SCALE from the
+// string thresholds (0.7 related / 0.9 reinforce / 0.85 redundant-avg). CALIBRATED
+// against the configured embedder (nomic-embed-text, raw /api/embeddings,
+// 2026-05-30, 8 known pairs): unrelated cross-domain ~0.40–0.50, related-but-
+// distinct ~0.565–0.60, near-duplicate paraphrase ~0.69. Gates set against that
+// geometry — re-measure if OLLAMA_EMBED_MODEL changes (the high floor means the
+// old 0.6/0.88 placeholders would never fire reinforcement and barely fire
+// "related").
+const NOVELTY_RELATED_COS = 0.58;       // related: just above the unrelated band
+const NOVELTY_REINFORCE_COS = 0.65;     // near-duplicate: between related & paraphrase
+const NOVELTY_REDUNDANT_AVG_COS = 0.62; // avg-sim "redundant" gate
 
 function contentFingerprint(content: string): string {
   const words = content
@@ -34,6 +48,7 @@ function hammingDistance(a: string, b: string): number {
 export function assessNovelty(
   content: string,
   projectName?: string | null,
+  newMemoryId?: string,
 ): NoveltyResult {
   const contentHash = createHash("sha1").update(content).digest("hex");
   const db = openDb();
@@ -46,19 +61,40 @@ export function assessNovelty(
     )
     .all(contentHash);
 
+  // Decide the metric ONCE. If the new memory has a stored embedding, score
+  // candidates by cosine against their embeddings (embedding-bearing candidates
+  // only) using the COSINE thresholds; otherwise the original string path runs
+  // with the original thresholds. Cosine and Jaccard scores never get compared.
+  const queryEmbedding = newMemoryId ? getStoredEmbedding(newMemoryId, db) : null;
+  const cosineMode = queryEmbedding !== null;
+  const embeddingById = cosineMode
+    ? getStoredEmbeddings(existingRows.map((r) => r.id), db)
+    : new Map<string, number[]>();
+  // Per-mode numeric gates; the category logic below is shared.
+  const relatedGate = cosineMode ? NOVELTY_RELATED_COS : 0.7;
+  const reinforceGate = cosineMode ? NOVELTY_REINFORCE_COS : 0.9;
+  const redundantAvgGate = cosineMode ? NOVELTY_REDUNDANT_AVG_COS : 0.85;
+
   let totalSimilarity = 0;
   let contradictoryCount = 0;
   let reinforceCount = 0;
   const relatedIds: string[] = [];
 
   for (const row of existingRows) {
-    const similarity = computeTextSimilarity(content, row.content);
-    if (similarity > 0.7) {
+    let similarity: number;
+    if (cosineMode) {
+      const candEmb = embeddingById.get(row.id);
+      if (!candEmb) continue; // candidate lacks an embedding → not a cosine match
+      similarity = cosineSimilarity(queryEmbedding as number[], candEmb);
+    } else {
+      similarity = computeTextSimilarity(content, row.content);
+    }
+    if (similarity > relatedGate) {
       totalSimilarity += similarity;
       relatedIds.push(row.id);
-      if (similarity > 0.9) {
+      if (similarity > reinforceGate) {
         reinforceCount++;
-      } else if (similarity > 0.7 && hasNegation(content) && hasNegation(row.content)) {
+      } else if (similarity > relatedGate && hasNegation(content) && hasNegation(row.content)) {
         contradictoryCount++;
       }
     }
@@ -80,7 +116,7 @@ export function assessNovelty(
   } else if (noveltyScore > 0.6) {
     category = "novel";
     explanation = `Content introduces new information (novelty score: ${noveltyScore.toFixed(2)}).`;
-  } else if (avgSimilarity > 0.85) {
+  } else if (avgSimilarity > redundantAvgGate) {
     category = "redundant";
     explanation = `Content is highly similar to ${reinforceCount} existing memory(ies) — reinforcing existing knowledge.`;
   } else {
@@ -209,8 +245,8 @@ export function applyNoveltyBoost(memoryId: string, noveltyScore: number): void 
        SET importance = MIN(1.0, importance + ?), updated_at = ?
        WHERE id = ?`,
     ).run(boost, new Date().toISOString(), memoryId);
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("noveltyDetector.applyNoveltyBoost", err);
   }
 }
 
@@ -226,8 +262,8 @@ export function applyRedundancyPenalty(
        SET importance = MAX(0.01, importance - ${REDUNDANCY_PENALTY}), updated_at = ?
        WHERE id IN (${placeholders})`,
     ).run(new Date().toISOString(), ...memoryIds);
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("noveltyDetector.applyRedundancyPenalty", err);
   }
 }
 
@@ -245,8 +281,8 @@ export function tagContradiction(memoryId: string, contradictoryWithId: string):
        WHERE id = ?`,
     ).run(metadata, new Date().toISOString(), memoryId);
     insertRelation(memoryId, contradictoryWithId, "contradicts", 0.9);
-  } catch {
-    // ignore
+  } catch (err) {
+    surfaceError("noveltyDetector.tagContradiction", err);
   }
 }
 

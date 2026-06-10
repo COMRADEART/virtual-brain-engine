@@ -1,5 +1,6 @@
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import { ulid } from "ulid";
+import { surfaceError } from "../util/diagnostics.js";
 
 export interface AccessEvent {
   memoryId: string;
@@ -21,7 +22,7 @@ const ACTIVATION_BOOST_PER_HOP = 0.15;
 const MAX_HOPS = 3;
 
 let recentAccessLog: AccessEvent[] = [];
-let activationCache = new Map<string, number>();
+const activationCache = new Map<string, number>();
 let activationDirty = false;
 
 export function recordAccess(memoryId: string, context?: string): void {
@@ -74,15 +75,22 @@ export function flushActivationCache(): Map<string, number> {
 
 export function applySpreadingActivation(): void {
   if (!activationDirty) return;
-  const db = openDb();
-  const snapshot = flushActivationCache();
-  const stmt = db.prepare(
-    `UPDATE memory_points SET importance = MIN(1.0, importance + ?), updated_at = ? WHERE id = ?`,
-  );
-  for (const [id, boost] of snapshot) {
-    if (boost > 0.01) {
-      stmt.run(boost, new Date().toISOString(), id);
+  // This runs at consolidationEngine:301 — BEFORE that function's own
+  // try/finally opens. An unguarded throw here would escape and leave
+  // `consolidationRunning` stuck true, killing all future cycles. Guard it.
+  try {
+    const db = openDb();
+    const snapshot = flushActivationCache();
+    const stmt = db.prepare(
+      `UPDATE memory_points SET importance = MIN(1.0, importance + ?), updated_at = ? WHERE id = ?`,
+    );
+    for (const [id, boost] of snapshot) {
+      if (boost > 0.01) {
+        stmt.run(boost, new Date().toISOString(), id);
+      }
     }
+  } catch (err) {
+    surfaceError("accessPatternTracker.applySpreadingActivation", err);
   }
 }
 
@@ -112,10 +120,11 @@ export function buildAccessPattern(
          VALUES (?, ?, ?, 1, ?, 0, ?)`,
       ).run(id, fromId, toId, now, now);
     }
-  } catch {
-    // Swallowed: co-access tracking is best-effort and must not break the
-    // consolidation caller. This catch is what hid the missing created_at
-    // column (memory_access_patterns.created_at is NOT NULL) — see test.
+  } catch (err) {
+    // Co-access tracking is best-effort and must not break the consolidation
+    // caller — but it is no longer silent. This catch is what hid the missing
+    // created_at column (memory_access_patterns.created_at is NOT NULL).
+    surfaceError("accessPatternTracker.buildAccessPattern", err);
   }
 }
 
@@ -123,7 +132,7 @@ export function getRelatedMemories(memoryId: string, limit = 10): string[] {
   try {
     const db = openDb();
     const rows = db
-      .prepare<[string, string, number, string, string], { related_id: string; score: number }>(
+      .prepare<[string, string, string, number, string, string], { related_id: string; score: number }>(
         `SELECT related_id, score FROM (
            SELECT CASE WHEN memory_a = ? THEN memory_b ELSE memory_a END AS related_id,
                   coaccess_count AS score
@@ -138,9 +147,15 @@ export function getRelatedMemories(memoryId: string, limit = 10): string[] {
          ORDER BY score DESC
          LIMIT ${limit}`,
       )
-      .all(memoryId, memoryId, MIN_COACCESS_COUNT, memoryId, memoryId);
+      // Six bound params, in SQL order: the CASE-expr id, the two co-access
+      // predicate ids, the min-count, then the two relation-edge ids. The CASE
+      // placeholder was previously omitted, so this always threw "too few
+      // parameter values" and silently returned [] — related-memory
+      // consolidation/spreading-activation never actually fired.
+      .all(memoryId, memoryId, memoryId, MIN_COACCESS_COUNT, memoryId, memoryId);
     return rows.map((r) => r.related_id);
-  } catch {
+  } catch (err) {
+    surfaceError("accessPatternTracker.getRelatedMemories", err);
     return [];
   }
 }
@@ -164,7 +179,8 @@ export function getHotMemories(hours = 24, limit = 20): { id: string; heat: numb
       id: r.id,
       heat: r.recent_accesses + r.importance * 2,
     }));
-  } catch {
+  } catch (err) {
+    surfaceError("accessPatternTracker.getHotMemories", err);
     return [];
   }
 }

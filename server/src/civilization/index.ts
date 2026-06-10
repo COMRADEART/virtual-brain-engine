@@ -8,6 +8,16 @@ export { CultureEngine, createCultureEngine, getCultureEngine, type CultureEngin
 export { RoleSpecialization, createRoleSpecialization, getRoleSpecialization, type RoleSpecializationConfig, type RoleEventHandlers } from "./roleSpecialization.js";
 export { CollectiveGoalSystem, createCollectiveGoals, getCollectiveGoals, type CollectiveGoalsConfig, type GoalEventHandlers } from "./collectiveGoals.js";
 export { CivilizationVisualization, createCivilizationVisualization, getCivilizationVisualization, type VisualizationConfig } from "./civilizationViz.js";
+export { TrustReputationSystem, createTrustReputation, getTrustReputation, type TrustReputationConfig, type TrustReputationEventHandlers, type SybilSignal } from "./trustReputation.js";
+export { InterBrainMemorySystem, createInterBrainMemory, getInterBrainMemory, type InterBrainMemoryConfig, type CollaborationStats } from "./interBrainMemory.js";
+export { EmergentOrganization, createEmergentOrg, getEmergentOrg, type EmergentOrgConfig, type EmergentOrgEventHandlers, type GroupPhase } from "./emergentOrg.js";
+export { CollectiveImagination, createCollectiveImagination, getCollectiveImagination, type CollectiveImaginationConfig, type CollectiveImaginationEventHandlers, type FusionResult } from "./collectiveImagination.js";
+export { LanguageEvolutionSystem, createLanguageEvolution, getLanguageEvolution, type LanguageEvolutionConfig } from "./languageEvolution.js";
+export { CivilizationTwinModel, createCivilizationTwin, getCivilizationTwin, type CivilizationTwinConfig, type TwinProviders } from "./civilizationTwin.js";
+export { CivilizationSimulationEngine, createCivilizationSimulation, getCivilizationSimulation } from "./civilizationSimulation.js";
+export { CollectiveDreaming, createCollectiveDreaming, getCollectiveDreaming, type CollectiveDreamingConfig, type CollectiveDreamingEventHandlers, type DreamCycle, type DreamFocus } from "./collectiveDreaming.js";
+export { EthicsSafetySystem, createEthicsSafety, getEthicsSafety, type EthicsSafetyConfig, type EthicsSafetyEventHandlers, type DecisionEvaluation } from "./ethicsSafety.js";
+export { MultiCivilizationSystem, createMultiCivilization, getMultiCivilization, type MultiCivilizationConfig, type MultiCivilizationEventHandlers, type KnowledgeExchange, type InterCivConflict } from "./multiCivilization.js";
 
 import { BrainNetwork, createBrainNetwork, type BrainNetworkConfig, type NetworkEventHandlers } from "./brainNetwork.js";
 import { PeerDiscovery, createPeerDiscovery, type PeerDiscoveryConfig } from "./peerDiscovery.js";
@@ -19,6 +29,16 @@ import { CultureEngine, createCultureEngine, type CultureEngineConfig, type Cult
 import { RoleSpecialization, createRoleSpecialization, type RoleSpecializationConfig, type RoleEventHandlers } from "./roleSpecialization.js";
 import { CollectiveGoalSystem, createCollectiveGoals, type CollectiveGoalsConfig, type GoalEventHandlers } from "./collectiveGoals.js";
 import { CivilizationVisualization, createCivilizationVisualization, type VisualizationConfig } from "./civilizationViz.js";
+import { TrustReputationSystem, createTrustReputation, type TrustReputationConfig, type TrustReputationEventHandlers } from "./trustReputation.js";
+import { InterBrainMemorySystem, createInterBrainMemory, type InterBrainMemoryConfig } from "./interBrainMemory.js";
+import { EmergentOrganization, createEmergentOrg, type EmergentOrgConfig, type EmergentOrgEventHandlers } from "./emergentOrg.js";
+import { CollectiveImagination, createCollectiveImagination, type CollectiveImaginationConfig, type CollectiveImaginationEventHandlers } from "./collectiveImagination.js";
+import { LanguageEvolutionSystem, createLanguageEvolution, type LanguageEvolutionConfig } from "./languageEvolution.js";
+import { CivilizationTwinModel, createCivilizationTwin, type CivilizationTwinConfig } from "./civilizationTwin.js";
+import { CivilizationSimulationEngine, createCivilizationSimulation } from "./civilizationSimulation.js";
+import { CollectiveDreaming, createCollectiveDreaming, type CollectiveDreamingConfig, type CollectiveDreamingEventHandlers } from "./collectiveDreaming.js";
+import { EthicsSafetySystem, createEthicsSafety, type EthicsSafetyConfig, type EthicsSafetyEventHandlers } from "./ethicsSafety.js";
+import { MultiCivilizationSystem, createMultiCivilization, type MultiCivilizationConfig, type MultiCivilizationEventHandlers } from "./multiCivilization.js";
 import type { BrainDescriptor as SharedBrainDescriptor, CultureType, ResourceCapacity, ResourceUsage } from "../../../shared/civilization.js";
 
 export interface CivilizationConfig {
@@ -32,6 +52,15 @@ export interface CivilizationConfig {
   roleSpecialization: Partial<RoleSpecializationConfig>;
   collectiveGoals: Partial<CollectiveGoalsConfig>;
   visualization: Partial<VisualizationConfig>;
+  trustReputation: Partial<TrustReputationConfig>;
+  interBrainMemory: Partial<InterBrainMemoryConfig>;
+  emergentOrg: Partial<EmergentOrgConfig>;
+  collectiveImagination: Partial<CollectiveImaginationConfig>;
+  languageEvolution: Partial<LanguageEvolutionConfig>;
+  civilizationTwin: Partial<CivilizationTwinConfig>;
+  collectiveDreaming: Partial<CollectiveDreamingConfig>;
+  ethicsSafety: Partial<EthicsSafetyConfig>;
+  multiCivilization: Partial<MultiCivilizationConfig>;
 }
 
 export interface CivilizationSystem {
@@ -45,6 +74,16 @@ export interface CivilizationSystem {
   roleSpecialization: RoleSpecialization;
   collectiveGoals: CollectiveGoalSystem;
   visualization: CivilizationVisualization;
+  trustReputation: TrustReputationSystem;
+  interBrainMemory: InterBrainMemorySystem;
+  emergentOrg: EmergentOrganization;
+  collectiveImagination: CollectiveImagination;
+  languageEvolution: LanguageEvolutionSystem;
+  civilizationTwin: CivilizationTwinModel;
+  simulation: CivilizationSimulationEngine;
+  collectiveDreaming: CollectiveDreaming;
+  ethicsSafety: EthicsSafetySystem;
+  multiCivilization: MultiCivilizationSystem;
 }
 
 export type BrainDescriptor = SharedBrainDescriptor;
@@ -60,6 +99,15 @@ const DEFAULT_CIVILIZATION_CONFIG: CivilizationConfig = {
   roleSpecialization: { evidenceThreshold: 3, guildFormationThreshold: 3, roleRotationPeriodMs: 3600000 },
   collectiveGoals: { decompositionDepthLimit: 5, progressReportIntervalMs: 3600000 },
   visualization: { updateIntervalMs: 5000, maxActivityEvents: 100, maxTopologyNodes: 200 },
+  trustReputation: {},
+  interBrainMemory: {},
+  emergentOrg: {},
+  collectiveImagination: {},
+  languageEvolution: {},
+  civilizationTwin: {},
+  collectiveDreaming: {},
+  ethicsSafety: {},
+  multiCivilization: {},
 };
 
 export class CivilizationOrchestrator {
@@ -74,6 +122,16 @@ export class CivilizationOrchestrator {
   private readonly roleSpecialization: RoleSpecialization;
   private readonly collectiveGoals: CollectiveGoalSystem;
   private readonly visualization: CivilizationVisualization;
+  private readonly trustReputation: TrustReputationSystem;
+  private readonly interBrainMemory: InterBrainMemorySystem;
+  private readonly emergentOrg: EmergentOrganization;
+  private readonly collectiveImagination: CollectiveImagination;
+  private readonly languageEvolution: LanguageEvolutionSystem;
+  private readonly civilizationTwin: CivilizationTwinModel;
+  private readonly simulation: CivilizationSimulationEngine;
+  private readonly collectiveDreaming: CollectiveDreaming;
+  private readonly ethicsSafety: EthicsSafetySystem;
+  private readonly multiCivilization: MultiCivilizationSystem;
   private running = false;
   private myDescriptor: BrainDescriptor | null = null;
 
@@ -177,6 +235,95 @@ export class CivilizationOrchestrator {
 
     this.governance.setTrustEvaluator((brainId) => this.socialCognition.getRelationship(brainId)?.trust ?? 0.5);
     this.collectiveGoals.setTrustEvaluator((brainId) => this.socialCognition.getRelationship(brainId)?.trust ?? 0.5);
+
+    // --- Advanced + maturity layers (architecture components #4, #11–#19) ---
+
+    const trustReputationHandlers: TrustReputationEventHandlers = {
+      onReputationChanged: (brainId, _old, next) => {
+        this.visualization.recordActivity("trust", [brainId], `Reputation updated: ${next.toFixed(2)}`, Math.abs(next - 0.5));
+      },
+      onSybilDetected: (signal) => {
+        this.visualization.recordActivity("trust", [signal.reporterId], `Sybil signal: ${signal.reason}`, 1);
+      },
+    };
+    this.trustReputation = createTrustReputation(this.network, this.config.trustReputation, trustReputationHandlers);
+    // The reporter's own first-hand standing (Sybil resistance) comes from socialCognition.
+    this.trustReputation.setSelfTrustProvider((brainId) => this.socialCognition.getRelationship(brainId)?.trust ?? 0.5);
+
+    this.interBrainMemory = createInterBrainMemory(this.config.interBrainMemory);
+
+    const emergentOrgHandlers: EmergentOrgEventHandlers = {
+      onGroupFormed: (group) => {
+        this.visualization.recordActivity("role", group.members.map((m) => m.brainId), `Emergent group: ${group.name}`, 0.8);
+      },
+      onPhaseChanged: (groupId, phase) => {
+        this.visualization.recordActivity("role", [], `Group ${groupId} → ${phase}`, 0.2);
+      },
+      onGroupDissolved: (group) => {
+        this.visualization.recordActivity("role", [], `Group dissolved: ${group.name}`, 0.3);
+      },
+    };
+    this.emergentOrg = createEmergentOrg(this.network, this.config.emergentOrg, emergentOrgHandlers);
+
+    const imaginationHandlers: CollectiveImaginationEventHandlers = {
+      onSessionStarted: (session) => {
+        this.visualization.recordActivity("goal", session.participants, `Imagination: ${session.topic}`, 0.5);
+      },
+      onSessionCompleted: (session) => {
+        this.visualization.recordActivity("goal", session.participants, `Imagination resolved: ${session.topic}`, 0.7);
+      },
+    };
+    this.collectiveImagination = createCollectiveImagination(this.network, this.config.collectiveImagination, imaginationHandlers);
+
+    this.languageEvolution = createLanguageEvolution(this.config.languageEvolution);
+
+    this.simulation = createCivilizationSimulation();
+
+    const dreamingHandlers: CollectiveDreamingEventHandlers = {
+      onDreamStarted: (cycle) => {
+        this.visualization.recordActivity("culture", cycle.participants, `Dreaming: ${cycle.focus}`, 0.3);
+      },
+      onDreamConsolidated: (cycle) => {
+        this.visualization.recordActivity("culture", cycle.participants, `Dream consolidated: ${cycle.focus} (+${cycle.totalGain.toFixed(2)})`, cycle.totalGain);
+      },
+    };
+    this.collectiveDreaming = createCollectiveDreaming(this.network, this.config.collectiveDreaming, dreamingHandlers);
+
+    const ethicsHandlers: EthicsSafetyEventHandlers = {
+      onAlertRaised: (alert) => {
+        this.visualization.recordActivity("governance", alert.affectedBrainIds, `Alert (${alert.severity}): ${alert.type}`, alert.severity === "critical" ? 1 : 0.5);
+      },
+      onBrainQuarantined: (brainId, reason) => {
+        this.visualization.recordActivity("governance", [brainId], `Quarantined: ${reason}`, 1);
+      },
+    };
+    this.ethicsSafety = createEthicsSafety(this.network, this.config.ethicsSafety, ethicsHandlers);
+
+    const multiCivHandlers: MultiCivilizationEventHandlers = {
+      onCivilizationRegistered: (civ) => {
+        this.visualization.recordActivity("governance", civ.foundingBrains, `Civilization founded: ${civ.name}`, 1);
+      },
+      onBrainJoined: (civId, brainId) => {
+        this.visualization.recordActivity("social", [brainId], `Joined civilization ${civId}`, 0.4);
+      },
+    };
+    this.multiCivilization = createMultiCivilization(this.network, this.config.multiCivilization, multiCivHandlers);
+
+    // The digital twin reads the live engines through a decoupled provider seam.
+    this.civilizationTwin = createCivilizationTwin(this.config.civilizationTwin);
+    this.civilizationTwin.setProviders({
+      brainCount: () => this.network.getPeerCount() + 1,
+      interactionCount: () => this.interBrainMemory.count(),
+      activeGoals: () => this.collectiveGoals.getAllGoals().filter((g) => g.status === "in-progress" || g.status === "accepted").length,
+      memorySharedCount: () => this.collectiveMemory.getAllLocalMemories().length,
+      culturalCohesion: () => {
+        const evolution = this.cultureEngine.getCultureEvolution();
+        return evolution ? 1 / (1 + evolution.minorityCultures.length) : 1;
+      },
+      governanceDecisions: () => this.governance.getAllProposals().filter((p) => p.status === "completed" || p.status === "abandoned").length,
+      groupMemberships: () => this.emergentOrg.getActiveGroups().reduce((sum, g) => sum + g.members.filter((m) => m.isActive).length, 0),
+      trustEdges: () => this.socialCognition.getAllRelationships().map((r) => ({ fromBrainId: "self", toBrainId: r.peerId, trust: r.trust })),
+    });
   }
 
   async start(descriptor: BrainDescriptor): Promise<void> {
@@ -191,6 +338,13 @@ export class CivilizationOrchestrator {
     this.cultureEngine.setMyCultureType?.(descriptor.cultureType as any ?? "generalist");
     this.roleSpecialization.setMyBrainId?.(descriptor.id);
     this.collectiveGoals.setMyBrainId?.(descriptor.id);
+    // Hard calls (no optional chaining): a missing method must fail loudly, not no-op.
+    this.trustReputation.setMyBrainId(descriptor.id);
+    this.emergentOrg.setMyBrainId(descriptor.id);
+    this.collectiveImagination.setMyBrainId(descriptor.id);
+    this.collectiveDreaming.setMyBrainId(descriptor.id);
+    this.ethicsSafety.setMyBrainId(descriptor.id);
+    this.multiCivilization.setMyBrainId(descriptor.id);
 
     await this.network.start(descriptor);
     await this.peerDiscovery.start(descriptor);
@@ -203,6 +357,15 @@ export class CivilizationOrchestrator {
     this.roleSpecialization.start?.();
     this.collectiveGoals.start?.();
     this.visualization.start?.();
+    // interBrainMemory + languageEvolution are pure stores with no start/stop lifecycle.
+    this.trustReputation.start();
+    this.emergentOrg.start();
+    this.collectiveImagination.start();
+    this.civilizationTwin.start();
+    this.simulation.start();
+    this.collectiveDreaming.start();
+    this.ethicsSafety.start();
+    this.multiCivilization.start();
 
     this.running = true;
     console.log("[CivilizationOrchestrator] Started");
@@ -211,6 +374,14 @@ export class CivilizationOrchestrator {
   async stop(): Promise<void> {
     if (!this.running) return;
 
+    this.multiCivilization.stop();
+    this.ethicsSafety.stop();
+    this.collectiveDreaming.stop();
+    this.simulation.stop();
+    this.civilizationTwin.stop();
+    this.collectiveImagination.stop();
+    this.emergentOrg.stop();
+    this.trustReputation.stop();
     this.visualization.stop?.();
     this.collectiveGoals.stop?.();
     this.roleSpecialization.stop?.();
@@ -242,11 +413,25 @@ export class CivilizationOrchestrator {
       roleSpecialization: this.roleSpecialization,
       collectiveGoals: this.collectiveGoals,
       visualization: this.visualization,
+      trustReputation: this.trustReputation,
+      interBrainMemory: this.interBrainMemory,
+      emergentOrg: this.emergentOrg,
+      collectiveImagination: this.collectiveImagination,
+      languageEvolution: this.languageEvolution,
+      civilizationTwin: this.civilizationTwin,
+      simulation: this.simulation,
+      collectiveDreaming: this.collectiveDreaming,
+      ethicsSafety: this.ethicsSafety,
+      multiCivilization: this.multiCivilization,
     };
   }
 
   getSnapshot() {
     return this.visualization.getSnapshot();
+  }
+
+  getTwin() {
+    return this.civilizationTwin.getLatest();
   }
 
   getSocialGraph() {

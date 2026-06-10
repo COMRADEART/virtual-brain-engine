@@ -6,8 +6,19 @@
 // "Memory is the past, world state is the present, the Digital Twin is
 // predicted reality." This module is the "predicted" part for resource trends
 // and workflow failure likelihood.
+//
+// DEFERRED (blueprint §3 #6 / improvement plan Phase 2): a small GRU sequence
+// model would beat OLS on non-stationary patterns (oscillating loads, periodic
+// spikes). Blueprint flags this as a *minor* gap because the current OLS
+// fit is good for the dominant use case — 5–15 min horizons on slowly-moving
+// system metrics. The seam to add it later is `predictMetrics()` below: branch
+// on `process.env.TWIN_USE_GRU === "1"` to a `gruForecast()` path, keep the
+// OLS path as fallback. Training infrastructure (BPTT + Adam) would be a
+// separate `twin/gru.ts` module. Skipped this session to invest in higher-
+// leverage gaps (Phase 3 perception streaming, Phase 4 renderer 20k unlock).
 
 import type { TwinSnapshot, TwinPrediction } from "../../../shared/twin.js";
+import { gruForecast } from "./gru.js";
 
 export interface LinearFit {
   slope: number;
@@ -64,7 +75,43 @@ function forecast(
   }
   if (points.length < 3) return null;
   const fit = linearTrend(points);
-  const predicted = fit.slope * horizonMin + fit.intercept;
+  let predicted = fit.slope * horizonMin + fit.intercept;
+  let reasonSuffix = "";
+
+  // Optional GRU path (seam documented in this file's header). Gated behind
+  // TWIN_USE_GRU=1 and ≥12 usable points; OLS stays the default and the
+  // fallback. The GRU beats OLS on oscillating/periodic series (OLS fits a flat
+  // line through a sine wave). Never throws: any error or non-finite result
+  // falls back to the OLS `predicted` already computed above.
+  if (process.env.TWIN_USE_GRU === "1" && points.length >= 12) {
+    try {
+      // `points` is newest-first (x ≤ 0). Feed the GRU oldest→newest.
+      const ys = points.map((p) => p.y).reverse();
+      // x is minutes; the GRU works in discrete steps. Use the median sample
+      // interval to convert the horizon into a step count (1 step for the
+      // 1-min-spaced synthetic series).
+      const intervals: number[] = [];
+      for (let i = 1; i < points.length; i++) {
+        intervals.push(Math.abs(points[i - 1].x - points[i].x));
+      }
+      intervals.sort((a, b) => a - b);
+      const medianInterval = intervals.length
+        ? intervals[Math.floor(intervals.length / 2)]
+        : 1;
+      const stepsAhead = Math.max(
+        1,
+        Math.round(horizonMin / (medianInterval > 0 ? medianInterval : 1)),
+      );
+      const gru = gruForecast(ys, stepsAhead, { seed: 1337 });
+      if (Number.isFinite(gru)) {
+        predicted = gru;
+        reasonSuffix = " [gru]";
+      }
+    } catch {
+      // Keep the OLS `predicted`; GRU is best-effort only.
+    }
+  }
+
   // Confidence: trend strength (R²) damped by sample size. A flat-but-clean
   // series is still a confident "no change" forecast.
   const sizeFactor = Math.min(1, points.length / 10);
@@ -78,7 +125,7 @@ function forecast(
     horizonMin,
     predicted: Math.round(predicted * 100) / 100,
     confidence: Math.round(confidence * 100) / 100,
-    reason: `${dir} trend over ${points.length} snapshots (R²=${fit.r2.toFixed(2)})`,
+    reason: `${dir} trend over ${points.length} snapshots (R²=${fit.r2.toFixed(2)})${reasonSuffix}`,
   };
 }
 

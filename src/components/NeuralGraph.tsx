@@ -15,6 +15,19 @@ const INVISIBLE_SCALE = new THREE.Vector3(0, 0, 0);
 const IDENTITY_QUATERNION = new THREE.Quaternion();
 const FLOATS_PER_PATHWAY = PATHWAY_SEGMENTS * 2 * 3; // segments × (start + end) × xyz
 
+// Phase 4 (improvement plan §1B): when colorMode is "shader" the neuron mesh's
+// material is swapped to BrainVisualEffects's ShaderMaterial which reads its
+// own per-instance attributes (membraneNorm/neuronType/burstStatus/memoryTrace)
+// for color, and a new `aScale` per-instance float for visibility/LOD scaling.
+// That lets us SKIP the two heaviest per-frame writes — `updateNeuronColors`
+// (N×3 color floats) and `updateNeuronMatricesLOD` (N×16 matrix floats) — and
+// only touch the N-length `aScale` array, which is the 20k-neuron unlock.
+export type NeuralGraphColorMode = "legacy" | "shader";
+
+export interface NeuralGraphRendererOptions {
+  colorMode?: NeuralGraphColorMode;
+}
+
 export class NeuralGraphRenderer {
   readonly group = new THREE.Group();
   readonly regionMeshes: THREE.Mesh[] = [];
@@ -22,6 +35,7 @@ export class NeuralGraphRenderer {
   // Public for BrainVisualEffects material swap
   readonly neuronMesh: THREE.InstancedMesh;
   readonly pathwayLines: THREE.LineSegments;
+  readonly colorMode: NeuralGraphColorMode;
 
   private readonly graph: NeuralGraph;
   private readonly pulseMesh: THREE.InstancedMesh;
@@ -30,15 +44,31 @@ export class NeuralGraphRenderer {
   private readonly signalRegionColors: THREE.Color[];
   private readonly matrix = new THREE.Matrix4();
   private readonly color = new THREE.Color();
+  // aScale: per-instance multiplier in shader mode (visibility * LOD). Length N,
+  // initialised to 1.0; written when visibility toggles or LOD recomputes.
+  private aScaleArr: Float32Array | null = null;
+  private aScaleAttr: THREE.InstancedBufferAttribute | null = null;
+  // Reused constants/scratch for the per-frame update loops — hoisted out so the
+  // hot paths (region/neuron color + LOD) don't allocate a Color/Vector3 per
+  // element per frame (GC churn at 60 Hz with thousands of neurons).
+  private readonly white = new THREE.Color("#ffffff");
+  private readonly black = new THREE.Color("#000000");
+  private readonly lodScratch = new THREE.Vector3();
   private readonly pulseScale = new THREE.Vector3();
+  private readonly neuronPosition = new THREE.Vector3();
   private readonly regionMaterials = new Map<BrainRegionId, THREE.MeshBasicMaterial>();
   private readonly pulseSamplePosition = new THREE.Vector3();
   private readonly pulseScratch: [number, number, number] = [0, 0, 0];
   private performanceManager: PerformanceManager | null = null;
 
-  constructor(graph: NeuralGraph, performanceManager: PerformanceManager | null = null) {
+  constructor(
+    graph: NeuralGraph,
+    performanceManager: PerformanceManager | null = null,
+    opts: NeuralGraphRendererOptions = {},
+  ) {
     this.graph = graph;
     this.performanceManager = performanceManager;
+    this.colorMode = opts.colorMode ?? "legacy";
     this.group.name = "NeuralGraph";
     this.baseRegionColors = graph.regionOrder.map((regionId) => new THREE.Color(REGION_BY_ID[regionId].color));
     this.signalRegionColors = this.baseRegionColors.map((color) => color.clone().lerp(new THREE.Color("#ffffff"), 0.36));
@@ -58,6 +88,18 @@ export class NeuralGraphRenderer {
     for (const regionMesh of this.regionMeshes) {
       const regionId = regionMesh.userData.regionId as BrainRegionId;
       regionMesh.visible = visibility[regionId];
+    }
+
+    // Shader mode: write to aScale (single float per neuron). Matrix already
+    // encodes the base node.size from createNeuronMesh; aScale carries 0 (hide)
+    // or 1 (show) without touching the 16-float per-instance matrix.
+    if (this.colorMode === "shader" && this.aScaleArr && this.aScaleAttr) {
+      for (let index = 0; index < this.graph.nodes.length; index += 1) {
+        const node = this.graph.nodes[index];
+        this.aScaleArr[index] = visibility[node.regionId] ? 1 : 0;
+      }
+      this.aScaleAttr.needsUpdate = true;
+      return;
     }
 
     for (let index = 0; index < this.graph.nodes.length; index += 1) {
@@ -83,9 +125,18 @@ export class NeuralGraphRenderer {
       selectedRegionId,
       elapsedSeconds,
     );
-    this.updateNeuronColors(simulation.regionIntensity, simulation.regionFlashIntensity, visibility);
+    // Shader mode short-circuit: BrainVisualEffects's neuron material renders
+    // colors from its own per-instance attributes (membraneNorm/neuronType/etc),
+    // so the two heaviest legacy per-frame writes (neuron color buffer rewrites
+    // and neuron matrix LOD rewrites) are skipped. Only the much smaller aScale
+    // attribute is touched — see updateAScaleLOD.
+    if (this.colorMode === "shader") {
+      this.updateAScaleLOD(visibility);
+    } else {
+      this.updateNeuronColors(simulation.regionIntensity, simulation.regionFlashIntensity, visibility);
+      this.updateNeuronMatricesLOD(visibility);
+    }
     this.updatePathwayColors(simulation.pathwayIntensity, visibility);
-    this.updateNeuronMatricesLOD(visibility);
     this.updatePulses(simulation.pulses, visibility);
   }
 
@@ -134,6 +185,17 @@ export class NeuralGraphRenderer {
 
     mesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
     mesh.renderOrder = 4;
+
+    // Shader mode: attach a per-instance aScale float. BrainVisualEffects's
+    // NEURON_VERT multiplies position by this so visibility/LOD becomes one
+    // Float32Array write per change instead of N matrix writes per frame.
+    if (this.colorMode === "shader") {
+      const n = this.graph.nodes.length;
+      this.aScaleArr = new Float32Array(n);
+      this.aScaleArr.fill(1);
+      this.aScaleAttr = new THREE.InstancedBufferAttribute(this.aScaleArr, 1).setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute("aScale", this.aScaleAttr);
+    }
     return mesh;
   }
 
@@ -248,7 +310,7 @@ export class NeuralGraphRenderer {
     const scaleValue = node.size * visibilityScale * lodScale;
     const scale = visibilityScale > 0 ? this.pulseScale.set(scaleValue, scaleValue, scaleValue) : INVISIBLE_SCALE;
     this.matrix.compose(
-      new THREE.Vector3(position[0], position[1], position[2]),
+      this.neuronPosition.set(position[0], position[1], position[2]),
       IDENTITY_QUATERNION,
       scale,
     );
@@ -281,7 +343,7 @@ export class NeuralGraphRenderer {
 
       regionMesh.visible = visibility[regionId];
       material.opacity = selected ? 0.28 : 0.08 + intensity * 0.17 + flash * 0.12;
-      material.color.set(region.color).lerp(new THREE.Color("#ffffff"), Math.min(0.6, intensity * 0.45));
+      material.color.set(region.color).lerp(this.white, Math.min(0.6, intensity * 0.45));
 
       const pulse = selected ? Math.sin(elapsedSeconds * 4) * 0.025 : 0;
       const flashScale = 1 + flash * 0.08;
@@ -301,7 +363,7 @@ export class NeuralGraphRenderer {
     for (let index = 0; index < this.graph.nodes.length; index += 1) {
       const node = this.graph.nodes[index];
       if (!visibility[node.regionId]) {
-        this.neuronMesh.setColorAt(index, new THREE.Color("#000000"));
+        this.neuronMesh.setColorAt(index, this.black);
         continue;
       }
 
@@ -318,6 +380,39 @@ export class NeuralGraphRenderer {
   }
 
   /**
+   * Shader-mode LOD: write per-instance aScale (single float per neuron) for
+   * visibility × LOD. Cheap — N float writes vs the legacy path's N×16 matrix
+   * writes. NEURON_VERT in BrainVisualEffects multiplies position by aScale so
+   * the instanceMatrix (which encodes node.size) is left untouched per frame.
+   */
+  updateAScaleLOD(visibility: RegionVisibility): void {
+    if (!this.aScaleArr || !this.aScaleAttr) return;
+    const nodes = this.graph.nodes;
+    const pm = this.performanceManager;
+    if (pm) {
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        if (!visibility[node.regionId]) {
+          this.aScaleArr[index] = 0;
+          continue;
+        }
+        const lodScale = pm.getNeuronLodScale(
+          pm.getNeuronLodLevel(
+            this.lodScratch.set(node.position[0], node.position[1], node.position[2]),
+          ),
+        );
+        this.aScaleArr[index] = lodScale;
+      }
+    } else {
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        this.aScaleArr[index] = visibility[node.regionId] ? 1 : 0;
+      }
+    }
+    this.aScaleAttr.needsUpdate = true;
+  }
+
+  /**
    * Update neuron instance matrices for LOD scaling based on distance from camera.
    * Called every frame if performanceManager is available.
    * @param visibility Current region visibility to combine with LOD
@@ -330,7 +425,7 @@ export class NeuralGraphRenderer {
       const visible = visibility[node.regionId];
       const lodScale = this.performanceManager.getNeuronLodScale(
         this.performanceManager.getNeuronLodLevel(
-          new THREE.Vector3(node.position[0], node.position[1], node.position[2])
+          this.lodScratch.set(node.position[0], node.position[1], node.position[2])
         )
       );
       this.writeNeuronMatrix(index, visible ? 1 : 0, lodScale);

@@ -2,15 +2,11 @@ import { getMemoryById } from "./memoryLifecycle.js";
 import { strengthenPathway } from "./memoryStrength.js";
 import { getHotMemories, getRelatedMemories } from "./accessPatternTracker.js";
 import { broadcast } from "../ws/brainBus.js";
+import type { ReplayEvent } from "../../../shared/replay.js";
 
-// Replay event broadcast to frontend for neural animation
-export interface ReplayEvent {
-  type: "replay";
-  memoryIds: string[];
-  region: "hippocampus" | "neocortex";
-  thetaPhase: "peak" | "trough";
-  timestamp: string;
-}
+// ReplayEvent now lives in shared/ (consumed by the browser engine too).
+// Re-exported here so existing server-side imports keep working.
+export type { ReplayEvent };
 
 // Stats tracking replay efficacy
 export interface ReplayStats {
@@ -105,7 +101,7 @@ export async function replayMemories(
     for (let cycle = 0; cycle < cycles; cycle++) {
       // Theta peak: hippocampus drives replay
       // Random replay — prioritizes recent or strong memories
-      const thetaPeakIds = memories
+      const thetaPeakIds = [...memories]
         .sort(() => Math.random() - 0.5)
         .slice(0, 5)
         .map((m) => m!.id);
@@ -122,7 +118,7 @@ export async function replayMemories(
 
       // Theta trough: neocortex replays in gamma bursts
       // Prioritize high-importance memories
-      const thetaTroughIds = memories
+      const thetaTroughIds = [...memories]
         .sort((a, b) => (b?.importance ?? 0) - (a?.importance ?? 0))
         .slice(0, 8)
         .map((m) => m!.id);
@@ -158,7 +154,11 @@ export function startSleepReplay(): NodeJS.Timeout {
   return setInterval(() => {
     try {
       const recentMemories = getHotMemories(24, 10).map((m) => m.id);
-      void replayMemories(recentMemories);
+      // Fire-and-forget, but don't drop rejections: replayMemories does async
+      // DB work, and the outer try only covers the synchronous getHotMemories.
+      void replayMemories(recentMemories).catch((err) => {
+        console.warn("[replay] sleep replay failed:", err);
+      });
     } catch (err) {
       console.warn("[replay] sleep replay failed:", err);
     }

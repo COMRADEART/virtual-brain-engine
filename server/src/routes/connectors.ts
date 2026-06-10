@@ -14,7 +14,7 @@ import {
 } from "../connectors/registry.js";
 import { discoverLocalRuntimes } from "../connectors/discovery.js";
 import { CONFIG } from "../config.js";
-import { isLocalUrl } from "../util/network.js";
+import { isLocalUrl, isAllowedRemoteHost } from "../util/network.js";
 
 export const connectorsRouter = Router();
 
@@ -39,11 +39,17 @@ connectorsRouter.post("/connectors", (req, res) => {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
-  if (CONFIG.localOnly && parsed.data.baseUrl && !isLocalUrl(parsed.data.baseUrl)) {
+  if (
+    CONFIG.localOnly &&
+    parsed.data.baseUrl &&
+    !isLocalUrl(parsed.data.baseUrl) &&
+    !isAllowedRemoteHost(parsed.data.baseUrl)
+  ) {
     res.status(400).json({
       error: "non-local URL rejected",
       detail:
-        `baseUrl ${parsed.data.baseUrl} is not loopback or RFC1918. Set LOCAL_ONLY=false to allow remote connectors.`,
+        `baseUrl ${parsed.data.baseUrl} is not loopback, RFC1918, or an allowlisted provider host. ` +
+        `Set LOCAL_ONLY=false to allow arbitrary remote connectors, or add the host to REMOTE_PROVIDER_ALLOWLIST.`,
     });
     return;
   }
@@ -105,7 +111,7 @@ connectorsRouter.post("/connectors/select", async (req, res) => {
     return;
   }
   const input = parsed.data;
-  let targetId = input.connectorId;
+  const targetId = input.connectorId;
   // Path 1: caller knows the connectorId — flip is_default on that row.
   if (targetId) {
     const existing = getConnector(targetId);
@@ -113,7 +119,12 @@ connectorsRouter.post("/connectors/select", async (req, res) => {
       res.status(404).json({ error: "Connector not found" });
       return;
     }
-    if (CONFIG.localOnly && existing.baseUrl && !isLocalUrl(existing.baseUrl)) {
+    if (
+      CONFIG.localOnly &&
+      existing.baseUrl &&
+      !isLocalUrl(existing.baseUrl) &&
+      !isAllowedRemoteHost(existing.baseUrl)
+    ) {
       res.status(400).json({ error: "non-local connector cannot be selected while LOCAL_ONLY=true" });
       return;
     }
@@ -137,7 +148,7 @@ connectorsRouter.post("/connectors/select", async (req, res) => {
     res.status(400).json({ error: "connectorId or (runtimeKind + baseUrl + kind) required" });
     return;
   }
-  if (CONFIG.localOnly && !isLocalUrl(input.baseUrl)) {
+  if (CONFIG.localOnly && !isLocalUrl(input.baseUrl) && !isAllowedRemoteHost(input.baseUrl)) {
     res.status(400).json({ error: "non-local URL rejected" });
     return;
   }

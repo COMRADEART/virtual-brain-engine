@@ -16,6 +16,35 @@ import { isLocalUrl } from "../util/network.js";
 
 const cache = new Map<string, Connector>();
 
+// ── Circuit breaker ────────────────────────────────────────────────────────
+// Tracks consecutive failures per connector. After FAILURE_THRESHOLD failures
+// the circuit opens and the connector is skipped for COOLDOWN_MS.
+const circuitState = new Map<string, { failures: number; openedAt: number }>();
+const FAILURE_THRESHOLD = 5;
+const COOLDOWN_MS = 60_000;
+
+export function circuitRecordFailure(connectorId: string): void {
+  const prev = circuitState.get(connectorId) ?? { failures: 0, openedAt: 0 };
+  prev.failures++;
+  if (prev.failures >= FAILURE_THRESHOLD) prev.openedAt = Date.now();
+  circuitState.set(connectorId, prev);
+}
+
+export function circuitRecordSuccess(connectorId: string): void {
+  circuitState.delete(connectorId);
+}
+
+export function circuitIsOpen(connectorId: string): boolean {
+  const s = circuitState.get(connectorId);
+  if (!s || s.failures < FAILURE_THRESHOLD) return false;
+  if (Date.now() - s.openedAt > COOLDOWN_MS) {
+    // Cooldown expired — allow a probe attempt.
+    circuitState.delete(connectorId);
+    return false;
+  }
+  return true;
+}
+
 function instantiate(descriptor: ConnectorDescriptor): Connector {
   switch (descriptor.kind) {
     case "ollama":
@@ -91,10 +120,103 @@ export function ensureDefaultConnector(): ConnectorDescriptor {
   return descriptor;
 }
 
+// Free-tier remote providers. Seeded only when the matching API key env var is
+// present, and always *disabled + non-default* so local Ollama stays the working
+// default and the boot/60s auto-probe never reaches out to them (no quota burn,
+// no locality-badge flip). The user opts in explicitly via the picker. Their
+// hosts are the only non-local URLs allowed past the LOCAL_ONLY gate
+// (see isAllowedRemoteHost). Chat-only — no embeddingModel — so retrieval keeps
+// using the local 768-dim Ollama embedder and the vector index stays intact.
+const REMOTE_PROVIDERS: Array<{
+  id: string;
+  name: string;
+  baseUrl: string;
+  hasKey: () => boolean;
+  model: () => string;
+}> = [
+  {
+    id: "nvidia",
+    name: "NVIDIA NIM (remote)",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    // Seed when EITHER the singular key or the plural rotation pool is set.
+    hasKey: () =>
+      (process.env.NVIDIA_API_KEY ?? "").length > 0 ||
+      (process.env.NVIDIA_API_KEYS ?? "").length > 0,
+    model: () => CONFIG.nvidiaChatModel,
+  },
+  {
+    id: "google-gemini",
+    name: "Google Gemini (remote)",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    hasKey: () =>
+      (process.env.GEMINI_API_KEY ?? "").length > 0 ||
+      (process.env.GOOGLE_AI_API_KEY ?? "").length > 0 ||
+      (process.env.GEMINI_API_KEYS ?? "").length > 0 ||
+      (process.env.GOOGLE_AI_API_KEYS ?? "").length > 0,
+    model: () => CONFIG.geminiChatModel,
+  },
+];
+
+// Idempotent. For each provider whose key is configured, ensure a connector row
+// exists. Preserves a user's prior enabled/default/model choice on re-run; on
+// first seed it's disabled + non-default. When no key is set we skip seeding
+// entirely (and leave any pre-existing row alone rather than deleting it, so a
+// transiently-missing key never drops a chosen default).
+export function ensureRemoteProviderConnectors(): void {
+  for (const provider of REMOTE_PROVIDERS) {
+    if (!provider.hasKey()) {
+      continue;
+    }
+    const existing = getConnector(provider.id);
+    upsertConnector({
+      id: provider.id,
+      name: existing?.name ?? provider.name,
+      kind: "openai-compatible",
+      baseUrl: provider.baseUrl,
+      model: existing?.model ?? provider.model(),
+      embeddingModel: undefined,
+      enabled: existing?.enabled ?? false,
+      isDefault: existing?.isDefault ?? false,
+    });
+    cache.delete(provider.id);
+  }
+}
+
+// The brain's OWN model (Learning Lab — Phase D). After `ollama create` imports
+// the merged model, seed it as a local Ollama connector — ALWAYS *disabled +
+// non-default* on first seed, so a small-corpus voice adaptation never silently
+// becomes the model /api/ask uses. The user opts in via the picker. Idempotent:
+// re-running preserves a prior enabled/default choice and just refreshes the
+// model name. No embeddingModel → retrieval keeps using the local 768-dim
+// Ollama embedder (the OllamaConnector falls back to CONFIG.ollamaEmbeddingModel),
+// so the vector index stays intact.
+export function ensureOwnModelConnector(modelName: string): ConnectorDescriptor {
+  const id = "own-model";
+  const existing = getConnector(id);
+  const descriptor = upsertConnector({
+    id,
+    name: existing?.name ?? "Brain's own model (local)",
+    kind: "ollama",
+    baseUrl: CONFIG.ollamaBaseUrl,
+    model: modelName,
+    embeddingModel: undefined,
+    enabled: existing?.enabled ?? false,
+    isDefault: existing?.isDefault ?? false,
+  });
+  cache.delete(id);
+  return descriptor;
+}
+
 export async function probeAllConnectors(): Promise<void> {
   const instances = listConnectorInstances();
   await Promise.all(
     instances.map(async (instance) => {
+      // Never auto-probe non-local connectors: it would egress to remote
+      // providers on every boot + 60s tick and burn free-tier quota. The user
+      // tests them explicitly via POST /connectors/:id/test instead.
+      if (!instance.descriptor.isLocal) {
+        return;
+      }
       const result = await instance.test();
       updateConnectorState(
         instance.descriptor.id,
@@ -109,6 +231,39 @@ export async function probeAllConnectors(): Promise<void> {
 // so reconciliation is idempotent — re-probing only updates the existing row.
 function idForRuntime(runtime: DiscoveredRuntime): string {
   return `auto-${runtime.kind}`;
+}
+
+// Ollama lists embedding models (e.g. nomic-embed-text) alongside chat models,
+// and `/api/tags` order is arbitrary — so `models[0]` is unsafe as the chat model
+// (it may be an embed model or a multi-GB model that never finishes cold-loading).
+// Pick a real chat model: honor a still-valid prior/explicit choice, then the
+// configured default if it's actually installed, then a preferred small chat
+// family, then any non-embed model. This is the "auto-detect the model" half of
+// auto-detecting the runtime, and it auto-corrects a stale/invalid persisted model.
+const CHAT_MODEL_PREFERENCE = [
+  "llama3.2", "llama3.1", "llama3", "qwen2.5", "qwen3", "mistral", "phi", "gemma",
+];
+
+const isEmbedModel = (m: string): boolean => /embed/i.test(m);
+
+function pickChatModel(models: string[], existing: string | undefined): string | undefined {
+  if (models.length === 0) {
+    return existing;
+  }
+  if (existing && models.includes(existing) && !isEmbedModel(existing)) {
+    return existing;
+  }
+  if (models.includes(CONFIG.ollamaChatModel) && !isEmbedModel(CONFIG.ollamaChatModel)) {
+    return CONFIG.ollamaChatModel;
+  }
+  const chat = models.filter((m) => !isEmbedModel(m));
+  for (const pref of CHAT_MODEL_PREFERENCE) {
+    const hit = chat.find((m) => m.toLowerCase().startsWith(pref));
+    if (hit) {
+      return hit;
+    }
+  }
+  return chat[0] ?? models[0];
 }
 
 function labelForRuntime(runtime: DiscoveredRuntime): string {
@@ -137,7 +292,7 @@ export async function reconcileDiscovered(): Promise<DiscoveredRuntime[]> {
     }
     const id = idForRuntime(runtime);
     const existing = getConnector(id);
-    const firstModel = runtime.models[0];
+    const chatModel = pickChatModel(runtime.models, existing?.model);
     // Ollama: include the embedding model from CONFIG if it's in the list.
     const embeddingModel =
       runtime.kind === "ollama"
@@ -148,7 +303,7 @@ export async function reconcileDiscovered(): Promise<DiscoveredRuntime[]> {
       name: labelForRuntime(runtime),
       kind: runtime.connectorKind,
       baseUrl: runtime.baseUrl,
-      model: existing?.model ?? firstModel,
+      model: chatModel,
       embeddingModel: existing?.embeddingModel ?? embeddingModel,
       enabled: existing?.enabled ?? true,
       isDefault: existing?.isDefault ?? false,

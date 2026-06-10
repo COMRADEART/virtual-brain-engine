@@ -108,6 +108,77 @@ CREATE TABLE IF NOT EXISTS ranker_state (
   updated_at    TEXT NOT NULL
 );
 
+-- Explicit answer feedback (Learning Lab — Phase A). The online ranker
+-- otherwise learns only from IMPLICIT signal (which retrieved memories the
+-- answer cited). This captures the user's EXPLICIT verdict on an answer so we
+-- can reinforce (+1) or penalise (-1) the memories the answer relied on.
+CREATE TABLE IF NOT EXISTS answer_feedback (
+  id              TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL,
+  conversation_id TEXT,
+  rating          INTEGER NOT NULL,          -- +1 helpful / -1 not helpful
+  comment         TEXT,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_answer_feedback_run ON answer_feedback(run_id);
+CREATE INDEX IF NOT EXISTS idx_answer_feedback_time ON answer_feedback(created_at DESC);
+
+-- Per-run training snapshot: the exact ranker feature vectors + which memories
+-- the answer cited. Persisted at the learning step so a later /api/feedback
+-- call can retrain the ranker against the user's explicit label using the SAME
+-- features that produced the ranking. Pruned to the most recent rows.
+CREATE TABLE IF NOT EXISTS rank_training_log (
+  run_id     TEXT PRIMARY KEY,
+  features   TEXT NOT NULL,                  -- JSON { memoryId: number[] }
+  cited      TEXT NOT NULL DEFAULT '[]',     -- JSON string[]
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rank_training_log_time ON rank_training_log(created_at DESC);
+
+-- SFT pair capture (Learning Lab — the data flywheel). The own-model path is
+-- continued-pretraining-only because real instruction pairs are scarce; this
+-- table grows them: every 👍-rated answer is persisted as a (prompt, answer)
+-- instruction pair so a future LoRA pass can do real SFT instead of just voice
+-- adaptation. One pair per run (re-rating doesn't duplicate).
+CREATE TABLE IF NOT EXISTS sft_pairs (
+  id              TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL UNIQUE,
+  conversation_id TEXT,
+  prompt          TEXT NOT NULL,
+  answer          TEXT NOT NULL,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sft_pairs_time ON sft_pairs(created_at DESC);
+
+-- Dedup-merge tombstones. A merge used to be an irreversible DELETE — and at
+-- the default 0.92 threshold, distinct-but-related memories score as
+-- near-duplicates, so a bad merge silently destroyed real knowledge. Now the
+-- loser row (and its relations) is serialized here first; restore re-inserts
+-- it (minus the embedding, which is re-derivable). One tombstone per deleted
+-- memory id.
+CREATE TABLE IF NOT EXISTS memory_tombstones (
+  id             TEXT PRIMARY KEY,            -- the deleted memory's id
+  kept_id        TEXT NOT NULL,               -- which memory it was merged into
+  reason         TEXT NOT NULL DEFAULT 'dedup-merge',
+  similarity     REAL,
+  point_json     TEXT NOT NULL,               -- full memory_points row, JSON
+  relations_json TEXT NOT NULL DEFAULT '[]',  -- its memory_relations rows, JSON
+  created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_tombstones_time ON memory_tombstones(created_at DESC);
+
+-- Ranker training loss history (Learning Lab — Phase B). One row per online
+-- update; the log-loss of the just-trained batch BEFORE the gradient step, so
+-- the curve shows the model getting better over time. Capped to recent rows.
+CREATE TABLE IF NOT EXISTS ranker_loss_history (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  trained_count INTEGER NOT NULL,
+  loss          REAL NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'citation',  -- 'citation' | 'feedback'
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ranker_loss_time ON ranker_loss_history(created_at DESC);
+
 -- Spreading activation + co-access patterns (accessPatternTracker)
 CREATE TABLE IF NOT EXISTS memory_access_patterns (
   id               TEXT PRIMARY KEY,
@@ -283,10 +354,19 @@ CREATE TABLE IF NOT EXISTS cognitive_abstractions (
   concept     TEXT NOT NULL UNIQUE,
   evidence    TEXT NOT NULL,
   confidence  REAL NOT NULL,
+  -- Phase 3 hierarchy level (0..5, sensory -> philosophical). See
+  -- server/src/core/abstractionLevels.ts for the ladder. Existing DBs get this
+  -- backfilled via migration 0002.
+  level       INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cognitive_abstractions_confidence ON cognitive_abstractions(confidence DESC);
+-- NOTE: the index on `level` is created by migration 0002, NOT here. schema.sql
+-- is re-exec'd on every boot *before* migrations run (see openDb in sqlite.ts).
+-- On a DB that predates the `level` column, a bare `... (level)` index here
+-- throws "no such column: level" at exec(schema) and the server never boots.
+-- The migration creates the index right after it guarantees the column exists.
 
 -- COGNITIVE EVOLUTION ENGINE. Components are versioned cognitive structures:
 -- workflows, skills, reasoning strategies, memory models, planners, routing
@@ -568,6 +648,139 @@ CREATE TABLE IF NOT EXISTS visual_workflow_states (
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_states_name      ON visual_workflow_states(name);
 CREATE INDEX IF NOT EXISTS idx_workflow_states_frequency ON visual_workflow_states(frequency DESC);
+
+-- Causal world model (blueprint §3 #7) — explicit cause→effect map keyed on
+-- action classes (twin/simulationEngine.classifyAction) and outcome labels.
+-- Populated from imagination.reflect() observations; consumed by
+-- imagination.imagine() to bias risk priors with empirical history.
+--
+-- Semantics: each row is a (cause, effect) pair. `observations` = number of
+-- times we've seen the cause class. `occurrences` = number of those times
+-- the effect followed. `strength` = Laplace-smoothed P(effect | cause).
+-- `confidence` = exponential saturation on observation count.
+CREATE TABLE IF NOT EXISTS causal_links (
+  id                TEXT PRIMARY KEY,
+  cause_class       TEXT NOT NULL,
+  effect_class      TEXT NOT NULL,
+  observations      INTEGER NOT NULL DEFAULT 0,
+  occurrences       INTEGER NOT NULL DEFAULT 0,
+  strength          REAL    NOT NULL DEFAULT 0,
+  confidence        REAL    NOT NULL DEFAULT 0,
+  last_observed_at  TEXT    NOT NULL,
+  source            TEXT    NOT NULL DEFAULT 'imagination-reflection',
+  UNIQUE(cause_class, effect_class)
+);
+CREATE INDEX IF NOT EXISTS idx_causal_links_cause  ON causal_links(cause_class);
+CREATE INDEX IF NOT EXISTS idx_causal_links_effect ON causal_links(effect_class);
+
+-- Permissioned command/action layer (Phase 3). Audit trail of every execute
+-- attempt that passed the allowlist + arg-validation + confirm gates. `confirmed`
+-- = a valid plan-bound token was presented (NOT "a human approved"). Distinct
+-- from agent_audit, which is the autonomous-agent allow-all trail.
+CREATE TABLE IF NOT EXISTS action_log (
+  id             TEXT PRIMARY KEY,
+  action_id      TEXT NOT NULL,
+  args           TEXT NOT NULL DEFAULT '{}',
+  risk           TEXT NOT NULL,
+  confirmed      INTEGER NOT NULL DEFAULT 0,
+  -- How the action was authorised: 'safe' | 'confirm-token' | 'session-scope' |
+  -- 'none'. Distinct from `confirmed` (strictly "a valid confirm token was
+  -- presented"): the agent loop's granted-session-scope path runs a confirm-tier
+  -- action with confirmed=0 but authorized_via='session-scope', so the trail
+  -- never forges a per-plan human approval. (migration 0008 backfills legacy DBs.)
+  authorized_via TEXT NOT NULL DEFAULT 'none',
+  ok             INTEGER NOT NULL DEFAULT 0,
+  summary        TEXT NOT NULL DEFAULT '',
+  created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_log_time   ON action_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_action_log_action ON action_log(action_id, created_at DESC);
+
+-- Dynamic action/skill registry. Stores skill definitions registered at runtime
+-- (e.g., from GitHub code). Each skill has a Zod schema and optional handler code.
+CREATE TABLE IF NOT EXISTS dynamic_actions (
+  id              TEXT PRIMARY KEY,
+  definition_json TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'deleted'
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dynamic_actions_status ON dynamic_actions(status);
+
+-- Computer-wide memory ingestion (Phase 2). Per-source consent is OPT-IN: a
+-- source with no row here is treated as disabled, so nothing is captured until
+-- the user explicitly turns it on.
+CREATE TABLE IF NOT EXISTS ingest_consent (
+  source_id   TEXT PRIMARY KEY,
+  enabled     INTEGER NOT NULL DEFAULT 0,
+  updated_at  TEXT NOT NULL
+);
+
+-- Per-run audit of ingestion governance (received/ingested/deduped/redacted/
+-- skipped). `redacted` is backstop telemetry, NOT a safety proof.
+CREATE TABLE IF NOT EXISTS ingest_log (
+  id          TEXT PRIMARY KEY,
+  source_id   TEXT NOT NULL,
+  received    INTEGER NOT NULL DEFAULT 0,
+  ingested    INTEGER NOT NULL DEFAULT 0,
+  deduped     INTEGER NOT NULL DEFAULT 0,
+  redacted    INTEGER NOT NULL DEFAULT 0,
+  skipped     INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_log_time   ON ingest_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ingest_log_source ON ingest_log(source_id, created_at DESC);
+
+-- Phase 4 — usefulness verdicts on the new surfaces (memory/action). A memory
+-- verdict nudges that memory's importance; both feed the Learning Lab usage
+-- summary. Separate from answer_feedback (which is keyed to a pipeline run).
+CREATE TABLE IF NOT EXISTS usage_feedback (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,        -- 'memory' | 'action'
+  target_id   TEXT NOT NULL,
+  rating      INTEGER NOT NULL,     -- +1 useful / -1 not
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_feedback_kind ON usage_feedback(kind, created_at DESC);
+
+-- Model usage telemetry: one row per /api/ask response. Tracks which model
+-- served, which provider (local/remote), latency, whether remote fallback
+-- was triggered, and the key index used (for rotation visibility).
+CREATE TABLE IF NOT EXISTS usage_log (
+  id            TEXT PRIMARY KEY,
+  run_id        TEXT NOT NULL,
+  connector_id  TEXT NOT NULL,
+  provider      TEXT NOT NULL,        -- 'local' | 'remote'
+  model         TEXT NOT NULL,
+  key_index     INTEGER,
+  fallback      INTEGER NOT NULL DEFAULT 0,
+  latency_ms    INTEGER NOT NULL,
+  step_timings  TEXT,                 -- JSON: {memory_ms,reasoning_ms,error_ms,response_ms}
+  error         TEXT,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_log_time     ON usage_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_log_model    ON usage_log(model, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_log_fallback ON usage_log(fallback, created_at DESC);
+
+-- Routing log: one row per pipeline run. Records which MoE profile was chosen,
+-- which model served, the query difficulty, and the quality signals (citations,
+-- confidence) so we can learn which profile-model pairs perform best.
+CREATE TABLE IF NOT EXISTS routing_log (
+  id              TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL,
+  profile         TEXT NOT NULL,
+  model           TEXT,
+  experts         TEXT NOT NULL,       -- comma-separated expert cortex IDs
+  difficulty      REAL NOT NULL,
+  depth           TEXT NOT NULL,       -- 'shallow' | 'full'
+  cited_count     INTEGER NOT NULL DEFAULT 0,
+  retrieved_count INTEGER NOT NULL DEFAULT 0,
+  confidence      REAL NOT NULL DEFAULT 0,
+  latency_ms      INTEGER NOT NULL,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routing_log_profile ON routing_log(profile, created_at DESC);
 
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -11,6 +11,20 @@
 export const FEATURE_VERSION = 1;
 export const FEATURE_DIM = 8; // index 0 is the bias term
 
+// Human-readable names for each weight, in feature-vector order. Length MUST
+// equal FEATURE_DIM. Surfaced by the Learning Lab panel so the learned weights
+// are legible ("vec similarity = +2.3" rather than "w[1] = +2.3").
+export const FEATURE_LABELS: readonly string[] = [
+  "bias",
+  "vec similarity",
+  "recency",
+  "importance",
+  "is conversation",
+  "is file chunk",
+  "has project",
+  "content length",
+];
+
 export interface RankFeatureInput {
   vecScore: number; // 0..1 vector similarity (1/(1+distance))
   ageDays: number; // >= 0, days since updatedAt
