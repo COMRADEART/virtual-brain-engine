@@ -8,6 +8,7 @@ import { DigitalTwinPanel } from "./components/DigitalTwinPanel";
 import { PerceptionPanel } from "./components/PerceptionPanel";
 import { LearningLabPanel } from "./components/LearningLabPanel";
 import { BrainStatePanel } from "./components/BrainStatePanel";
+import { MemoryInspectorPanel } from "./components/MemoryInspectorPanel";
 import { SelfConsciousnessPanel } from "./components/SelfConsciousnessPanel";
 import { IdleThoughtTicker } from "./components/IdleThoughtTicker";
 import { RegionControls } from "./components/RegionControls";
@@ -361,6 +362,7 @@ useEffect(() => {
           <PerceptionPanel />
           <LearningLabPanel />
           <BrainStatePanel />
+          <MemoryInspectorPanel />
           <SelfConsciousnessPanel />
           <IdleThoughtTicker />
           <UnifiedPanel

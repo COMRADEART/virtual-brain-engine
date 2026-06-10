@@ -359,6 +359,30 @@ export const apiClient = {
     return json(`/api/memory/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 
+  // Dedup-merge audit trail + undo (memory transparency).
+  memoryTombstones(limit = 100): Promise<{
+    tombstones: Array<{
+      id: string;
+      keptId: string;
+      reason: string;
+      similarity: number | null;
+      title: string | null;
+      contentPreview: string;
+      createdAt: string;
+    }>;
+  }> {
+    return json(`/api/memory/tombstones?limit=${limit}`);
+  },
+
+  restoreTombstone(id: string): Promise<{ ok: boolean }> {
+    return json(`/api/memory/tombstones/${encodeURIComponent(id)}/restore`, { method: "POST" });
+  },
+
+  /** Direct download URL for the plain-text memory corpus export (GET, no auth header needed). */
+  memoryExportUrl(): string {
+    return `${getBaseUrl()}/api/memory/export`;
+  },
+
   triggerScan(): Promise<{ ok: boolean }> {
     return json(`/api/scan/run`, { method: "POST" });
   },

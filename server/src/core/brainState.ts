@@ -40,8 +40,21 @@ import {
 } from "../../../shared/brainState.js";
 
 const STATE_KEY = "brain-state-v1";
+// Per-conversation states live beside the global one: brain-state-v1:<convId>.
+// The singleton used to be last-writer-wins across conversations — two
+// concurrent asks corrupted each other's working memory and feed-forward
+// broaden signal. Keying by conversation isolates them; the bare key remains
+// the global/legacy state (agent runs without a conversation, old rows).
+const STATE_KEY_PREFIX = `${STATE_KEY}:`;
+// Idle per-conversation states are pruned after this long (the global state
+// is never pruned).
+export const CONVERSATION_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SNAPSHOT_THROTTLE_MS = 1500;
 const MAX_ATTENTION = 8;
+
+export function stateKeyFor(conversationId?: string): string {
+  return conversationId ? `${STATE_KEY_PREFIX}${conversationId}` : STATE_KEY;
+}
 
 function clamp01(v: number): number {
   if (!Number.isFinite(v)) return 0;
@@ -149,9 +162,14 @@ function uncertaintyOf(state: PersistedBrainState): number {
 
 class CognitiveLoop {
   // Within-cycle guard so shouldReReason() flags at most once per cycle even if
-  // recordReasoning is (defensively) called twice for one run.
-  private flaggedLowConf = false;
+  // recordReasoning is (defensively) called twice for one run. Keyed by
+  // conversation so concurrent asks can't consume each other's flag.
+  private flaggedLowConf = new Set<string>();
   private lastSnapshotAt = 0;
+  // The key written most recently IN THIS PROCESS. `updated_at` ties at
+  // millisecond resolution, so the DB ordering alone can't break same-ms
+  // writes; this does. Falls back to the DB ordering on a fresh boot.
+  private lastActiveKey: string | null = null;
 
   // `clock` is injectable so the selfcheck can drive the snapshot-emit throttle
   // deterministically; production uses the wall clock.
@@ -160,11 +178,11 @@ class CognitiveLoop {
     private readonly clock: () => number = () => Date.now(),
   ) {}
 
-  private read(): PersistedBrainState {
+  private read(key: string): PersistedBrainState {
     try {
       const row = openDb()
         .prepare<[string], { value: string }>(`SELECT value FROM organism_state WHERE key = ?`)
-        .get(STATE_KEY);
+        .get(key);
       if (!row) return defaultState();
       const parsed = JSON.parse(row.value) as Partial<PersistedBrainState>;
       return { ...defaultState(), ...parsed };
@@ -174,7 +192,27 @@ class CognitiveLoop {
     }
   }
 
-  private write(state: PersistedBrainState): void {
+  /** The most recently updated state across the global + all conversation keys. */
+  private readLatest(): PersistedBrainState {
+    if (this.lastActiveKey) return this.read(this.lastActiveKey);
+    try {
+      const row = openDb()
+        .prepare<[string, string], { value: string }>(
+          `SELECT value FROM organism_state
+           WHERE key = ? OR key LIKE ?
+           ORDER BY updated_at DESC LIMIT 1`,
+        )
+        .get(STATE_KEY, `${STATE_KEY_PREFIX}%`);
+      if (!row) return defaultState();
+      const parsed = JSON.parse(row.value) as Partial<PersistedBrainState>;
+      return { ...defaultState(), ...parsed };
+    } catch (err) {
+      surfaceError("brainState.readLatest", err);
+      return defaultState();
+    }
+  }
+
+  private write(key: string, state: PersistedBrainState): void {
     try {
       const value = JSON.stringify({ ...state, updatedAt: nowIso() });
       openDb()
@@ -183,31 +221,41 @@ class CognitiveLoop {
            VALUES (?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
         )
-        .run(STATE_KEY, value, nowIso());
+        .run(key, value, nowIso());
     } catch (err) {
       surfaceError("brainState.write", err);
     }
   }
 
+  /** Mark a key as the brain's current focus (user-activity paths only — the
+   *  decay heartbeat must not hijack "most recently active"). */
+  private touch(key: string): void {
+    this.lastActiveKey = key;
+  }
+
   /** Loop entry — the brain perceives a new prompt: refresh the workspace. */
-  perceive(prompt: string): void {
-    this.flaggedLowConf = false;
+  perceive(prompt: string, conversationId?: string): void {
+    const key = stateKeyFor(conversationId);
+    this.flaggedLowConf.delete(key);
+    this.touch(key);
     try {
-      const state = this.read();
+      const state = this.read(key);
       const merged = capWorking([...extractWorkingItems(prompt), ...state.workingMemory]);
-      this.write({ ...state, workingMemory: merged });
+      this.write(key, { ...state, workingMemory: merged });
     } catch (err) {
       surfaceError("brainState.perceive", err);
     }
   }
 
   /** Record the attention map from the retrieval's saliency breakdowns. */
-  attend(focuses: ReadonlyArray<AttentionFocus>): void {
+  attend(focuses: ReadonlyArray<AttentionFocus>, conversationId?: string): void {
+    const key = stateKeyFor(conversationId);
+    this.touch(key);
     try {
-      const state = this.read();
+      const state = this.read(key);
       const top = [...focuses].sort((a, b) => b.score - a.score).slice(0, MAX_ATTENTION);
-      this.write({ ...state, attention: top });
-      this.emitSnapshot();
+      this.write(key, { ...state, attention: top });
+      this.emitSnapshot(conversationId);
     } catch (err) {
       surfaceError("brainState.attend", err);
     }
@@ -219,15 +267,20 @@ class CognitiveLoop {
    * metacognition. The unresolved query then raises priorUncertainty() so the
    * NEXT cycle attends broader, instead of re-running steps in this SSE stream.
    */
-  recordReasoning(input: { prompt: string; confidence: number; citedCount: number }): {
+  recordReasoning(
+    input: { prompt: string; confidence: number; citedCount: number },
+    conversationId?: string,
+  ): {
     lowConfidence: boolean;
   } {
-    const lowConfidence = shouldReReason(input.confidence, this.flaggedLowConf);
+    const key = stateKeyFor(conversationId);
+    this.touch(key);
+    const lowConfidence = shouldReReason(input.confidence, this.flaggedLowConf.has(key));
     try {
-      const state = this.read();
+      const state = this.read(key);
       let wm = state.workingMemory;
       if (lowConfidence) {
-        this.flaggedLowConf = true;
+        this.flaggedLowConf.add(key);
         wm = capWorking([
           {
             id: `wm-${ulid()}`,
@@ -246,14 +299,14 @@ class CognitiveLoop {
         lowConfidence,
         at: nowIso(),
       };
-      this.write({
+      this.write(key, {
         ...state,
         workingMemory: wm,
         confidence: clamp01(input.confidence),
         lastCycle: cycle,
         cycles: state.cycles + 1,
       });
-      this.emitSnapshot();
+      this.emitSnapshot(conversationId);
     } catch (err) {
       surfaceError("brainState.recordReasoning", err);
     }
@@ -267,22 +320,44 @@ class CognitiveLoop {
    * (a UI/score signal). Returns 0 (neutral) until a cycle has actually closed —
    * a cold brain must NOT assume maximal uncertainty on its first-ever query.
    */
-  priorUncertainty(): number {
+  priorUncertainty(conversationId?: string): number {
     try {
-      return uncertaintyOf(this.read());
+      return uncertaintyOf(this.read(stateKeyFor(conversationId)));
     } catch (err) {
       surfaceError("brainState.priorUncertainty", err);
       return 0;
     }
   }
 
-  /** Autonomous-thought heartbeat: decay the workspace, persist, broadcast. */
+  /**
+   * Autonomous-thought heartbeat: decay EVERY workspace (global + each
+   * conversation), persist, broadcast — and prune conversation states idle
+   * past the TTL so the KV table stays bounded.
+   */
   tickDecay(dtMs: number): void {
     try {
-      const state = this.read();
-      if (state.workingMemory.length === 0) return;
-      const decayed = decayWorking(state.workingMemory, dtMs);
-      this.write({ ...state, workingMemory: decayed });
+      const db = openDb();
+      const rows = db
+        .prepare<[string, string], { key: string; updated_at: string }>(
+          `SELECT key, updated_at FROM organism_state WHERE key = ? OR key LIKE ?`,
+        )
+        .all(STATE_KEY, `${STATE_KEY_PREFIX}%`);
+      const now = this.clock();
+      for (const row of rows) {
+        if (
+          row.key !== STATE_KEY &&
+          now - Date.parse(row.updated_at) > CONVERSATION_STATE_TTL_MS
+        ) {
+          db.prepare(`DELETE FROM organism_state WHERE key = ?`).run(row.key);
+          this.flaggedLowConf.delete(row.key);
+          if (this.lastActiveKey === row.key) this.lastActiveKey = null;
+          continue;
+        }
+        const state = this.read(row.key);
+        if (state.workingMemory.length === 0) continue;
+        const decayed = decayWorking(state.workingMemory, dtMs);
+        this.write(row.key, { ...state, workingMemory: decayed });
+      }
       this.emitSnapshot();
     } catch (err) {
       surfaceError("brainState.tickDecay", err);
@@ -323,8 +398,13 @@ class CognitiveLoop {
     }
   }
 
-  snapshot(): BrainStateSnapshot {
-    const state = this.read();
+  /**
+   * With a conversationId: that conversation's exact state. Without: the most
+   * recently active state across all conversations (what the panel shows —
+   * "what the brain is focused on right now").
+   */
+  snapshot(conversationId?: string): BrainStateSnapshot {
+    const state = conversationId ? this.read(stateKeyFor(conversationId)) : this.readLatest();
     return {
       attention: state.attention,
       workingMemory: state.workingMemory,
@@ -338,12 +418,12 @@ class CognitiveLoop {
     };
   }
 
-  private emitSnapshot(): void {
+  private emitSnapshot(conversationId?: string): void {
     const now = this.clock();
     if (now - this.lastSnapshotAt < SNAPSHOT_THROTTLE_MS) return;
     this.lastSnapshotAt = now;
     try {
-      this.bus.emit({ kind: "brain-state", snapshot: this.snapshot(), at: nowIso() });
+      this.bus.emit({ kind: "brain-state", snapshot: this.snapshot(conversationId), at: nowIso() });
     } catch (err) {
       surfaceError("brainState.emitSnapshot", err);
     }

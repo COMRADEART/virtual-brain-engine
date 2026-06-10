@@ -213,6 +213,47 @@ check("learning status llm degrades to unavailable (worker down)", (st.json?.llm
 const start = await call("/api/learning/llm/start", "POST", {});
 check("POST /api/learning/llm/start -> 200 with status json", start.status === 200 && typeof start.json?.state === "string");
 
+// =============================================================================
+// (G) SFT pair flywheel — a 👍 promotes the run's (prompt, answer) into a
+//     durable instruction pair; a 👎 retracts it. Idempotent per run.
+// =============================================================================
+const { captureSftPair, retractSftPair, countSftPairs, exportSftJsonl } = await import(
+  "../src/db/repositories/sft.js"
+);
+const db = openDb();
+const nowIso = new Date().toISOString();
+db.prepare(`INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('conv-sft', 't', ?, ?)`).run(nowIso, nowIso);
+db.prepare(
+  `INSERT INTO pipeline_runs (id, conversation_id, prompt, answer, status, started_at)
+   VALUES ('run-sft', 'conv-sft', 'what is the auth flow?', 'Known memory: tokens expire hourly.', 'complete', ?)`,
+).run(nowIso);
+db.prepare(
+  `INSERT INTO pipeline_runs (id, conversation_id, prompt, answer, status, started_at)
+   VALUES ('run-noanswer', 'conv-sft', 'q', NULL, 'error', ?)`,
+).run(nowIso);
+
+check("captureSftPair captures a 👍 run", captureSftPair("run-sft") === true && countSftPairs() === 1);
+check("captureSftPair is idempotent per run", captureSftPair("run-sft") === false && countSftPairs() === 1);
+check("captureSftPair(missing run) -> false", captureSftPair("run-missing") === false);
+check("captureSftPair(answerless run) -> false", captureSftPair("run-noanswer") === false);
+const jsonl = exportSftJsonl();
+const firstLine = JSON.parse(jsonl.split("\n")[0]) as { instruction?: string; response?: string };
+check(
+  "exportSftJsonl emits trainer-ready {instruction, response}",
+  firstLine.instruction === "what is the auth flow?" && (firstLine.response ?? "").includes("tokens expire"),
+);
+check("retractSftPair removes the pair", retractSftPair("run-sft") === true && countSftPairs() === 0);
+
+// Through the routes: 👍 captures, 👎 retracts, status + export respond.
+const fbSft = await call("/api/feedback", "POST", { runId: "run-sft", rating: 1 });
+check("POST /api/feedback 👍 captures an SFT pair", fbSft.status === 200 && fbSft.json?.sftCaptured === true);
+const sftStatus = await call("/api/learning/sft/status", "GET");
+check("GET /api/learning/sft/status counts pairs", sftStatus.status === 200 && sftStatus.json?.pairs === 1);
+const fbDown = await call("/api/feedback", "POST", { runId: "run-sft", rating: -1 });
+check("POST /api/feedback 👎 retracts the SFT pair", fbDown.status === 200 && countSftPairs() === 0);
+const sftExport = await fetch(`http://127.0.0.1:${srv.port}/api/learning/sft/export`);
+check("GET /api/learning/sft/export -> 200", sftExport.status === 200);
+
 await srv.close();
 
 // =============================================================================

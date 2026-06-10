@@ -72,6 +72,7 @@ import { OpenAICompatibleConnector } from "../connectors/OpenAICompatibleConnect
 import { circuitRecordFailure, circuitRecordSuccess } from "../connectors/registry.js";
 import { getSelfConsciousness } from "../core/selfConsciousness.js";
 import { assessFaithfulness, appendFaithfulnessNote } from "./faithfulness.js";
+import { formatSnippetForPrompt } from "./untrusted.js";
 
 // Phase 1 (blueprint) — assemble the per-query SaliencyContext from the
 // organism singleton. Returns null if any of the cheap getters fails (the
@@ -317,11 +318,11 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
 
   // Step timing instrumentation
   const stepTimings: StepTimings = {};
-  let stepStart = Date.now();
+  let stepStart: number;
   // COGNITIVE LOOP — perceive: the brain takes the prompt into its persistent
   // working memory. Failure-isolated inside the singleton, so this never breaks
   // the run even if the BrainState DB is unhappy.
-  getBrainState().perceive(req.prompt);
+  getBrainState().perceive(req.prompt, cid);
   // MoE router — pick the expert cortices + a depth gate for this query. The
   // lexical route is computed up front (deterministic, no deps); it gets an
   // optional embedding-refined upgrade once the query embedding exists (memory
@@ -390,7 +391,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // (a UI/score signal). Failure-isolated → 0 (neutral) on any fault.
       let priorUncertainty = 0;
       try {
-        priorUncertainty = getBrainState().priorUncertainty();
+        priorUncertainty = getBrainState().priorUncertainty(cid);
       } catch (err) {
         surfaceError("pipeline.priorUncertainty", err);
       }
@@ -494,7 +495,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // focused on this retrieval) into the persistent BrainState. Built from
       // the FINAL reranked hits + the saliency breakdown. Failure-isolated.
       try {
-        getBrainState().attend(buildAttentionFocuses(memoryHits, saliencyCtx));
+        getBrainState().attend(buildAttentionFocuses(memoryHits, saliencyCtx), cid);
       } catch (err) {
         surfaceError("pipeline.attend", err);
       }
@@ -556,8 +557,11 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     runId,
     rankWarm,
   );
+  // Injection hardening: external-provenance memories (ingest:web / ingest:github)
+  // are fenced as untrusted quoted data so internet text can't smuggle
+  // instructions into the reasoning/error/response prompts.
   const memoryList = promptHits
-    .map((hit) => `[m:${hit.memory.id}] (${hit.memory.filePath ?? "conv"}): ${snippetFor(hit.memory)}`)
+    .map((hit) => formatSnippetForPrompt(hit.memory, snippetFor(hit.memory)))
     .join("\n\n");
   type ReasoningOut = { plan: string; openQuestions: string[] };
   let reasoning: ReasoningOut = { plan: "", openQuestions: [] };
@@ -782,7 +786,6 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
         return;
       }
     } else {
-      telemetryError = message;
       emitAll(makeEvent(cid, runId, "response", "error", { detail: message }), emit);
       failPipelineRun(runId, message);
       logModelUsage({
@@ -905,11 +908,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // "open-question" working item (DEFERRED metacognition) — it surfaces as a
   // raised priorUncertainty on the NEXT cycle rather than re-running steps in
   // this SSE stream. Single failure-isolated last-writer-wins upsert.
-  getBrainState().recordReasoning({
-    prompt: req.prompt,
-    confidence: errorReport.confidence,
-    citedCount: citedIds.size,
-  });
+  getBrainState().recordReasoning(
+    {
+      prompt: req.prompt,
+      confidence: errorReport.confidence,
+      citedCount: citedIds.size,
+    },
+    cid,
+  );
   // Feed the completed reasoning cycle to the self-model so its introspection is
   // grounded in what actually happened (confidence + what was cited) instead of
   // being blind to its own reasoning. Failure-isolated: a self-model fault must

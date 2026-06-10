@@ -135,6 +135,38 @@ CREATE TABLE IF NOT EXISTS rank_training_log (
 );
 CREATE INDEX IF NOT EXISTS idx_rank_training_log_time ON rank_training_log(created_at DESC);
 
+-- SFT pair capture (Learning Lab — the data flywheel). The own-model path is
+-- continued-pretraining-only because real instruction pairs are scarce; this
+-- table grows them: every 👍-rated answer is persisted as a (prompt, answer)
+-- instruction pair so a future LoRA pass can do real SFT instead of just voice
+-- adaptation. One pair per run (re-rating doesn't duplicate).
+CREATE TABLE IF NOT EXISTS sft_pairs (
+  id              TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL UNIQUE,
+  conversation_id TEXT,
+  prompt          TEXT NOT NULL,
+  answer          TEXT NOT NULL,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sft_pairs_time ON sft_pairs(created_at DESC);
+
+-- Dedup-merge tombstones. A merge used to be an irreversible DELETE — and at
+-- the default 0.92 threshold, distinct-but-related memories score as
+-- near-duplicates, so a bad merge silently destroyed real knowledge. Now the
+-- loser row (and its relations) is serialized here first; restore re-inserts
+-- it (minus the embedding, which is re-derivable). One tombstone per deleted
+-- memory id.
+CREATE TABLE IF NOT EXISTS memory_tombstones (
+  id             TEXT PRIMARY KEY,            -- the deleted memory's id
+  kept_id        TEXT NOT NULL,               -- which memory it was merged into
+  reason         TEXT NOT NULL DEFAULT 'dedup-merge',
+  similarity     REAL,
+  point_json     TEXT NOT NULL,               -- full memory_points row, JSON
+  relations_json TEXT NOT NULL DEFAULT '[]',  -- its memory_relations rows, JSON
+  created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_tombstones_time ON memory_tombstones(created_at DESC);
+
 -- Ranker training loss history (Learning Lab — Phase B). One row per online
 -- update; the log-loss of the just-trained batch BEFORE the gradient step, so
 -- the curve shows the model getting better over time. Capped to recent rows.

@@ -15,6 +15,7 @@ import { ensureScanRoot } from "./db/repositories/scan.js";
 import { checkEmbeddingDimMismatch } from "./db/repositories/memory.js";
 import { attachBrainBus } from "./ws/brainBus.js";
 import { scheduleDecayTick } from "./memory/consolidationEngine.js";
+import { scheduleBackups } from "./backup/index.js";
 import { startBrainCore } from "./agents/brainCore.js";
 import { healthRouter } from "./routes/health.js";
 import { memoryRouter } from "./routes/memory.js";
@@ -27,7 +28,6 @@ import { learningRouter } from "./routes/learning.js";
 import { actionsRouter } from "./routes/actions.js";
 import { skillsRouter } from "./routes/skills.js";
 import { repoRouter } from "./routes/repo.js";
-import { tasksRouter } from "./routes/tasks.js";
 import { ingestRouter } from "./routes/ingest.js";
 import { webRouter } from "./routes/web.js";
 import { githubRouter } from "./routes/github.js";
@@ -67,6 +67,10 @@ async function main(): Promise<void> {
   ensureScanRoot(CONFIG.defaultScanRoot);
   const decayHandles = scheduleDecayTick();
 
+  // Disaster-recovery floor: VACUUM INTO snapshot of brain.sqlite on boot +
+  // daily, retention-pruned. Failure-isolated inside scheduleBackups.
+  const backupInterval = scheduleBackups();
+
   // Usage log retention: clean up old rows on boot and every 24 hours.
   const { usageDeleted, routingDeleted } = cleanupUsageLog(CONFIG.usageLogRetentionDays);
   if (usageDeleted + routingDeleted > 0) {
@@ -77,10 +81,12 @@ async function main(): Promise<void> {
   }, 24 * 60 * 60 * 1000);
 
   // Memory dedup audit: run on boot + daily. AUDIT-ONLY by default — the audit
-  // scans for near-duplicate candidates and logs the count, but only DELETES
-  // (merges) them when DEDUP_AUTO_MERGE is explicitly enabled. Auto-merge is
-  // irreversible, and at the default 0.92 threshold many distinct-but-related
-  // memories score as near-duplicates, so deleting on boot is opt-in.
+  // scans for near-duplicate candidates and logs the count, but only MERGES
+  // them when DEDUP_AUTO_MERGE is explicitly enabled. Merges are tombstoned
+  // (memory_tombstones) and reversible via POST /api/memory/tombstones/:id/restore,
+  // but at the default 0.92 threshold many distinct-but-related memories score
+  // as near-duplicates — a bad merge still silently degrades retrieval until
+  // someone notices — so auto-merge on boot stays opt-in.
   const runDedup = () => {
     try {
       const result = runDedupAudit({
@@ -89,7 +95,7 @@ async function main(): Promise<void> {
       });
       if (result.duplicatesFound === 0) return;
       if (CONFIG.dedupAutoMerge) {
-        for (const p of result.pairs) mergePair(p.keep, p.delete);
+        for (const p of result.pairs) mergePair(p.keep, p.delete, p.similarity);
         console.log(`[dedup] merged ${result.duplicatesFound} duplicates from ${result.scanned} memories`);
       } else {
         console.log(
@@ -161,7 +167,6 @@ async function main(): Promise<void> {
   app.use("/api", actionsRouter);
   app.use("/api", skillsRouter);
   app.use("/api", repoRouter);
-  app.use("/api", tasksRouter);
   app.use("/api", ingestRouter);
   app.use("/api", webRouter);
   app.use("/api", githubRouter);
@@ -222,6 +227,7 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     clearInterval(reconcileInterval);
+    if (backupInterval) clearInterval(backupInterval);
     clearInterval(decayHandles.spreadingActivation);
     clearInterval(decayHandles.decayTick);
     void brain?.shutdown();

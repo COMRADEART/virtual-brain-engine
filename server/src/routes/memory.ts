@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   deleteMemoryPoint,
+  exportMemoryCorpus,
   getMemoryCount,
   getMemoryPoint,
   getRelationsFor,
@@ -14,6 +15,8 @@ import {
   getConsolidationStats,
   runConsolidationCycle,
 } from "../memory/consolidationEngine.js";
+import { listBackups, runBackup } from "../backup/index.js";
+import { listTombstones, unmergePair } from "../memory/dedupAudit.js";
 
 export const memoryRouter = Router();
 
@@ -79,6 +82,44 @@ memoryRouter.get("/memory/recent", (req, res) => {
       : undefined;
   const memories = listRecentMemories(limit, kind, offset);
   res.json({ memories, offset, limit });
+});
+
+// Portable export of everything the brain knows — the second half of the
+// disaster-recovery story (snapshots restore the DB; this gets the knowledge
+// OUT of SQLite entirely). Plain text, newest first.
+memoryRouter.get("/memory/export", (req, res) => {
+  const maxChars = Math.min(20_000_000, Math.max(1, Number(req.query.maxChars ?? 5_000_000)));
+  const corpus = exportMemoryCorpus({ maxChars });
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="brain-memory-export.txt"');
+  res.send(corpus.text);
+});
+
+// Snapshot management. These MUST stay mounted before /memory/:id or the
+// param route swallows them.
+memoryRouter.get("/memory/backups", (_req, res) => {
+  res.json({ backups: listBackups() });
+});
+
+memoryRouter.post("/memory/backup", (_req, res) => {
+  const result = runBackup();
+  res.status(result.ok ? 200 : 500).json(result);
+});
+
+// Dedup-merge audit trail + undo. Merges tombstone the loser memory; restoring
+// re-inserts it (keyword-retrievable; the embedding is re-derivable).
+memoryRouter.get("/memory/tombstones", (req, res) => {
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 100)));
+  res.json({ tombstones: listTombstones(limit) });
+});
+
+memoryRouter.post("/memory/tombstones/:id/restore", (req, res) => {
+  const restored = unmergePair(req.params.id);
+  if (!restored) {
+    res.status(404).json({ error: "no tombstone for that id (or the id is in use again)" });
+    return;
+  }
+  res.json({ ok: true });
 });
 
 memoryRouter.get("/memory/:id", (req, res) => {

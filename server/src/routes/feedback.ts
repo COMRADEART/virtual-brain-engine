@@ -21,6 +21,7 @@ import { trainFromFeedback } from "../reasoning/ranker.js";
 import { getMemoryPoint } from "../db/repositories/memory.js";
 import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
 import { applyActionFeedback, applyMemoryFeedback } from "../learning/usage.js";
+import { captureSftPair, retractSftPair } from "../db/repositories/sft.js";
 import { broadcast } from "../ws/brainBus.js";
 
 export const feedbackRouter = Router();
@@ -70,6 +71,19 @@ feedbackRouter.post("/feedback", (req, res) => {
     }
   }
 
+  // Data flywheel: a 👍 promotes this run's (prompt, answer) into a durable
+  // SFT instruction pair; a 👎 retracts it. Best-effort like every other step.
+  let sftCaptured = false;
+  try {
+    if (rating === 1) {
+      sftCaptured = captureSftPair(runId);
+    } else {
+      retractSftPair(runId);
+    }
+  } catch (err) {
+    console.warn("[feedback] sft capture failed:", err);
+  }
+
   insertFeedback({ runId, rating, comment, conversationId });
   const feedback = getFeedbackStats();
   const trainedCount = loadRankerState()?.trainedCount ?? 0;
@@ -84,7 +98,7 @@ feedbackRouter.post("/feedback", (req, res) => {
     console.warn("[feedback] broadcast failed:", err);
   }
 
-  res.json({ ok: true, trained, citedCount, feedback });
+  res.json({ ok: true, trained, citedCount, sftCaptured, feedback });
 });
 
 // Phase 4 — usefulness verdicts on the new surfaces. A memory verdict nudges

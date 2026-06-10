@@ -36,6 +36,8 @@
     "faithfulness:selfcheck": "tsx scripts/faithfulness-selfcheck.ts",
     "github:selfcheck": "tsx scripts/github-selfcheck.ts",
     "keyrotation:selfcheck": "tsx scripts/keyrotation-selfcheck.ts",
+    "backup:selfcheck": "tsx scripts/backup-selfcheck.ts",
+    "injection:selfcheck": "tsx scripts/injection-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },

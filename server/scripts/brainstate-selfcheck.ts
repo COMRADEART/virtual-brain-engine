@@ -271,6 +271,79 @@ const zeroBreak = { novelty: 0, goalRelevance: 0, emotion: 0, survival: 0, uncer
 }
 
 // -----------------------------------------------------------------------------
+// (D.7) Per-conversation isolation — BrainState is keyed by conversation, so
+//       concurrent asks can no longer corrupt each other's working memory or
+//       feed-forward signal (the old singleton was last-writer-wins).
+// -----------------------------------------------------------------------------
+
+{
+  openDb().prepare("DELETE FROM organism_state").run();
+  const cl = __createBrainStateForTests(bus, () => 5_000_000);
+
+  cl.perceive("question about apples", "convA");
+  cl.recordReasoning({ prompt: "question about apples", confidence: 0.1, citedCount: 0 }, "convA");
+  cl.perceive("question about rockets", "convB");
+  cl.recordReasoning({ prompt: "question about rockets", confidence: 0.9, citedCount: 4 }, "convB");
+
+  check(
+    "feed-forward uncertainty is per-conversation (A uncertain)",
+    Math.abs(cl.priorUncertainty("convA") - 0.9) < 1e-9,
+    `puA=${cl.priorUncertainty("convA")}`,
+  );
+  check(
+    "feed-forward uncertainty is per-conversation (B confident)",
+    Math.abs(cl.priorUncertainty("convB") - 0.1) < 1e-9,
+    `puB=${cl.priorUncertainty("convB")}`,
+  );
+  check("global state is untouched by keyed cycles", cl.priorUncertainty() === 0);
+
+  const snapA = cl.snapshot("convA");
+  const snapB = cl.snapshot("convB");
+  check("working memory does not leak across conversations",
+    snapA.workingMemory.some((w) => w.label.includes("apples")) &&
+    !snapA.workingMemory.some((w) => w.label.includes("rockets")) &&
+    snapB.workingMemory.some((w) => w.label.includes("rockets")));
+  check("cycle counts are per-conversation", snapA.cycles === 1 && snapB.cycles === 1,
+    `A=${snapA.cycles} B=${snapB.cycles}`);
+  check("A's low-confidence open-question stays in A",
+    snapA.workingMemory.some((w) => w.kind === "open-question") &&
+    !snapB.workingMemory.some((w) => w.kind === "open-question"));
+
+  // No-arg snapshot = the most recently active conversation (B wrote last).
+  const latest = cl.snapshot();
+  check("no-arg snapshot returns the most recently active state",
+    Math.abs(latest.confidence - 0.9) < 1e-9, `c=${latest.confidence}`);
+
+  // The within-cycle low-confidence flag is per-conversation too.
+  cl.recordReasoning({ prompt: "still unsure", confidence: 0.1, citedCount: 0 }, "convB");
+  check("low-confidence flag in A does not consume B's",
+    cl.snapshot("convB").workingMemory.some((w) => w.kind === "open-question"));
+}
+
+// tickDecay prunes conversation states idle past the TTL; the global state
+// survives.
+{
+  openDb().prepare("DELETE FROM organism_state").run();
+  const { CONVERSATION_STATE_TTL_MS } = await import("../src/core/brainState.js");
+  let clk = Date.now();
+  const pl = __createBrainStateForTests(bus, () => clk);
+  pl.perceive("global thought");
+  pl.perceive("conversation thought", "convStale");
+  check("stale-prune setup: both states exist",
+    pl.snapshot("convStale").workingMemory.length > 0 && pl.priorUncertainty() === 0);
+  clk += CONVERSATION_STATE_TTL_MS + 60_000;
+  pl.tickDecay(60_000);
+  check("tickDecay prunes a conversation state past the TTL",
+    pl.snapshot("convStale").workingMemory.length === 0);
+  // The global key is never pruned (its working memory may have decayed, but
+  // the row survives — cycles/confidence are intact).
+  const globalRow = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM organism_state WHERE key = 'brain-state-v1'`)
+    .get() as { n: number };
+  check("tickDecay never prunes the global state", globalRow.n === 1);
+}
+
+// -----------------------------------------------------------------------------
 // (E) Failure isolation — drop organism_state; no public method may throw.
 // -----------------------------------------------------------------------------
 

@@ -162,6 +162,14 @@ export interface ServerConfig {
   remoteRetryAttempts: number;
   routingAutoOptimize: boolean;
   usageLogRetentionDays: number;
+  // --- Scheduled SQLite backup ------------------------------------------------
+  // The whole brain lives in one SQLite file; snapshot it with VACUUM INTO on
+  // boot + an interval so a disk fault / bad migration is recoverable. ON by
+  // default (cheap, local, bounded by retention).
+  backupEnabled: boolean;
+  backupIntervalHours: number;
+  // How many snapshots to retain in <dataDir>/backups (oldest pruned first).
+  backupKeep: number;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -248,6 +256,9 @@ export const CONFIG: ServerConfig = {
   remoteRetryAttempts: Math.min(5, Math.max(0, num("REMOTE_RETRY_ATTEMPTS", 2))),
   routingAutoOptimize: bool("ROUTING_AUTO_OPTIMIZE", false),
   usageLogRetentionDays: Math.max(1, num("USAGE_LOG_RETENTION_DAYS", 30)),
+  backupEnabled: bool("BACKUP_ENABLED", true),
+  backupIntervalHours: Math.max(1, num("BACKUP_INTERVAL_HOURS", 24)),
+  backupKeep: Math.max(1, num("BACKUP_KEEP", 7)),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;

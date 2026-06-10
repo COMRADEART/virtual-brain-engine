@@ -20,8 +20,23 @@ import {
   startOwnModelTraining,
 } from "../learning/ownModelClient.js";
 import { getUsageSummary } from "../learning/usage.js";
+import { countSftPairs, exportSftJsonl } from "../db/repositories/sft.js";
 
 export const learningRouter = Router();
+
+// --- SFT pair flywheel (Phase D follow-on) ----------------------------------
+// Every 👍-rated answer accrues here as an {instruction, response} pair so a
+// future LoRA pass can do REAL instruction SFT once enough pairs exist.
+
+learningRouter.get("/learning/sft/status", (_req, res) => {
+  res.json({ pairs: countSftPairs() });
+});
+
+learningRouter.get("/learning/sft/export", (_req, res) => {
+  res.setHeader("Content-Type", "application/jsonl; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="brain-sft-pairs.jsonl"');
+  res.send(exportSftJsonl());
+});
 
 learningRouter.get("/learning/status", async (_req, res) => {
   const s = loadRankerState();

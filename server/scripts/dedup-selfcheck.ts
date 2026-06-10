@@ -35,7 +35,7 @@ process.env.BRAIN_DATA_DIR = tmp;
 process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 
 const { openDb } = await import("../src/db/sqlite.js");
-const { runDedupAudit, mergePair } = await import("../src/memory/dedupAudit.js");
+const { runDedupAudit, mergePair, listTombstones, unmergePair } = await import("../src/memory/dedupAudit.js");
 
 const db = openDb(); // applies schema.sql → memory_points, memory_relations, …
 
@@ -95,6 +95,33 @@ check("relations referencing the deleted memory are removed (from_id OR to_id)",
 
 const relAA = db.prepare(`SELECT COUNT(*) AS n FROM memory_relations WHERE id = 'r3'`).get() as { n: number };
 check("unrelated relation survives the merge", relAA.n === 1);
+
+// (F) Reversibility: the merge tombstoned B; restoring brings it back.
+const tombs = listTombstones();
+check("merge tombstoned the deleted memory", tombs.length === 1 && tombs[0].id === "B" && tombs[0].keptId === "A",
+  JSON.stringify(tombs.map((t) => t.id)));
+check("tombstone carries a content preview", tombs.length === 1 && tombs[0].contentPreview.includes("auth token"));
+
+check("unmergePair restores the memory", unmergePair("B") === true);
+const bBack = db.prepare(`SELECT content, embedding_id AS eid FROM memory_points WHERE id = 'B'`).get() as
+  | { content: string; eid: number | null }
+  | undefined;
+check("restored memory has its original content", !!bBack && bBack.content.includes("auth token"));
+check("restored memory has no stale embedding_id", !!bBack && bBack.eid === null);
+
+const relsBack = db
+  .prepare(`SELECT COUNT(*) AS n FROM memory_relations WHERE from_id = 'B' OR to_id = 'B'`)
+  .get() as { n: number };
+check("restore re-creates relations whose endpoints exist", relsBack.n === 2, `n=${relsBack.n}`);
+
+const aAfterRestore = db.prepare(`SELECT importance AS imp FROM memory_points WHERE id = 'A'`).get() as
+  | { imp: number }
+  | undefined;
+check("restore takes back the keep-side importance bump", !!aAfterRestore && Math.abs(aAfterRestore.imp - 0.5) < 1e-9,
+  `imp=${aAfterRestore?.imp}`);
+
+check("tombstone is consumed by the restore", listTombstones().length === 0);
+check("unmergePair on a missing tombstone -> false", unmergePair("B") === false);
 
 // runDedupAudit must run its scan query without throwing and return a shaped
 // result. With embedding_id NULL the memory_vec JOIN yields 0 scannable rows —
