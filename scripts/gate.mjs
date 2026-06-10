@@ -30,6 +30,8 @@ const npmCmd = isWindows ? "npm.cmd" : "npm";
 // Each step: a label, the command, and the args. We use the npm scripts that
 // already exist in the two package.jsons rather than re-spelling them here.
 const steps = [
+  // Errors-only lint (warnings are the burn-down baseline, not gate-blocking).
+  { label: "lint (errors only)", args: ["run", "gate:lint"] },
   { label: "frontend typecheck", args: ["run", "gate:frontend"] },
   { label: "server typecheck",   args: ["run", "gate:server"] },
   { label: "router selfcheck",   args: ["--prefix", "server", "run", "router:selfcheck"] },
@@ -60,6 +62,8 @@ const steps = [
   { label: "faithfulness selfcheck", args: ["--prefix", "server", "run", "faithfulness:selfcheck"] },
   { label: "github selfcheck",     args: ["--prefix", "server", "run", "github:selfcheck"] },
   { label: "keyrotation selfcheck", args: ["--prefix", "server", "run", "keyrotation:selfcheck"] },
+  { label: "backup selfcheck", args: ["--prefix", "server", "run", "backup:selfcheck"] },
+  { label: "injection selfcheck", args: ["--prefix", "server", "run", "injection:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline

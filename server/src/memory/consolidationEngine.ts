@@ -513,7 +513,7 @@ export function processNewMemory(
     updateClusterForMemory(newMemoryId, content);
   }
 
-  let clusterIds: string[] = [];
+  const clusterIds: string[] = [];
   try {
     const clusters = getAllClusters(5);
     for (const cluster of clusters) {

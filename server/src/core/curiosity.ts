@@ -129,7 +129,7 @@ export function computeCuriosity(input: CuriosityInput): CuriosityResult {
  * empty corpus / undefined health rather than blowing up the IdleAgent's seam.
  */
 export function gatherCuriosity(): CuriosityResult {
-  let causalLinks: CausalLink[] = [];
+  let causalLinks: CausalLink[];
   try {
     causalLinks = getAllCausalLinks();
   } catch {

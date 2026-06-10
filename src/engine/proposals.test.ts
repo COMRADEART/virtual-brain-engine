@@ -132,7 +132,7 @@ describe("proposals.resolve (pure)", () => {
 describe("ProposalArbiter (bus integration)", () => {
   it("emits proposal:winner exactly once per tick with bids in-window", () => {
     const bus = new BrainEventBus();
-    let nowVal = 1000;
+    const nowVal = 1000;
     const arb = new ProposalArbiter(bus, {
       tickMs: 100,
       windowMs: 200,
@@ -189,7 +189,7 @@ describe("ProposalArbiter (bus integration)", () => {
 
   it("stop() unsubscribes — later bids are not buffered", () => {
     const bus = new BrainEventBus();
-    let nowVal = 1000;
+    const nowVal = 1000;
     const arb = new ProposalArbiter(bus, { tickMs: 100, windowMs: 200, now: () => nowVal });
     arb.start();
     arb.stop();
@@ -199,7 +199,7 @@ describe("ProposalArbiter (bus integration)", () => {
 
   it("start() is idempotent — calling twice does not double-subscribe", () => {
     const bus = new BrainEventBus();
-    let nowVal = 1000;
+    const nowVal = 1000;
     const arb = new ProposalArbiter(bus, { tickMs: 100, windowMs: 200, now: () => nowVal });
     arb.start();
     arb.start();

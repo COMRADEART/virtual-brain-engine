@@ -111,7 +111,7 @@ connectorsRouter.post("/connectors/select", async (req, res) => {
     return;
   }
   const input = parsed.data;
-  let targetId = input.connectorId;
+  const targetId = input.connectorId;
   // Path 1: caller knows the connectorId — flip is_default on that row.
   if (targetId) {
     const existing = getConnector(targetId);

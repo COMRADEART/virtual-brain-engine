@@ -379,11 +379,12 @@ export class CollectiveMemorySync {
         }
         conflict.resolution = "merged";
         break;
-      case "merge":
+      case "merge": {
         const merged = this.mergeContent(local.content, remote?.content ?? local.content);
         local.content = merged;
         conflict.resolution = "merged";
         break;
+      }
     }
 
     conflict.resolvedAt = new Date().toISOString();

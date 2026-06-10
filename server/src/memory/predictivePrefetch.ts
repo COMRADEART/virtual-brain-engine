@@ -42,7 +42,7 @@ const MIN_CONFIDENCE = 0.3;
 const TEMPORAL_WINDOW_HOURS = 2;
 
 let conversationSequence: string[] = [];
-let lastPrefetchTime = 0;
+const lastPrefetchTime = 0;
 
 export function recordConversationSequence(
   memoryId: string,

@@ -129,7 +129,7 @@ export function RuntimePicker(): JSX.Element {
 
   // Make a seeded remote provider the pipeline default. Path-1 select by id —
   // the server flips is_default + enabled on the existing row.
-  const useRemote = useCallback(
+  const activateRemote = useCallback(
     async (connector: ConnectorDescriptor) => {
       setBusyRemote(connector.id);
       setError(null);
@@ -315,7 +315,7 @@ export function RuntimePicker(): JSX.Element {
                     className="ai-send"
                     type="button"
                     disabled={busy || isActive}
-                    onClick={() => void useRemote(c)}
+                    onClick={() => void activateRemote(c)}
                   >
                     {busy ? <Loader2 size={12} className="ai-spin" /> : null}
                     {isActive ? "In use" : "Use this"}

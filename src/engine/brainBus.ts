@@ -21,7 +21,7 @@ let lastConnected = false;
 //  (b) at most one reminder is printed every 60s so the user knows we're still trying.
 let haveLoggedFailure = false;
 let lastReminderAt = 0;
-let url = computeUrl();
+const url = computeUrl();
 const connectionListeners = new Set<(ok: boolean) => void>();
 
 function computeUrl(): string {
@@ -159,7 +159,8 @@ export function isBrainBusConnected(): boolean {
 // round-trip through the server. Useful for confirming the flashLogicalRegion
 // wiring without a backend.
 declare global {
-  // eslint-disable-next-line no-var, @typescript-eslint/consistent-type-definitions
+  // `var` is required for a global augmentation.
+  // eslint-disable-next-line no-var
   var __brainBus:
     | {
         emit(payload: Partial<PipelineEvent>): void;

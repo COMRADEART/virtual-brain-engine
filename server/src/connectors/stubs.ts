@@ -16,7 +16,6 @@ abstract class StubConnector implements Connector {
   protected fail(method: string): never {
     throw new ConnectorError("unsupported", `${this.descriptor.kind}:${method} not implemented`);
   }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   listModels(_signal?: AbortSignal): Promise<string[]> {
     return Promise.resolve([]);
   }

@@ -880,11 +880,7 @@ const adjustedDensity = performanceManager
     graphRendererRef.current = graphRenderer;
     scene.add(graphRenderer.group);
 
-    // Enable advanced visual effects if using spiking engine
-    let simulation: SimulationLike;
-    let visualEffects: BrainVisualEffects | null = null;
-
-    simulation = useHybridEngine
+    const simulation: SimulationLike = useHybridEngine
       ? new HybridCognitiveCore(graph, selectedActionId, {
           density: adjustedDensity,
           seed: Math.round(adjustedDensity * 1000) + 19,
@@ -911,9 +907,9 @@ const adjustedDensity = performanceManager
       memoryBridgeRef.current = new MemoryBrainBridge(simulation);
     }
 
-    // Create advanced visual effects
+    // Create advanced visual effects (spiking engine only)
     if (useSpikingEngine) {
-      visualEffects = new BrainVisualEffects(graph, simulation, {
+      const visualEffects = new BrainVisualEffects(graph, simulation, {
         enableNeuromodTint: true,
         enableNeurotransmitterParticles: true,
         enableRegionBreathing: true,

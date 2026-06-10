@@ -276,7 +276,7 @@ export async function executeDynamicHandler(
     const result = await fn(args, context.log);
     return result || { summary: `Executed ${id}`, data: { args } };
   } catch (err) {
-    throw new Error(`handler failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`handler failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 }
 

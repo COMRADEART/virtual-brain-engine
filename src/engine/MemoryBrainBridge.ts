@@ -462,7 +462,7 @@ export class MemoryBrainBridge {
     this.engine.applyCognitiveState(FOCUS_STATE);
     this.engine.flashRegions(LOGICAL_REGION_MAP["reasoning-cortex"], 0.7);
 
-    let hits: MemorySearchHit[] = [];
+    let hits: MemorySearchHit[];
     try {
       const res = await apiClient.searchMemory(query, { limit: opts.limit ?? 6, project: opts.projectName });
       hits = res.hits as MemorySearchHit[];

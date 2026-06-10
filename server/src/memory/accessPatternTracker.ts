@@ -22,7 +22,7 @@ const ACTIVATION_BOOST_PER_HOP = 0.15;
 const MAX_HOPS = 3;
 
 let recentAccessLog: AccessEvent[] = [];
-let activationCache = new Map<string, number>();
+const activationCache = new Map<string, number>();
 let activationDirty = false;
 
 export function recordAccess(memoryId: string, context?: string): void {
