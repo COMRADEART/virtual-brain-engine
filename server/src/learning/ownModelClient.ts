@@ -25,9 +25,10 @@ const START_TIMEOUT_MS = 10_000;
 // `ollama create` from a safetensors dir converts + imports the weights, which
 // can take a while for a 0.5B model — give it room.
 const OLLAMA_CREATE_TIMEOUT_MS = 600_000;
-// Cap the corpus we ship to the worker. A personal brain's corpus is small;
-// this guards against an accidentally huge DB, not an expected size.
-const MAX_CORPUS_CHARS = 2_000_000;
+// Cap the corpus we ship to the worker. This guards against an accidentally
+// huge DB, not an expected size — a well-used brain's corpus is now several
+// million chars, so the cap sits above that.
+const MAX_CORPUS_CHARS = 8_000_000;
 const MIN_CORPUS_CHARS = 1000;
 
 function downStatus(message: string): OwnModelStatus {
@@ -151,7 +152,10 @@ export interface StartOwnModelOptions {
 export async function startOwnModelTraining(
   opts: StartOwnModelOptions = {},
 ): Promise<OwnModelStatus> {
-  const corpus = exportMemoryCorpus({ maxChars: MAX_CORPUS_CHARS });
+  const corpus = exportMemoryCorpus({
+    maxChars: MAX_CORPUS_CHARS,
+    englishOnly: CONFIG.trainEnglishMostly,
+  });
   if (corpus.chars < MIN_CORPUS_CHARS) {
     return {
       ...downStatus(
@@ -182,11 +186,117 @@ export async function startOwnModelTraining(
   return normalize(r.data);
 }
 
-function runOllamaCreate(name: string, modelfilePath: string): Promise<{ ok: true } | { ok: false; error: string }> {
+// Ollama Go chat template for the served model — the canonical Qwen2.5 ChatML
+// template from Ollama's library, INCLUDING the <tool_call> protocol. The GGUF
+// embeds Qwen-BASE's jinja template, which has no tools section, so Ollama
+// rejects any request carrying `tools` with a 400 ("does not support tools").
+// Writing this TEMPLATE into the Modelfile makes the served model accept tool
+// definitions (external clients like IDE agents send them). Honest caveat: a
+// CPT-adapted base model ACCEPTS tools but was never trained to call them well.
+const QWEN_CHATML_TEMPLATE = `{{- if .Messages }}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end }}<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ end }}
+{{- end }}
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}`;
+
+/** Modelfile contents for serving: FROM + the tools-capable ChatML template +
+ * a default generation ceiling. Exported for the selfcheck.
+ *
+ * Deliberately NO `PARAMETER stop` line: on Ollama 0.30.x a model-level stop
+ * string makes the runner ignore num_predict and decode until the context
+ * fills (measured: a 20-token-capped request ran past 10k tokens; the
+ * identical build minus the stop param respected the cap).
+ *
+ * `PARAMETER num_predict` is the substitute guard (measured safe — caps at the
+ * value, request options still override): a CPT-adapted BASE model never emits
+ * the ChatML turn-end token, so without a ceiling any client that omits
+ * max_tokens gets an answer that rambles to the context limit. */
+const DEFAULT_NUM_PREDICT = 1024;
+
+export function buildModelfile(fromPath: string): string {
+  return `FROM ${fromPath}\nTEMPLATE """${QWEN_CHATML_TEMPLATE}"""\nPARAMETER num_predict ${DEFAULT_NUM_PREDICT}\n`;
+}
+
+// Quantizations `ollama create --quantize` accepts. q4_K_M is what Ollama's own
+// library models ship with — ~4x smaller than F16 at near-identical quality, so
+// the compressed model behaves like the uncompressed one.
+const QUANTIZE_LEVELS = ["q4_K_M", "q4_K_S", "q8_0"] as const;
+const DEFAULT_QUANTIZE = "q4_K_M";
+
+/**
+ * Resolve the quantization to request from `ollama create`, or null for none.
+ * Pure (env + source-path in, level out) so the selfcheck can cover it.
+ * `--quantize` requires an F16/F32 GGUF source, so the safetensors-dir fallback
+ * path never quantizes. OWN_MODEL_QUANTIZE overrides: a known level forces it,
+ * "off"/"f16"/"none" disables, anything else falls back to the default.
+ */
+export function resolveQuantize(
+  source: { ggufPath: string | null },
+  env: string | undefined = process.env.OWN_MODEL_QUANTIZE,
+): string | null {
+  if (!source.ggufPath) return null;
+  const want = (env ?? "").trim();
+  if (["off", "f16", "none", "false"].includes(want.toLowerCase())) return null;
+  const match = QUANTIZE_LEVELS.find((l) => l.toLowerCase() === want.toLowerCase());
+  return match ?? DEFAULT_QUANTIZE;
+}
+
+function runOllamaCreate(
+  name: string,
+  modelfilePath: string,
+  quantize: string | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const args = ["create", name, "-f", modelfilePath];
+  if (quantize) args.push("--quantize", quantize);
   return new Promise((resolve) => {
     execFile(
       "ollama",
-      ["create", name, "-f", modelfilePath],
+      args,
       { timeout: OLLAMA_CREATE_TIMEOUT_MS, windowsHide: true },
       (err, _stdout, stderr) => {
         if (err) {
@@ -229,13 +339,23 @@ export async function serveOwnModel(): Promise<OwnModelStatus> {
   // (proven by the serving spike).
   const fromPath = source.replace(/\\/g, "/");
   try {
-    await writeFile(modelfilePath, `FROM ${fromPath}\n`, "utf8");
+    await writeFile(modelfilePath, buildModelfile(fromPath), "utf8");
   } catch (err) {
     surfaceError("learning:ownmodel-serve", err);
     return { ...status, message: `Could not write Modelfile: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const created = await runOllamaCreate(name, modelfilePath);
+  // Compress on import: quantize the F16 GGUF (default q4_K_M — what Ollama's
+  // own library models ship as, ~4x smaller at near-identical quality). An old
+  // Ollama without --quantize falls back to the uncompressed import rather than
+  // failing the serve.
+  const quantize = resolveQuantize({ ggufPath: status.ggufPath });
+  let created = await runOllamaCreate(name, modelfilePath, quantize);
+  let quantizeNote = quantize ? ` (quantized ${quantize})` : "";
+  if (!created.ok && quantize) {
+    created = await runOllamaCreate(name, modelfilePath, null);
+    quantizeNote = created.ok ? " (quantization unsupported by this Ollama — imported uncompressed)" : "";
+  }
   if (!created.ok) {
     surfaceError("learning:ownmodel-serve", new Error(created.error));
     return { ...status, served: false, message: `ollama create failed: ${created.error}` };
@@ -247,7 +367,7 @@ export async function serveOwnModel(): Promise<OwnModelStatus> {
   return {
     ...status,
     served: true,
-    message: `Served as Ollama model "${name}" and seeded an opt-in connector. Enable it in the connector picker to use it.`,
+    message: `Served as Ollama model "${name}"${quantizeNote} and seeded an opt-in connector. Enable it in the connector picker to use it.`,
   };
 }
 

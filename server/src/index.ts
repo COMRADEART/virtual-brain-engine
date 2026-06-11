@@ -11,6 +11,8 @@ import {
   probeAllConnectors,
   reconcileDiscovered,
 } from "./connectors/registry.js";
+import { listOllamaModels, resolveOllamaBaseUrl } from "./connectors/ollamaModels.js";
+import { addAvailableModels } from "./reasoning/modelRouting.js";
 import { ensureScanRoot } from "./db/repositories/scan.js";
 import { checkEmbeddingDimMismatch } from "./db/repositories/memory.js";
 import { attachBrainBus } from "./ws/brainBus.js";
@@ -141,9 +143,26 @@ async function main(): Promise<void> {
   // into the connector table. Then keep probing all known connectors so
   // /api/health reflects reality. Both run in the background -- they never
   // block startup.
-  void reconcileDiscovered().then(() => probeAllConnectors());
+  //
+  // The same cycle also union-refreshes the model-routing availability cache
+  // with the local Ollama tag list. Without this, per-profile model
+  // assignments (Model Hub MoE routing) stay inert after a restart until
+  // someone opens the Model Hub view — pickModel() refuses any model it can't
+  // see installed. Union (not replace) so remote provider models merged in by
+  // GET /api/models survive; failure-isolated so a down Ollama costs nothing.
+  const refreshRoutableModels = async (): Promise<void> => {
+    try {
+      const base = resolveOllamaBaseUrl();
+      if (base) {
+        addAvailableModels(await listOllamaModels(base));
+      }
+    } catch {
+      // Ollama offline — assignments simply keep falling back to the default.
+    }
+  };
+  void reconcileDiscovered().then(() => probeAllConnectors()).then(refreshRoutableModels);
   const reconcileInterval = setInterval(() => {
-    void reconcileDiscovered().then(() => probeAllConnectors());
+    void reconcileDiscovered().then(() => probeAllConnectors()).then(refreshRoutableModels);
   }, 60_000);
 
   const app = express();
@@ -230,18 +249,30 @@ async function main(): Promise<void> {
     return null;
   });
 
-  // Own-model auto-train: fire-and-forget; the training runs in the Python
-  // worker background thread so it never blocks server boot. Failures are
-  // caught and logged so a misbehaving trainer can't crash the server.
-  if (CONFIG.autoStartOwnModel) {
-    import("./learning/autoStart.js")
-      .then(({ checkAndStartOwnModelTraining }) =>
-        void checkAndStartOwnModelTraining().catch((err) =>
-          console.warn("[server] own-model auto-train failed:", err),
-        ),
-      )
-      .catch((err) => console.warn("[server] auto-train module load failed:", err));
-  }
+  // Boot auto-train: the from-scratch brain LLM (default ON — "the brain grows
+  // its own model when the app starts", progress on the llm-training bus event)
+  // plus the opt-in LoRA own-model pass. Fire-and-forget; training runs in the
+  // Python worker background thread so it never blocks server boot, and both
+  // paths degrade silently when the worker is down. Two attempts (5s, 90s) so a
+  // worker that boots a little after the server still gets the kick-off; the
+  // brain_metadata rate limit makes the second attempt a no-op when the first
+  // one started a run.
+  const autoTrainTimers = [5_000, 90_000].map((delayMs) => {
+    const t = setTimeout(() => {
+      import("./learning/autoStart.js")
+        .then(async ({ checkAndStartOwnModelTraining, checkAndStartScratchLlmTraining }) => {
+          await checkAndStartScratchLlmTraining().catch((err) =>
+            console.warn("[server] scratch-LLM auto-train failed:", err),
+          );
+          await checkAndStartOwnModelTraining().catch((err) =>
+            console.warn("[server] own-model auto-train failed:", err),
+          );
+        })
+        .catch((err) => console.warn("[server] auto-train module load failed:", err));
+    }, delayMs);
+    t.unref();
+    return t;
+  });
 
   server.listen(CONFIG.port, CONFIG.host, () => {
     console.log(`[server] http://${CONFIG.host}:${CONFIG.port} (ws /ws/brain)`);
@@ -261,6 +292,7 @@ async function main(): Promise<void> {
     if (sleepKickoff) clearTimeout(sleepKickoff);
     clearInterval(decayHandles.spreadingActivation);
     clearInterval(decayHandles.decayTick);
+    for (const t of autoTrainTimers) clearTimeout(t);
     void brain?.shutdown();
     if (civilization.isRunning()) {
       void civilization.stop();

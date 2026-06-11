@@ -301,13 +301,55 @@ export interface MemoryCorpus {
   documents: number;
 }
 
+// Letter ranges for scripts that are NOT Latin — used by isMostlyEnglish.
+// Deliberately scoped to real writing systems: digits, punctuation, accented
+// Latin, and emoji are all neutral (neither English nor "other"), so a
+// code-heavy or symbol-heavy doc is never misclassified.
+const NON_LATIN_LETTER_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x0370, 0x03ff], // Greek
+  [0x0400, 0x04ff], // Cyrillic
+  [0x0590, 0x05ff], // Hebrew
+  [0x0600, 0x06ff], // Arabic
+  [0x0900, 0x097f], // Devanagari
+  [0x0e00, 0x0e7f], // Thai
+  [0x1100, 0x11ff], // Hangul jamo
+  [0x3040, 0x30ff], // Hiragana + Katakana
+  [0x3400, 0x4dbf], // CJK extension A
+  [0x4e00, 0x9fff], // CJK unified ideographs
+  [0xac00, 0xd7af], // Hangul syllables
+  [0xf900, 0xfaff], // CJK compatibility ideographs
+  [0xff66, 0xff9f], // halfwidth Katakana
+  [0x20000, 0x2ebef], // CJK extensions B+
+];
+
+// Pure heuristic: does this text read as mostly English? Counts ASCII letters
+// vs letters from non-Latin scripts; the doc passes while non-Latin letters
+// stay under `maxOtherRatio` of all counted letters. A doc with no letters at
+// all (pure code/symbols/numbers) passes — there is nothing non-English in it.
+export function isMostlyEnglish(text: string, maxOtherRatio = 0.3): boolean {
+  let latin = 0;
+  let other = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if ((code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a)) {
+      latin += 1;
+    } else if (NON_LATIN_LETTER_RANGES.some(([lo, hi]) => code >= lo && code <= hi)) {
+      other += 1;
+    }
+  }
+  const counted = latin + other;
+  return counted === 0 || other / counted <= maxOtherRatio;
+}
+
 // Concatenate the brain's own memories into one training corpus for the
 // from-scratch LLM trainer (Learning Lab — Phase C). Newest first, each doc
 // separated by a blank line. `maxChars` caps the export so a huge DB can't
 // blow up the worker payload; `minImportance` lets the caller train on only
-// the memories the brain considers worth keeping.
+// the memories the brain considers worth keeping. `englishOnly` drops
+// non-mostly-English docs (skipped docs don't consume the char budget) so the
+// trainers can keep the brain's own model anchored to English.
 export function exportMemoryCorpus(
-  opts: { maxChars?: number; minImportance?: number } = {},
+  opts: { maxChars?: number; minImportance?: number; englishOnly?: boolean } = {},
 ): MemoryCorpus {
   const maxChars = opts.maxChars ?? 5_000_000;
   const minImportance = opts.minImportance ?? 0;
@@ -324,6 +366,9 @@ export function exportMemoryCorpus(
   let documents = 0;
   for (const row of rows) {
     const piece = (row.title ? `${row.title}\n` : "") + row.content;
+    if (opts.englishOnly && !isMostlyEnglish(piece)) {
+      continue;
+    }
     if (chars + piece.length > maxChars) {
       break;
     }

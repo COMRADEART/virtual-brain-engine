@@ -49,8 +49,22 @@ export interface LlmTrainerStatus {
   params: number | null;
   /** Characters of personal corpus the model trained on. */
   corpusChars: number | null;
+  /** "cuda" or "cpu" — what the worker is training on. */
+  device: string | null;
+  /** Absolute path of the persisted checkpoint once one exists (survives worker restarts). */
+  checkpointPath: string | null;
   message: string | null;
   updatedAt: string | null;
+}
+
+/** Result of sampling from the persisted from-scratch brain model. */
+export interface LlmGenerateResult {
+  ok: boolean;
+  text: string | null;
+  latencyMs: number | null;
+  params: number | null;
+  device: string | null;
+  error: string | null;
 }
 
 // Phase D — the brain's OWN model. A LoRA continued-pretraining pass over a
@@ -78,7 +92,7 @@ export interface OwnModelStatus {
   outputDir: string | null;
   /** Absolute path of the exported GGUF (what Ollama imports), once available. */
   ggufPath: string | null;
-  /** Ollama model name once served (e.g. "star-brain"). */
+  /** Ollama model name once served (e.g. "mango"). */
   modelName: string | null;
   /** True once the merged model has been imported into Ollama + seeded as a connector. */
   served: boolean;

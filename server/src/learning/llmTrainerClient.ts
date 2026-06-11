@@ -8,16 +8,20 @@
 // training corpus and POSTs it to the worker. The worker never reaches back
 // into Node — keeps the dependency one-directional and avoids an auth hop.
 
-import type { LlmTrainerStatus } from "../../../shared/learning.js";
+import type { LlmGenerateResult, LlmTrainerStatus } from "../../../shared/learning.js";
+import { CONFIG } from "../config.js";
 import { exportMemoryCorpus } from "../db/repositories/memory.js";
+import { broadcast } from "../ws/brainBus.js";
 import { surfaceError } from "../util/diagnostics.js";
 
 const BASE_URL = process.env.PERCEPTION_WORKER_URL ?? "http://127.0.0.1:8789";
 const STATUS_TIMEOUT_MS = 500;
 const START_TIMEOUT_MS = 10_000;
-// Cap the corpus we ship to the worker. A personal brain's corpus is small;
-// this is a guard against an accidentally huge DB, not an expected size.
-const MAX_CORPUS_CHARS = 2_000_000;
+const GENERATE_TIMEOUT_MS = 60_000;
+// Cap the corpus we ship to the worker. This guards against an accidentally
+// huge DB, not an expected size — a well-used brain's corpus is now several
+// million chars, so the cap sits above that.
+const MAX_CORPUS_CHARS = 8_000_000;
 
 function downStatus(message: string): LlmTrainerStatus {
   return {
@@ -30,6 +34,8 @@ function downStatus(message: string): LlmTrainerStatus {
     vocabSize: null,
     params: null,
     corpusChars: null,
+    device: null,
+    checkpointPath: null,
     message,
     updatedAt: null,
   };
@@ -53,6 +59,8 @@ function normalize(raw: Partial<LlmTrainerStatus> & Record<string, unknown>): Ll
     vocabSize: num(raw.vocabSize),
     params: num(raw.params),
     corpusChars: num(raw.corpusChars),
+    device: typeof raw.device === "string" ? raw.device : null,
+    checkpointPath: typeof raw.checkpointPath === "string" ? raw.checkpointPath : null,
     message: typeof raw.message === "string" ? raw.message : null,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
   };
@@ -122,7 +130,10 @@ export interface StartTrainingOptions {
  * "unavailable" if the worker is down. Refuses to start on an empty corpus.
  */
 export async function startLlmTraining(opts: StartTrainingOptions = {}): Promise<LlmTrainerStatus> {
-  const corpus = exportMemoryCorpus({ maxChars: MAX_CORPUS_CHARS });
+  const corpus = exportMemoryCorpus({
+    maxChars: MAX_CORPUS_CHARS,
+    englishOnly: CONFIG.trainEnglishMostly,
+  });
   if (corpus.chars < 1000) {
     return {
       ...downStatus(
@@ -150,6 +161,97 @@ export async function startLlmTraining(opts: StartTrainingOptions = {}): Promise
     return downStatus(`Could not start trainer: ${r.error}`);
   }
   return normalize(r.data);
+}
+
+export interface GenerateOptions {
+  prompt?: string;
+  maxNewTokens?: number;
+  temperature?: number;
+}
+
+/**
+ * Sample from the persisted from-scratch brain model. Degrades to a structured
+ * { ok:false } when the worker is down or no model has been trained yet —
+ * never throws.
+ */
+export async function generateFromScratchLlm(opts: GenerateOptions = {}): Promise<LlmGenerateResult> {
+  const r = await fetchJson<Record<string, unknown>>(
+    "/train/generate",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: opts.prompt ?? "",
+        maxNewTokens: opts.maxNewTokens,
+        temperature: opts.temperature,
+      }),
+    },
+    GENERATE_TIMEOUT_MS,
+    "learning:llm-generate",
+    true, // worker down / not-yet-trained are expected states, not errors
+  );
+  if (!r.ok) {
+    return { ok: false, text: null, latencyMs: null, params: null, device: null, error: r.error };
+  }
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return {
+    ok: true,
+    text: typeof r.data.text === "string" ? r.data.text : null,
+    latencyMs: num(r.data.latencyMs),
+    params: num(r.data.params),
+    device: typeof r.data.device === "string" ? r.data.device : null,
+    error: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Training watcher — while a run is live, poll the worker and broadcast
+// progress on the WS bus so the frontend's TrainingBar renders without
+// polling. Singleton: starting it twice is a no-op.
+// ---------------------------------------------------------------------------
+
+const WATCH_INTERVAL_MS = 2000;
+let watcher: NodeJS.Timeout | null = null;
+
+export function ensureLlmTrainingWatcher(): void {
+  if (watcher) return;
+  watcher = setInterval(() => {
+    void (async () => {
+      const status = await getLlmTrainerStatus();
+      if (status.state === "running") {
+        broadcast({
+          type: "llm-training",
+          state: "running",
+          step: status.step,
+          totalSteps: status.totalSteps,
+          loss: status.loss,
+          params: status.params,
+          device: status.device,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      // Terminal (done/error) or the worker vanished — emit one final frame
+      // for real terminals, then stop watching either way.
+      if (status.state === "done" || status.state === "error") {
+        broadcast({
+          type: "llm-training",
+          state: status.state,
+          step: status.step,
+          totalSteps: status.totalSteps,
+          loss: status.loss,
+          params: status.params,
+          device: status.device,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      if (watcher) {
+        clearInterval(watcher);
+        watcher = null;
+      }
+    })();
+  }, WATCH_INTERVAL_MS);
+  // Never keep the process alive just to watch training.
+  watcher.unref?.();
 }
 
 /** Selfcheck helper. */

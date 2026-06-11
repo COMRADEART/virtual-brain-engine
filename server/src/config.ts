@@ -150,6 +150,20 @@ export interface ServerConfig {
   // non-default Ollama connector so it never silently becomes the /api/ask
   // model. OFF by default — training is compute-intensive and you should opt in.
   autoStartOwnModel: boolean;
+  // When true (the default), the brain trains its OWN from-scratch model
+  // (worker/train — the char-level GPT over the memory corpus) automatically on
+  // server boot, with progress streamed to the UI's TrainingBar. Cheap relative
+  // to the LoRA pass (minutes on GPU), skipped gracefully when the worker is
+  // down, and rate-limited by autoStartMinIntervalMs so dev restarts don't
+  // retrain in a loop. Set AUTO_START_SCRATCH_LLM=false to opt out.
+  autoStartScratchLlm: boolean;
+  // When true (the default), both trainers (the LoRA own-model pass and the
+  // from-scratch GPT) filter the exported memory corpus to mostly-English
+  // documents before training. The base models are bilingual (Qwen) and a
+  // mixed-language personal corpus measurably pulls the adapted voice toward
+  // the other language; this keeps the brain's own model speaking English.
+  // Set TRAIN_ENGLISH_MOSTLY=false to train on the full multilingual corpus.
+  trainEnglishMostly: boolean;
   // Minimum corpus chars required before auto-train will fire.
   autoStartMinCorpusChars: number;
   // Minimum milliseconds between auto-train runs (default 7 days).
@@ -271,6 +285,8 @@ export const CONFIG: ServerConfig = {
   githubMinStars: Math.max(1, num("GITHUB_MIN_STARS", 1000)),
   githubMaxRepos: Math.min(50, Math.max(1, num("GITHUB_MAX_REPOS", 10))),
   autoStartOwnModel: bool("AUTO_START_OWN_MODEL", false),
+  autoStartScratchLlm: bool("AUTO_START_SCRATCH_LLM", true),
+  trainEnglishMostly: bool("TRAIN_ENGLISH_MOSTLY", true),
   autoStartMinCorpusChars: Math.max(0, num("AUTO_START_MIN_CORPUS_CHARS", 10_000)),
   autoStartMinIntervalMs: Math.max(0, num("AUTO_START_MIN_INTERVAL_MS", 7 * 24 * 60 * 60 * 1000)),
   remoteFallback: bool("REMOTE_FALLBACK", false),

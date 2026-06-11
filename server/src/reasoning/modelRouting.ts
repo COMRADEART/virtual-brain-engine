@@ -109,6 +109,16 @@ export function setAvailableModels(models: string[]): void {
   availableCache = new Set(models);
 }
 
+// Union-merge into the cache. Used by the boot/periodic local-Ollama refresh in
+// index.ts, which only sees LOCAL models — a replace there would wipe remote
+// provider models that the Model Hub view (the full picture) had merged in,
+// flapping any remote-model profile assignment back to the default.
+export function addAvailableModels(models: string[]): void {
+  for (const m of models) {
+    availableCache.add(m);
+  }
+}
+
 export function getAvailableModels(): string[] {
   return [...availableCache];
 }

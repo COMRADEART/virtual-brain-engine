@@ -36,8 +36,15 @@ const { trainFromCitations, trainFromFeedback, __resetRankerCache, WARM_AT } = a
   "../src/reasoning/ranker.js"
 );
 const { toFeatureVector, FEATURE_DIM, FEATURE_LABELS } = await import("../src/reasoning/rankerModel.js");
-const { upsertMemoryPoint, exportMemoryCorpus } = await import("../src/db/repositories/memory.js");
-const { getLlmTrainerStatus, startLlmTraining } = await import("../src/learning/llmTrainerClient.js");
+const { upsertMemoryPoint, exportMemoryCorpus, isMostlyEnglish } = await import(
+  "../src/db/repositories/memory.js"
+);
+const { getLlmTrainerStatus, startLlmTraining, generateFromScratchLlm } = await import(
+  "../src/learning/llmTrainerClient.js"
+);
+const { autoTrainSkipReason, checkAndStartScratchLlmTraining } = await import(
+  "../src/learning/autoStart.js"
+);
 
 let failures = 0;
 function check(label: string, ok: boolean, extra = ""): void {
@@ -148,6 +155,77 @@ check(
 );
 
 // =============================================================================
+// (E1) English-mostly corpus filter (TRAIN_ENGLISH_MOSTLY — both trainers)
+// =============================================================================
+check("isMostlyEnglish: plain English", isMostlyEnglish("The brain learns to rank memories."));
+check("isMostlyEnglish: Chinese rejected", !isMostlyEnglish("大脑学习对记忆进行排序，这是一个测试。"));
+check(
+  "isMostlyEnglish: a few CJK chars in English text pass",
+  isMostlyEnglish("The user said 你好 and then continued writing in English for a while."),
+);
+check("isMostlyEnglish: pure code/symbols pass", isMostlyEnglish("() => { return 42; } // \n$#@!"));
+check("isMostlyEnglish: Cyrillic rejected", !isMostlyEnglish("Мозг учится ранжировать воспоминания постоянно."));
+
+upsertMemoryPoint({
+  sourceType: "conversation",
+  content: "这是一段完全用中文写的记忆，训练语料应当过滤掉它。".repeat(3),
+  contentHash: "h-zh",
+  title: "chinese memory",
+});
+const unfiltered = exportMemoryCorpus();
+check("exportMemoryCorpus() without filter includes the Chinese doc", unfiltered.documents === 3, `${unfiltered.documents} docs`);
+const filtered = exportMemoryCorpus({ englishOnly: true });
+check("exportMemoryCorpus(englishOnly) drops the Chinese doc", filtered.documents === 2, `${filtered.documents} docs`);
+check("exportMemoryCorpus(englishOnly) keeps the English docs", filtered.text.includes("the brain learns to rank"));
+check("exportMemoryCorpus(englishOnly) text carries no Chinese", !filtered.text.includes("中文"));
+
+// =============================================================================
+// (E2) scratch-LLM generation + boot auto-train (worker-down degrade + the
+//      pure skip-decision)
+// =============================================================================
+const gen = await generateFromScratchLlm({ prompt: "hello" });
+check("generateFromScratchLlm with worker down -> ok:false", gen.ok === false && gen.text === null);
+check("generateFromScratchLlm carries an error string", typeof gen.error === "string" && gen.error.length > 0);
+
+const baseSkip = {
+  enabled: true,
+  workerState: "idle",
+  lastTrainedAtMs: null,
+  nowMs: 1_000_000,
+  minIntervalMs: 1000,
+  corpusChars: 50_000,
+  minCorpusChars: 10_000,
+};
+check("autoTrainSkipReason: all clear -> null (train)", autoTrainSkipReason(baseSkip) === null);
+check("autoTrainSkipReason: disabled", autoTrainSkipReason({ ...baseSkip, enabled: false }) === "disabled");
+check("autoTrainSkipReason: worker down", autoTrainSkipReason({ ...baseSkip, workerState: "unavailable" }) === "worker down");
+check("autoTrainSkipReason: already running", autoTrainSkipReason({ ...baseSkip, workerState: "running" }) === "already running");
+check(
+  "autoTrainSkipReason: trained recently",
+  autoTrainSkipReason({ ...baseSkip, lastTrainedAtMs: 999_500 }) === "trained recently",
+);
+check(
+  "autoTrainSkipReason: interval elapsed -> trains again",
+  autoTrainSkipReason({ ...baseSkip, lastTrainedAtMs: 100 }) === null,
+);
+check(
+  "autoTrainSkipReason: corpus too small",
+  autoTrainSkipReason({ ...baseSkip, corpusChars: 9_999 }) === "corpus too small",
+);
+check(
+  "autoTrainSkipReason: 'done' worker state does not block a re-train",
+  autoTrainSkipReason({ ...baseSkip, workerState: "done" }) === null,
+);
+
+// With the worker down, the boot auto-train must resolve quietly and must NOT
+// stamp the last-trained timestamp (nothing actually started).
+await checkAndStartScratchLlmTraining();
+const scratchMeta = openDb()
+  .prepare("SELECT value FROM brain_metadata WHERE key = 'scratch_llm_last_trained_at'")
+  .get() as { value: string } | undefined;
+check("checkAndStartScratchLlmTraining (worker down) writes no last-trained stamp", scratchMeta === undefined);
+
+// =============================================================================
 // (F) route wiring — exercise the Express handlers in-process. server-smoke
 //     only sweeps GETs and the checks above call the functions directly; this
 //     proves the new POST routes (feedback, llm/start) and the status GET are
@@ -212,6 +290,15 @@ check("learning status llm degrades to unavailable (worker down)", (st.json?.llm
 
 const start = await call("/api/learning/llm/start", "POST", {});
 check("POST /api/learning/llm/start -> 200 with status json", start.status === 200 && typeof start.json?.state === "string");
+
+const genRoute = await call("/api/learning/llm/generate", "POST", { prompt: "hi" });
+check(
+  "POST /api/learning/llm/generate (worker down) -> 200 with ok:false",
+  genRoute.status === 200 && genRoute.json?.ok === false,
+  `status=${genRoute.status}`,
+);
+const genBad = await call("/api/learning/llm/generate", "POST", { maxNewTokens: 0 });
+check("POST /api/learning/llm/generate rejects bad args (400)", genBad.status === 400, `status=${genBad.status}`);
 
 // =============================================================================
 // (G) SFT pair flywheel — a 👍 promotes the run's (prompt, answer) into a

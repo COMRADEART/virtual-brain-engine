@@ -155,6 +155,19 @@ export type BrainBusMessage =
       trainedCount: number;
       timestamp: string;
     }
+  // --- From-scratch brain-LLM training progress (boot auto-train → TrainingBar) ---
+  // Broadcast (throttled to the watcher's poll cadence) while the worker trains
+  // the brain's own from-scratch model, so the UI renders a live progress bar.
+  | {
+      type: "llm-training";
+      state: "running" | "done" | "error";
+      step: number;
+      totalSteps: number;
+      loss: number | null;
+      params: number | null;
+      device: string | null;
+      timestamp: string;
+    }
   // --- Central cognitive loop (brainState.ts → brainCore.ts bridge) ---
   // Emitted (throttled) whenever the unified BrainState changes, so the
   // BrainStatePanel reflects the live attention map / working memory /

@@ -9,6 +9,8 @@
 //   (C) real corpus + worker down -> "unavailable" (start path reaches the worker).
 //   (D) serve guard: serveOwnModel() refuses when no finished model exists — it
 //       must NOT shell out to `ollama create` (proves the state gate holds).
+//   (D2) quantize resolver: default q4_K_M for a GGUF source, never for the
+//       safetensors fallback, env-overridable, off-able.
 //   (E) connector seed: ensureOwnModelConnector() seeds disabled + non-default,
 //       is idempotent, preserves a user's enable choice, refreshes the model.
 //   (F) route wiring: the three /api/learning/ownmodel/* handlers are mounted.
@@ -33,9 +35,8 @@ const { openDb } = await import("../src/db/sqlite.js");
 const { upsertMemoryPoint, exportMemoryCorpus } = await import("../src/db/repositories/memory.js");
 const { getConnector, upsertConnector } = await import("../src/db/repositories/connectors.js");
 const { ensureOwnModelConnector } = await import("../src/connectors/registry.js");
-const { getOwnModelStatus, startOwnModelTraining, serveOwnModel } = await import(
-  "../src/learning/ownModelClient.js"
-);
+const { getOwnModelStatus, startOwnModelTraining, serveOwnModel, resolveQuantize, buildModelfile } =
+  await import("../src/learning/ownModelClient.js");
 
 let failures = 0;
 function check(label: string, ok: boolean, extra = ""): void {
@@ -94,6 +95,42 @@ check("startOwnModelTraining with steps+baseModel still degrades cleanly", optSt
 const served = await serveOwnModel();
 check("serveOwnModel() with no finished model does NOT report served", served.served === false, `served=${served.served}`);
 check("serveOwnModel() left no own-model connector behind", getConnector("own-model") === null);
+
+// =============================================================================
+// (D2) quantize resolver — pure; the compression knob for `ollama create`
+// =============================================================================
+const gguf = { ggufPath: "/abs/model.gguf" };
+check("resolveQuantize defaults to q4_K_M for a GGUF source", resolveQuantize(gguf, undefined) === "q4_K_M");
+check("resolveQuantize never quantizes the safetensors-dir fallback", resolveQuantize({ ggufPath: null }, undefined) === null);
+check("resolveQuantize honours OWN_MODEL_QUANTIZE=q8_0", resolveQuantize(gguf, "q8_0") === "q8_0");
+check("resolveQuantize is case-insensitive", resolveQuantize(gguf, "Q4_K_S") === "q4_K_S");
+check("resolveQuantize 'off' disables compression", resolveQuantize(gguf, "off") === null);
+check("resolveQuantize 'f16' disables compression", resolveQuantize(gguf, "f16") === null);
+check("resolveQuantize falls back to the default on an unknown level", resolveQuantize(gguf, "q2_bogus") === "q4_K_M");
+
+// =============================================================================
+// (D3) Modelfile builder — pure; FROM + the tools-capable ChatML template
+// =============================================================================
+const mf = buildModelfile("C:/abs/model.gguf");
+check("buildModelfile starts with the FROM line", mf.startsWith("FROM C:/abs/model.gguf\n"));
+check("buildModelfile declares a TEMPLATE block", mf.includes('TEMPLATE """') && mf.includes('"""\n'));
+check(
+  "template carries the tools protocol (.Tools + <tool_call>) so Ollama accepts tool requests",
+  mf.includes(".Tools") && mf.includes("<tool_call>") && mf.includes(".ToolCalls"),
+);
+check("template is ChatML (im_start/im_end)", mf.includes("<|im_start|>") && mf.includes("<|im_end|>"));
+check(
+  "NO model-level stop param (Ollama 0.30.x: a stop string makes the runner ignore num_predict)",
+  !mf.includes("PARAMETER stop"),
+);
+check(
+  "default num_predict ceiling (a CPT base never emits the turn-end token; without a cap, clients that omit max_tokens get a context-filling ramble)",
+  /PARAMETER num_predict \d+/.test(mf),
+);
+check(
+  "template handles the no-Messages prompt path too",
+  mf.includes("{{ .Prompt }}") && mf.includes("{{ .Response }}"),
+);
 
 // =============================================================================
 // (E) connector seed — disabled + non-default, idempotent, preserves choice

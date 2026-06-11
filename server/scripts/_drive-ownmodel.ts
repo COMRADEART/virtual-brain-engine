@@ -24,6 +24,7 @@ if (started.state !== "running") {
 }
 
 let last = "";
+let downStreak = 0;
 for (;;) {
   await sleep(5000);
   const s = await getOwnModelStatus();
@@ -33,9 +34,20 @@ for (;;) {
     last = line;
   }
   if (s.state === "done") break;
-  if (s.state === "error" || s.state === "unavailable") {
-    console.log(`[drive] training ended: ${s.state} — ${s.message ?? ""}`);
+  if (s.state === "error") {
+    console.log(`[drive] training ended: error — ${s.message ?? ""}`);
     process.exit(1);
+  }
+  // The merge step can hold the GIL past the 500ms status-probe cap, which
+  // reads as a transient "unavailable" — only give up after a sustained outage.
+  if (s.state === "unavailable") {
+    downStreak++;
+    if (downStreak >= 6) {
+      console.log(`[drive] worker unreachable for ${downStreak} consecutive polls — giving up.`);
+      process.exit(1);
+    }
+  } else {
+    downStreak = 0;
   }
 }
 

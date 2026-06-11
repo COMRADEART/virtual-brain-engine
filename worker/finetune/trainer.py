@@ -27,12 +27,28 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Small, laptop-GPU-friendly defaults. A 0.5B base in fp16 (~1GB) + a LoRA
 # adapter trains in minutes on a 6GB card; the corpus is personal-sized.
-DEFAULT_BASE_MODEL = os.environ.get("OWN_MODEL_BASE", "Qwen/Qwen2.5-0.5B")
+#
+# The INSTRUCT variant is the default base (was the raw 0.5B): a CPT-adapted
+# BASE model can't follow instructions, end its turns, or emit tool calls — the
+# instruct model already does all three, and the low-rank LoRA pass layers the
+# brain's voice on top without erasing that. Same size, same speed.
+DEFAULT_BASE_MODEL = os.environ.get("OWN_MODEL_BASE", "Qwen/Qwen2.5-0.5B-Instruct")
 DEFAULT_STEPS = 300
 MICRO_BATCH = 2
 GRAD_ACCUM = 8
 BLOCK_SIZE = 256
-LEARNING_RATE = 2e-4
+# Gentle by default. 2e-4 × 250 steps (the original CPT recipe) measurably
+# OVERWRITES a 0.5B instruct base's behavior — the merged model stopped
+# following instructions or ending turns and regurgitated corpus chunks to the
+# token cap (verified directly on the merged HF model, not an Ollama artifact).
+# Behavior preservation comes first; the corpus voice is layered lightly.
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+LEARNING_RATE = _env_float("OWN_MODEL_LR", 5e-5)
 WARMUP_STEPS = 15
 LORA_R = 16
 LORA_ALPHA = 32
@@ -42,7 +58,7 @@ EVAL_INTERVAL = 25
 # status and points `ollama create` at it. Lives under the repo's gitignored
 # data/ dir by default.
 OUTPUT_ROOT = os.environ.get("OWN_MODEL_OUT", os.path.join("data", "ownmodel"))
-MODEL_NAME = os.environ.get("OWN_MODEL_NAME", "star-brain")
+MODEL_NAME = os.environ.get("OWN_MODEL_NAME", "mango")
 
 # LoRA targets for Llama/Qwen-family decoder blocks. If a base uses different
 # module names, peft raises and we surface it as state="error" rather than
@@ -121,7 +137,50 @@ def run_finetune(
         tokenizer = AutoTokenizer.from_pretrained(base)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        ids = tokenizer(corpus, return_tensors="pt").input_ids[0]
+        # CHAT-FORMATTED packing, not a raw text stream. Two failed recipes
+        # taught us this (both measured: done_reason=length at the client cap on
+        # a one-sentence question): (1) one continuous stream teaches an
+        # instruct base that text never ends; (2) plain EOS-separated documents
+        # still teach "after <eos> comes more text". Wrapping every document as
+        # a user→assistant exchange via the model's own chat template makes the
+        # LoRA pass PRACTICE the assistant structure — answer in the corpus's
+        # voice, then end the turn — instead of eroding it.
+        docs: list[str] = []
+        buf = ""
+        for para in corpus.split("\n\n"):
+            if not para.strip():
+                continue
+            buf = f"{buf}\n\n{para}" if buf else para
+            if len(buf) >= 1000:
+                docs.append(buf)
+                buf = ""
+        if buf:
+            docs.append(buf)
+        prompts = [
+            "Tell me about this.",
+            "What do you know about this topic?",
+            "Share what you remember.",
+            "Explain this from your memory.",
+        ]
+        # apply_chat_template's tokenize= return type varies across transformers
+        # major versions (5.x hands back a string) — format to text, tokenize
+        # explicitly. add_special_tokens=False: the template already carries the
+        # im_start/im_end specials.
+        episode_texts = [
+            tokenizer.apply_chat_template(
+                [
+                    {"role": "user", "content": prompts[i % len(prompts)]},
+                    {"role": "assistant", "content": doc},
+                ],
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            for i, doc in enumerate(docs)
+        ]
+        pieces: list[int] = []
+        for episode in tokenizer(episode_texts, add_special_tokens=False).input_ids:
+            pieces.extend(episode)
+        ids = torch.tensor(pieces, dtype=torch.long)
         # Need at least a couple of blocks to form batches + a val signal.
         block_size = min(BLOCK_SIZE, max(16, ids.numel() // 4))
         if ids.numel() < block_size * 2:

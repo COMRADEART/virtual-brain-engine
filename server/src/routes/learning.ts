@@ -5,6 +5,7 @@
 //                                  curve + feedback stats + LLM trainer status
 //   GET  /api/learning/llm/status  just the from-scratch trainer status
 //   POST /api/learning/llm/start   assemble the memory corpus + kick training
+//   POST /api/learning/llm/generate  sample from the persisted brain model
 
 import { Router } from "express";
 import { z } from "zod";
@@ -13,7 +14,12 @@ import { loadRankerLossHistory, loadRankerState } from "../db/repositories/ranke
 import { getFeedbackStats } from "../db/repositories/feedback.js";
 import { FEATURE_LABELS, FEATURE_VERSION, zeroWeights } from "../reasoning/rankerModel.js";
 import { WARM_AT } from "../reasoning/ranker.js";
-import { getLlmTrainerStatus, startLlmTraining } from "../learning/llmTrainerClient.js";
+import {
+  ensureLlmTrainingWatcher,
+  generateFromScratchLlm,
+  getLlmTrainerStatus,
+  startLlmTraining,
+} from "../learning/llmTrainerClient.js";
 import {
   getOwnModelStatus,
   serveOwnModel,
@@ -74,7 +80,27 @@ learningRouter.post("/learning/llm/start", async (req, res) => {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
-  res.json(await startLlmTraining(parsed.data));
+  const status = await startLlmTraining(parsed.data);
+  if (status.state === "running") {
+    // Stream progress to the UI's TrainingBar over the WS bus.
+    ensureLlmTrainingWatcher();
+  }
+  res.json(status);
+});
+
+const generateSchema = z.object({
+  prompt: z.string().max(4000).optional(),
+  maxNewTokens: z.number().int().min(1).max(2000).optional(),
+  temperature: z.number().gt(0).max(2).optional(),
+});
+
+learningRouter.post("/learning/llm/generate", async (req, res) => {
+  const parsed = generateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  res.json(await generateFromScratchLlm(parsed.data));
 });
 
 // --- Phase D: the brain's OWN model (LoRA continued-pretraining → Ollama) ---

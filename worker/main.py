@@ -376,6 +376,8 @@ _train_status: dict[str, Any] = {
     "vocabSize": None,
     "params": None,
     "corpusChars": None,
+    "device": None,
+    "checkpointPath": None,
     "message": None,
     "updatedAt": None,
 }
@@ -389,6 +391,16 @@ class TrainIn(BaseModel):
     force: bool = Field(default=False, description="Restart even if a run is in progress.")
 
 
+def _scratch_ckpt_path() -> str | None:
+    # Mirrors train.trainer.checkpoint_path() WITHOUT importing the trainer —
+    # that module imports torch at top level and this must stay callable on a
+    # bare worker.
+    root = os.environ.get("SCRATCH_LLM_OUT", os.path.join("data", "scratchllm"))
+    p = os.path.abspath(os.path.join(root, "model.pt"))
+    v = os.path.abspath(os.path.join(root, "vocab.json"))
+    return p if os.path.exists(p) and os.path.exists(v) else None
+
+
 @app.get("/train/status")
 def train_status() -> dict[str, Any]:
     out = dict(_train_status)
@@ -398,6 +410,10 @@ def train_status() -> dict[str, Any]:
     if out["state"] == "idle" and importlib.util.find_spec("torch") is None:
         out["state"] = "unavailable"
         out["message"] = "torch not installed — pip install -r requirements-ml.txt"
+    # A restarted worker forgets the in-memory status, but a previously trained
+    # model persists on disk — report it so the UI knows the brain HAS a model.
+    if out["checkpointPath"] is None:
+        out["checkpointPath"] = _scratch_ckpt_path()
     return out
 
 
@@ -440,6 +456,8 @@ def train_start(body: TrainIn) -> dict[str, Any]:
             vocabSize=None,
             params=None,
             corpusChars=len(body.corpus),
+            device=None,
+            checkpointPath=None,
             message="starting…",
             updatedAt=datetime.now(timezone.utc).isoformat(),
         )
@@ -452,6 +470,33 @@ def train_start(body: TrainIn) -> dict[str, Any]:
         thread.start()
 
     return dict(_train_status)
+
+
+class GenerateIn(BaseModel):
+    prompt: str = Field(default="", max_length=4000)
+    maxNewTokens: int = Field(default=200, ge=1, le=2000)
+    temperature: float = Field(default=0.8, gt=0.0, le=2.0)
+
+
+@app.post("/train/generate")
+def train_generate(body: GenerateIn) -> dict[str, Any]:
+    """Sample from the persisted from-scratch brain model (CPU — never contends
+    with an in-flight training run for VRAM). 404 until a model has been trained."""
+    try:
+        from train.trainer import generate_text
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"torch not installed ({exc}). Install worker/requirements-ml.txt.",
+        ) from exc
+    try:
+        return generate_text(
+            prompt=body.prompt,
+            max_new_tokens=body.maxNewTokens,
+            temperature=body.temperature,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
