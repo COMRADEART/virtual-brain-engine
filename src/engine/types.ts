@@ -189,3 +189,11 @@ export interface CameraPresetRequest {
   mode: "overview" | "inside" | "reset";
   sequence: number;
 }
+
+/** A user-saved camera viewpoint (persisted to localStorage by App). */
+export interface CameraBookmark {
+  id: string;
+  name: string;
+  position: [number, number, number];
+  target: [number, number, number];
+}

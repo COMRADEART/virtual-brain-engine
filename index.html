@@ -7,12 +7,22 @@
     <meta name="theme-color" content="#f6f6f9" media="(prefers-color-scheme: light)" />
     <meta name="color-scheme" content="dark light" />
     <!-- Set the theme attribute before React mounts so there is no dark→light flash
-         on reload. Mirrors the store in src/engine/useApiCall.ts (key "brain-theme"). -->
+         on reload. Mirrors the store in src/engine/useApiCall.ts: "brain-theme-mode"
+         is the user's choice (dark | light | auto); "brain-theme" the last resolved
+         theme, kept as the fallback for older stored state. -->
     <script>
       (function () {
         try {
-          var t = localStorage.getItem("brain-theme");
-          document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+          var mode = localStorage.getItem("brain-theme-mode");
+          var t;
+          if (mode === "auto") {
+            t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          } else if (mode === "light" || mode === "dark") {
+            t = mode;
+          } else {
+            t = localStorage.getItem("brain-theme") === "light" ? "light" : "dark";
+          }
+          document.documentElement.setAttribute("data-theme", t);
         } catch (e) {
           document.documentElement.setAttribute("data-theme", "dark");
         }

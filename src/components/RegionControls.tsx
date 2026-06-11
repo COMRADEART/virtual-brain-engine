@@ -1,6 +1,9 @@
 import {
   Activity,
+  Bookmark,
+  BookmarkPlus,
   Brain,
+  Camera,
   Eye,
   Gauge,
   Layers3,
@@ -12,6 +15,7 @@ import {
   ScanEye,
   Sparkles,
   Volume2,
+  X,
   Zap,
 } from "lucide-react";
 import { BRAIN_ACTIONS, REGION_DEFINITIONS } from "../data/regionDefinitions";
@@ -21,6 +25,7 @@ import type {
   BrainLobe,
   BrainRegionDefinition,
   BrainRegionId,
+  CameraBookmark,
   CameraPresetRequest,
   RegionVisibility,
 } from "../engine/types";
@@ -81,6 +86,12 @@ interface RegionControlsProps {
   onRegionVisibilityChange: (regionId: BrainRegionId, visible: boolean) => void;
   onRegionSelect: (regionId: BrainRegionId) => void;
   onCameraPreset: (mode: CameraPresetRequest["mode"]) => void;
+  /** Saved camera viewpoints (persisted by App). */
+  cameraBookmarks: CameraBookmark[];
+  onSaveBookmark: () => void;
+  onGoBookmark: (id: string) => void;
+  onDeleteBookmark: (id: string) => void;
+  onScreenshot: () => void;
 }
 
 export function RegionControls({
@@ -105,6 +116,11 @@ export function RegionControls({
   onRegionVisibilityChange,
   onRegionSelect,
   onCameraPreset,
+  cameraBookmarks,
+  onSaveBookmark,
+  onGoBookmark,
+  onDeleteBookmark,
+  onScreenshot,
 }: RegionControlsProps): JSX.Element {
   return (
     <aside className="control-panel" aria-label="Brain simulation controls">
@@ -172,6 +188,51 @@ export function RegionControls({
             <span>Reset</span>
           </button>
         </div>
+        <div className="camera-tools">
+          <button
+            type="button"
+            className="camera-tool-btn"
+            onClick={onSaveBookmark}
+            title="Save the current viewpoint"
+          >
+            <BookmarkPlus size={13} />
+            <span>Save view</span>
+          </button>
+          <button
+            type="button"
+            className="camera-tool-btn"
+            onClick={onScreenshot}
+            title="Save a PNG of the scene (S)"
+          >
+            <Camera size={13} />
+            <span>Screenshot</span>
+          </button>
+        </div>
+        {cameraBookmarks.length > 0 && (
+          <ul className="camera-bookmarks" aria-label="Saved viewpoints">
+            {cameraBookmarks.map((bookmark) => (
+              <li key={bookmark.id}>
+                <button
+                  type="button"
+                  className="bookmark-go"
+                  onClick={() => onGoBookmark(bookmark.id)}
+                  title={`Fly to ${bookmark.name}`}
+                >
+                  <Bookmark size={12} />
+                  <span>{bookmark.name}</span>
+                </button>
+                <button
+                  type="button"
+                  className="bookmark-delete"
+                  onClick={() => onDeleteBookmark(bookmark.id)}
+                  aria-label={`Delete ${bookmark.name}`}
+                >
+                  <X size={11} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className="control-section sliders">

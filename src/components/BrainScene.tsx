@@ -52,6 +52,7 @@ function resolveEngineChoice(): { spiking: boolean; hybrid: boolean } {
 }
 type SimulationLike = SignalSimulation | SpikingEngine | HybridCognitiveCore;
 import { subscribeBrainBus } from "../engine/brainBus";
+import { useUiPrefs } from "../engine/uiPrefs";
 import type { PerfPreset } from "../engine/performancePresets";
 import { PerformanceManager } from "../engine/PerformanceManager";
 import { LOGICAL_REGION_IDS } from "../../shared/pipeline";
@@ -70,6 +71,23 @@ export interface AnatomyLoadProgress {
   done: boolean;
 }
 
+export interface CameraBookmarkState {
+  position: [number, number, number];
+  target: [number, number, number];
+}
+
+/**
+ * Imperative scene surface for camera bookmarks + screenshots. The mount
+ * effect binds it; consumers hold the ref and call through it — these are
+ * one-shot commands, not per-frame state, so they stay outside React state.
+ */
+export interface BrainSceneApi {
+  getCameraState: () => CameraBookmarkState | null;
+  flyTo: (state: CameraBookmarkState) => void;
+  /** Renders one frame and returns a PNG data URL (null if the scene is gone). */
+  screenshot: () => string | null;
+}
+
 interface BrainSceneProps {
   simulationRunning: boolean;
   selectedActionId: BrainActionId;
@@ -85,6 +103,8 @@ interface BrainSceneProps {
   audioEnabled: boolean;
   perfPreset: PerfPreset;
   showEmergentControls?: boolean;
+  /** Bound by the mount effect; cleared on unmount. */
+  sceneApiRef?: React.MutableRefObject<BrainSceneApi | null>;
   onRegionSelect: (regionId: BrainRegionId) => void;
   onActionSelect?: (actionId: BrainActionId) => void;
   onMetricsChange: (metrics: BrainMetrics) => void;
@@ -215,11 +235,15 @@ export function BrainScene({
   audioEnabled,
   perfPreset,
   showEmergentControls,
+  sceneApiRef,
   onRegionSelect,
   onActionSelect,
   onMetricsChange,
   onAnatomyLoadProgress,
 }: BrainSceneProps): JSX.Element {
+  // Settings-panel glow intensity. Config-level subscription (same tier as the
+  // perf preset), NOT per-frame state — the effect below pokes the bloom pass.
+  const { prefs: uiPrefs } = useUiPrefs();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -494,6 +518,37 @@ export function BrainScene({
     controls.maxDistance = 8;
     controls.target.set(0, 0, 0);
     controlsRef.current = controls;
+
+    // Imperative scene surface (camera bookmarks + screenshot). Bound here so
+    // it closes over the live camera/controls/composer; cleared on teardown.
+    if (sceneApiRef) {
+      sceneApiRef.current = {
+        getCameraState: () => ({
+          position: camera.position.toArray() as [number, number, number],
+          target: controls.target.toArray() as [number, number, number],
+        }),
+        flyTo: (state) => {
+          transitionRef.current = {
+            startTime: performance.now() / 1000,
+            duration: 0.8,
+            startPosition: camera.position.clone(),
+            endPosition: new THREE.Vector3(...state.position),
+            startTarget: controls.target.clone(),
+            endTarget: new THREE.Vector3(...state.target),
+          };
+        },
+        screenshot: () => {
+          // The renderer has no preserveDrawingBuffer, so render a frame and
+          // read the canvas back synchronously before the buffer is cleared.
+          composer.render();
+          try {
+            return renderer.domElement.toDataURL("image/png");
+          } catch {
+            return null;
+          }
+        },
+      };
+    }
 
     scene.add(new THREE.AmbientLight("#7eefff", 0.7));
     const keyLight = new THREE.PointLight("#9dfff2", 2.2, 8);
@@ -807,8 +862,19 @@ const handlePointerClick = (event: PointerEvent) => {
       composerRef.current = null;
       renderer.dispose();
       renderer.domElement.remove();
+      if (sceneApiRef) {
+        sceneApiRef.current = null;
+      }
     };
   }, [onRegionSelect]);
+
+  // Settings → Scene → glow intensity. Runs once after mount too, so the
+  // persisted preference replaces the constructor default without rebuilding.
+  useEffect(() => {
+    if (bloomPassRef.current) {
+      bloomPassRef.current.strength = uiPrefs.bloomStrength;
+    }
+  }, [uiPrefs.bloomStrength]);
 
   useEffect(() => {
     const scene = sceneRef.current;

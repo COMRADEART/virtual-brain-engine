@@ -1,23 +1,46 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Keyboard, X, Sun, Moon } from "lucide-react";
 import { useTheme } from "../engine/useApiCall";
+import { SHORTCUT_LABELS, useKeymap, type ShortcutAction } from "../engine/keymap";
 
-const SHORTCUTS = [
+// Rebindable single-key shortcuts come from the live keymap (Settings →
+// Shortcuts); these chords are fixed.
+const FIXED_SHORTCUTS = [
   { key: "Space", action: "Play/Pause simulation" },
   { key: "1-7", action: "Select brain action" },
-  { key: "O", action: "Overview camera" },
-  { key: "I", action: "Inside camera" },
-  { key: "R", action: "Reset camera" },
-  { key: "X", action: "Toggle shell transparency" },
-  { key: "A", action: "Toggle anatomy cloud" },
-  { key: "P", action: "Cycle performance preset" },
-  { key: "L", action: "Cycle layout (Compact/Focus/Full)" },
+  { key: "Ctrl+K", action: "Command palette" },
+  { key: "F11", action: "Toggle Focus Mode" },
   { key: "?", action: "Toggle this help" },
+];
+
+const KEYMAP_ORDER: ShortcutAction[] = [
+  "overview",
+  "inside",
+  "resetCamera",
+  "toggleShell",
+  "toggleAnatomy",
+  "cyclePreset",
+  "cycleLayout",
+  "toggleEmergent",
+  "screenshot",
+  "openSettings",
 ];
 
 export function ShortcutsModal(): JSX.Element {
   const [open, setOpen] = useState(false);
   const [theme, toggleTheme] = useTheme();
+  const keymap = useKeymap();
+
+  const shortcuts = useMemo(
+    () => [
+      ...KEYMAP_ORDER.map((action) => ({
+        key: keymap[action] === "," ? "," : keymap[action].toUpperCase(),
+        action: SHORTCUT_LABELS[action],
+      })),
+      ...FIXED_SHORTCUTS,
+    ],
+    [keymap],
+  );
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -89,13 +112,14 @@ export function ShortcutsModal(): JSX.Element {
         <section className="shortcuts-section">
           <h3>Keyboard Shortcuts</h3>
           <div className="shortcuts-list">
-            {SHORTCUTS.map((s) => (
-              <div key={s.key} className="shortcut-item">
+            {shortcuts.map((s) => (
+              <div key={`${s.key}-${s.action}`} className="shortcut-item">
                 <kbd>{s.key}</kbd>
                 <span>{s.action}</span>
               </div>
             ))}
           </div>
+          <p className="settings-note">Rebind keys in Settings (press ,)</p>
         </section>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Search, LayoutGrid, LayoutDashboard, Focus, Maximize2, Zap, Cpu, Brain,
-  Database, Sparkles, Settings2, ChevronRight, Command,
+  Database, Sparkles, Settings2, ChevronRight, Command, Camera,
   Network, HeartPulse, BrainCircuit, Activity, GitBranch, MessageSquare
 } from "lucide-react";
 import type { LayoutMode } from "../../engine/useLayoutMode";
@@ -32,6 +32,8 @@ interface CommandPaletteProps {
   onOpenUnifiedTab: (tab: "ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism") => void;
   onToggleUnifiedPanel: (collapsed?: boolean) => void;
   onOpenModelHub: () => void;
+  onOpenSettings: () => void;
+  onScreenshot: () => void;
 }
 
 const CATEGORY_LABELS: Record<Command["category"], string> = {
@@ -46,6 +48,7 @@ export function CommandPalette({
   isOpen, onClose, currentLayout, currentPerfMode,
   onLayoutChange, onCyclePreset, onFocusMode, onCompactMode, onFullMode,
   onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
+  onOpenSettings, onScreenshot,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -96,6 +99,24 @@ export function CommandPalette({
       icon: <Zap size={16} />,
       shortcut: "P",
       action: () => { onCyclePreset(); onClose(); },
+    },
+    {
+      id: "open-settings",
+      label: "Open Settings",
+      description: "Theme, accent color, density, glass, motion, shortcuts",
+      category: "actions",
+      icon: <Settings2 size={16} />,
+      shortcut: ",",
+      action: () => { onOpenSettings(); onClose(); },
+    },
+    {
+      id: "take-screenshot",
+      label: "Take Screenshot",
+      description: "Save a PNG of the 3D brain scene",
+      category: "actions",
+      icon: <Camera size={16} />,
+      shortcut: "S",
+      action: () => { onScreenshot(); onClose(); },
     },
     {
       id: "model-hub",
@@ -187,7 +208,7 @@ export function CommandPalette({
     },
   ], [
     currentLayout, currentPerfMode, onLayoutChange, onCompactMode, onFullMode, onFocusMode, onCyclePreset, onClose,
-    onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub
+    onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
   ]);
 
   const filtered = useMemo(() => {

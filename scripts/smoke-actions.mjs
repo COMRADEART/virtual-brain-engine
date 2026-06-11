@@ -145,7 +145,13 @@ async function main() {
         // Ignore expected WebSocket errors for the optional backend server on port 8787.
         const isExpectedWsError =
           /WebSocket.*8787/.test(text) || /ws:\/\/127\.0\.0\.1:8787/.test(text);
-        if (!isFaviconMiss && !isExpectedWsError) issues.push(text);
+        // Ignore refused HTTP fetches to the same optional backend (e.g. the
+        // TrainingBar's one-shot status probe) — the app is designed to run
+        // server-less. Scoped to :8787 so a wrong URL still fails the test.
+        const isExpectedApiDown =
+          /ERR_CONNECTION_REFUSED/.test(text) &&
+          /127\.0\.0\.1:8787|localhost:8787/.test(url || text);
+        if (!isFaviconMiss && !isExpectedWsError && !isExpectedApiDown) issues.push(text);
       }
     });
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Cpu, Database, LayoutGrid, Moon, Sparkles, Sun, Zap } from "lucide-react";
+import { Activity, Cpu, Database, LayoutGrid, Moon, Settings2, Sparkles, Sun, Zap } from "lucide-react";
 import { subscribeBrainBus } from "../engine/brainBus";
 import { useTheme } from "../engine/useApiCall";
 import {
@@ -19,6 +19,7 @@ interface StatusBarProps {
   onCyclePreset: () => void;
   layout: LayoutMode;
   onCycleLayout: () => void;
+  onOpenSettings: () => void;
 }
 
 interface Stats {
@@ -34,6 +35,7 @@ export function StatusBar({
   onCyclePreset,
   layout,
   onCycleLayout,
+  onOpenSettings,
 }: StatusBarProps): JSX.Element {
   const presetLabel =
     mode === "auto"
@@ -145,6 +147,14 @@ export function StatusBar({
         aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
       >
         {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
+      </button>
+      <button
+        className="stat chip icon-only"
+        onClick={onOpenSettings}
+        title="Settings — ,"
+        aria-label="Open settings"
+      >
+        <Settings2 size={13} />
       </button>
     </footer>
   );

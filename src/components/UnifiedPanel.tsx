@@ -10,6 +10,7 @@ import { OrganismPanel } from "./OrganismPanel";
 import { Phase2CortexPanel } from "./Phase2CortexPanel";
 import { SwarmPanel } from "./SwarmPanel";
 import { subscribeBrainBus } from "../engine/brainBus";
+import { useDraggablePanel } from "../engine/useDraggablePanel";
 import type { MemoryPoint } from "../../shared/memory";
 import type { PipelineEvent } from "../../shared/pipeline";
 
@@ -621,6 +622,10 @@ export function UnifiedPanel({
     }
   };
   const [thinkActive, setThinkActive] = useState(false);
+  // Drag-to-reposition (header = handle, double-click resets). Only in the
+  // free-floating full layout — Compact/Focus place this panel in a grid.
+  const draggable = !compactMode && !focusMode;
+  const { style: dragStyle, handleProps } = useDraggablePanel("unified");
 
   useEffect(() => {
     return subscribeBrainBus((msg) => {
@@ -642,8 +647,15 @@ export function UnifiedPanel({
   }
 
   return (
-    <div className={`unified-panel ${compactMode ? "compact-mode" : ""} ${focusMode ? "focus-mode-panel" : ""}`}>
-      <header className="unified-header">
+    <div
+      className={`unified-panel ${compactMode ? "compact-mode" : ""} ${focusMode ? "focus-mode-panel" : ""}`}
+      style={draggable ? dragStyle : undefined}
+    >
+      <header
+        className="unified-header"
+        {...(draggable ? handleProps : {})}
+        title={draggable ? "Drag to move · double-click to reset" : undefined}
+      >
         <div className="unified-title">
           <Brain size={16} />
           <span>Brain OS</span>

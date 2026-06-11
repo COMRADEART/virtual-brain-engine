@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { subscribeBrainBus, subscribeConnection } from "../engine/brainBus";
 import { apiClient } from "../engine/apiClient";
+import { useDraggablePanel } from "../engine/useDraggablePanel";
 import type { TwinView, TwinAnomaly } from "../../shared/twin";
 
 const ANOMALY_CAP = 20;
@@ -66,6 +67,8 @@ export function DigitalTwinPanel({
   const [view, setView] = useState<TwinView | null>(null);
   const [internalCollapsed, setInternalCollapsed] = useState(true);
   const seeded = useRef(false);
+  // Drag-to-reposition (header = handle, double-click resets).
+  const { style: dragStyle, handleProps } = useDraggablePanel("digital-twin");
 
   const collapsed = controlledCollapsed !== undefined ? controlledCollapsed : internalCollapsed;
   const setCollapsed = (c: boolean | ((prev: boolean) => boolean)) => {
@@ -122,8 +125,8 @@ export function DigitalTwinPanel({
   const healthPct = Math.round(s.healthScore * 100);
 
   return (
-    <aside className="twin-panel" aria-label="Digital Twin">
-      <header className="twin-head">
+    <aside className="twin-panel" aria-label="Digital Twin" style={dragStyle}>
+      <header className="twin-head" {...handleProps} title="Drag to move · double-click to reset">
         <Activity size={14} />
         <span>Digital Twin</span>
         <small className={`twin-health twin-health-${healthScoreTier(s.healthScore)}`}>

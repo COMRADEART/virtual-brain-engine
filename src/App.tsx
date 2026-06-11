@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AiPickOverlay, type AiPickEvent } from "./components/AiPickOverlay";
-import { BrainScene, type AnatomyLoadProgress } from "./components/BrainScene";
+import { BrainScene, type AnatomyLoadProgress, type BrainSceneApi } from "./components/BrainScene";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { ToastHost } from "./components/ToastHost";
+import { TrainingBar } from "./components/TrainingBar";
+import { OnboardingHints } from "./components/OnboardingHints";
 import { InfoPanel } from "./components/InfoPanel";
 import { LogicalRegionIndicator } from "./components/LogicalRegionIndicator";
 import { PipelineOverlay } from "./components/PipelineOverlay";
@@ -32,11 +36,15 @@ import {
 } from "./engine/performancePresets";
 import { useAutoQuality } from "./engine/useAutoQuality";
 import { useClipboardCollector } from "./engine/useClipboardCollector";
-import { useLayoutMode, type LayoutMode } from "./engine/useLayoutMode";
+import { useLayoutMode } from "./engine/useLayoutMode";
+import { useLocalStorage } from "./engine/useApiCall";
+import { actionForKey } from "./engine/keymap";
+import { toastError, toastSuccess } from "./engine/toastBus";
 import type {
   BrainActionId,
   BrainMetrics,
   BrainRegionId,
+  CameraBookmark,
   CameraPresetRequest,
   RegionVisibility,
 } from "./engine/types";
@@ -49,26 +57,37 @@ const DEFAULT_VISIBILITY = REGION_DEFINITIONS.reduce((visibility, region) => {
 
 function App(): JSX.Element {
 const [running, setRunning] = useState(true);
-const [selectedActionId, setSelectedActionId] = useState<BrainActionId>("attentional-blink");
-const [showEmergentControls, setShowEmergentControls] = useState(true);
-  
+// User-facing config persists across reloads (useLocalStorage), so the app
+// reopens exactly how it was left. Transient state (running, selection,
+// metrics, camera) stays plain useState.
+const [storedActionId, setSelectedActionId] = useLocalStorage<BrainActionId>("brain-action", "attentional-blink");
+// Guard against a stale persisted id after the action list changes.
+const selectedActionId: BrainActionId = BRAIN_ACTIONS.some((a) => a.id === storedActionId)
+  ? storedActionId
+  : "attentional-blink";
+const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>("brain-emergent-controls", true);
+
   // Phase 2 Panel States
   // Phase 4 (improvement plan §11): UnifiedPanel defaults to collapsed so the
   // 3D scene is the centerpiece on first load. The user opens panels they need
   // via the CommandPalette / tab icons; the previous default buried the scene.
-  const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useState(true);
-  const [selfConsciousnessCollapsed, setSelfConsciousnessCollapsed] = useState(true);
-  const [unifiedTab, setUnifiedTab] = useState<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("ask");
-  const [unifiedCollapsed, setUnifiedCollapsed] = useState(true);
+  const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useLocalStorage<boolean>("brain-twin-collapsed", true);
+  const [unifiedTab, setUnifiedTab] = useLocalStorage<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("brain-unified-tab", "ask");
+  const [unifiedCollapsed, setUnifiedCollapsed] = useLocalStorage<boolean>("brain-unified-collapsed", true);
   const [modelHubOpen, setModelHubOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const [shellTransparent, setShellTransparent] = useState(true);
-  const [signalSpeed, setSignalSpeed] = useState(1.3);
-  const [perfMode, setPerfMode] = useState<PerfMode>(DEFAULT_PRESET);
+  const [shellTransparent, setShellTransparent] = useLocalStorage<boolean>("brain-shell-transparent", true);
+  const [signalSpeed, setSignalSpeed] = useLocalStorage<number>("brain-signal-speed", 1.3);
+  const [storedPerfMode, setPerfMode] = useLocalStorage<PerfMode>("brain-perf-mode", DEFAULT_PRESET);
+  const perfMode: PerfMode =
+    storedPerfMode === "auto" || PERF_PRESETS[storedPerfMode as PerfPresetId] !== undefined
+      ? storedPerfMode
+      : DEFAULT_PRESET;
   const [autoTier, setAutoTier] = useState<PerfPresetId>(DEFAULT_AUTO_TIER);
   const [fps, setFps] = useState(60);
   // Full-mode density slider sets a manual override; null = follow the preset.
-  const [densityOverride, setDensityOverride] = useState<number | null>(null);
+  const [densityOverride, setDensityOverride] = useLocalStorage<number | null>("brain-density-override", null);
   // In Auto mode the adaptive controller drives the effective tier; otherwise
   // the user's fixed choice is used directly.
   const effectivePresetId: PerfPresetId = perfMode === "auto" ? autoTier : perfMode;
@@ -103,8 +122,8 @@ const [showEmergentControls, setShowEmergentControls] = useState(true);
   }, []);
   const [regionVisibility, setRegionVisibility] = useState<RegionVisibility>(DEFAULT_VISIBILITY);
   const [selectedRegionId, setSelectedRegionId] = useState<BrainRegionId | null>("motor-l");
-  const [anatomyVisible, setAnatomyVisible] = useState(true);
-  const [anatomyOpacity, setAnatomyOpacity] = useState(0.32);
+  const [anatomyVisible, setAnatomyVisible] = useLocalStorage<boolean>("brain-anatomy-visible", true);
+  const [anatomyOpacity, setAnatomyOpacity] = useLocalStorage<number>("brain-anatomy-opacity", 0.32);
   const [metrics, setMetrics] = useState<BrainMetrics>({
     neurons: 0,
     pathways: 0,
@@ -122,6 +141,62 @@ const [anatomyProgress, setAnatomyProgress] = useState<AnatomyLoadProgress>({
   done: false,
 });
 
+  // Imperative scene surface (camera bookmarks + screenshot). Bound by the
+  // full-layout BrainScene; other layouts leave it null and the handlers
+  // degrade with a toast.
+  const sceneApiRef = useRef<BrainSceneApi | null>(null);
+  const [cameraBookmarks, setCameraBookmarks] = useLocalStorage<CameraBookmark[]>("brain-camera-bookmarks", []);
+
+  const handleScreenshot = useCallback(() => {
+    const dataUrl = sceneApiRef.current?.screenshot() ?? null;
+    if (!dataUrl) {
+      toastError("Screenshot needs the Full layout's 3D scene");
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = `brain-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.png`;
+    link.click();
+    toastSuccess("Screenshot saved");
+  }, []);
+
+  const handleSaveBookmark = useCallback(() => {
+    const state = sceneApiRef.current?.getCameraState() ?? null;
+    if (!state) {
+      toastError("Camera unavailable");
+      return;
+    }
+    if (cameraBookmarks.length >= 6) {
+      toastError("Up to 6 saved views — delete one first");
+      return;
+    }
+    const maxN = cameraBookmarks.reduce((max, b) => {
+      const m = /^View (\d+)$/.exec(b.name);
+      return m ? Math.max(max, parseInt(m[1], 10)) : max;
+    }, 0);
+    const name = `View ${maxN + 1}`;
+    setCameraBookmarks([
+      ...cameraBookmarks,
+      { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name, ...state },
+    ]);
+    toastSuccess(`Saved "${name}"`);
+  }, [cameraBookmarks, setCameraBookmarks]);
+
+  const handleGoBookmark = useCallback(
+    (id: string) => {
+      const bookmark = cameraBookmarks.find((b) => b.id === id);
+      if (bookmark) sceneApiRef.current?.flyTo(bookmark);
+    },
+    [cameraBookmarks],
+  );
+
+  const handleDeleteBookmark = useCallback(
+    (id: string) => {
+      setCameraBookmarks((list) => list.filter((b) => b.id !== id));
+    },
+    [setCameraBookmarks],
+  );
+
   const shellOpacity = shellTransparent ? 0.02 : 0.08;
 
 useEffect(() => {
@@ -129,7 +204,7 @@ useEffect(() => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
       return;
     }
-    // Focus Mode toggle: F11 or Ctrl+Shift+F
+    // Focus Mode toggle: F11 or Ctrl+Shift+F (fixed chord)
     if (event.key === "F11" || ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === "F")) {
       event.preventDefault();
       if (layout === "focus") {
@@ -139,61 +214,75 @@ useEffect(() => {
       }
       return;
     }
-    switch (event.key) {
-      case " ":
-        event.preventDefault();
-        setRunning((r) => !r);
-        break;
-      case "1":
-      case "2":
-      case "3":
-      case "4":
-      case "5":
-      case "6":
-      case "7": {
-        const index = parseInt(event.key, 10) - 1;
-        if (index < BRAIN_ACTIONS.length) {
-          setSelectedActionId(BRAIN_ACTIONS[index].id);
-        }
-        break;
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+    // Fixed keys.
+    if (event.key === " ") {
+      event.preventDefault();
+      setRunning((r) => !r);
+      return;
+    }
+    if (event.key >= "1" && event.key <= "7") {
+      const index = parseInt(event.key, 10) - 1;
+      if (index < BRAIN_ACTIONS.length) {
+        setSelectedActionId(BRAIN_ACTIONS[index].id);
       }
-      case "o":
-      case "O":
+      return;
+    }
+    // Rebindable keys (Settings → Shortcuts). While the settings modal is
+    // open, only its own openSettings toggle stays live so stray presses
+    // don't move the camera behind the dialog.
+    const action = actionForKey(event.key);
+    if (!action) return;
+    if (settingsOpen && action !== "openSettings") return;
+    switch (action) {
+      case "overview":
         setCameraPreset((p) => ({ mode: "overview", sequence: p.sequence + 1 }));
         break;
-      case "i":
-      case "I":
+      case "inside":
         setCameraPreset((p) => ({ mode: "inside", sequence: p.sequence + 1 }));
         break;
-      case "r":
-      case "R":
+      case "resetCamera":
         setCameraPreset((p) => ({ mode: "reset", sequence: p.sequence + 1 }));
         break;
-      case "x":
-      case "X":
+      case "toggleShell":
         setShellTransparent((t) => !t);
         break;
-      case "a":
-      case "A":
+      case "toggleAnatomy":
         setAnatomyVisible((v) => !v);
         break;
-      case "p":
-      case "P":
+      case "cyclePreset":
         cyclePreset();
         break;
-      case "l":
-      case "L":
+      case "cycleLayout":
         cycleLayout();
         break;
-      case "e":
-      case "E":
+      case "toggleEmergent":
         setShowEmergentControls((e) => !e);
+        break;
+      case "screenshot":
+        handleScreenshot();
+        break;
+      case "openSettings":
+        setSettingsOpen((o) => !o);
         break;
     }
   };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [
+    layout,
+    setMode,
+    settingsOpen,
+    cyclePreset,
+    cycleLayout,
+    handleScreenshot,
+    setSelectedActionId,
+    setShellTransparent,
+    setAnatomyVisible,
+    setShowEmergentControls,
+  ]);
 
   const anatomyPercent = useMemo(() => {
     if (anatomyProgress.done) {
@@ -308,6 +397,7 @@ useEffect(() => {
         onActionSelect={setSelectedActionId}
         perfPreset={preset}
         regionVisibility={sceneVisibility}
+        sceneApiRef={sceneApiRef}
         selectedActionId={selectedActionId}
         selectedRegionId={selectedRegionId}
         showEmergentControls={showEmergentControls}
@@ -346,6 +436,11 @@ useEffect(() => {
             selectedRegionId={selectedRegionId}
             shellTransparent={shellTransparent}
             signalSpeed={signalSpeed}
+            cameraBookmarks={cameraBookmarks}
+            onSaveBookmark={handleSaveBookmark}
+            onGoBookmark={handleGoBookmark}
+            onDeleteBookmark={handleDeleteBookmark}
+            onScreenshot={handleScreenshot}
           />
           <InfoPanel
             metrics={metrics}
@@ -378,6 +473,7 @@ useEffect(() => {
             onCyclePreset={cyclePreset}
             layout={layout}
             onCycleLayout={cycleLayout}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         </>
       )}
@@ -397,6 +493,10 @@ useEffect(() => {
 
       <ShortcutsModal />
       <ModelHubPanel open={modelHubOpen} onClose={() => setModelHubOpen(false)} />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ToastHost />
+      <TrainingBar />
+      <OnboardingHints />
       <CommandPalette
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
@@ -411,6 +511,8 @@ useEffect(() => {
         onOpenUnifiedTab={openUnifiedTab}
         onToggleUnifiedPanel={toggleUnifiedPanel}
         onOpenModelHub={() => setModelHubOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onScreenshot={handleScreenshot}
       />
     </main>
   );
