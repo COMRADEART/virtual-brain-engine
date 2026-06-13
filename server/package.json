@@ -50,6 +50,11 @@
     "goals:selfcheck": "tsx scripts/goals-selfcheck.ts",
     "procedural:selfcheck": "tsx scripts/procedural-selfcheck.ts",
     "stages:selfcheck": "tsx scripts/stages-selfcheck.ts",
+    "fastpath:selfcheck": "tsx scripts/fastpath-selfcheck.ts",
+    "parallelreason:selfcheck": "tsx scripts/parallelreason-selfcheck.ts",
+    "adaptivedepth:selfcheck": "tsx scripts/adaptivedepth-selfcheck.ts",
+    "narrative:selfcheck": "tsx scripts/narrative-selfcheck.ts",
+    "monologue:selfcheck": "tsx scripts/monologue-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },

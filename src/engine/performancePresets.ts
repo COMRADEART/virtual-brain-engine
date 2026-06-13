@@ -15,6 +15,13 @@ export interface PerfPreset {
   bloom: boolean;
   /** Caps the active pulse pool (per-preset replacement for MAX_PULSES=260). */
   maxPulses: number;
+  /**
+   * Max rendered frames per second. The render loop is otherwise uncapped and
+   * draws as fast as the display refreshes (60/120/144 Hz) — which alone pegs
+   * the GPU on a continuously-animating scene. Capping to 30 keeps every neuron
+   * on screen and cuts GPU roughly in proportion to the refresh rate. 0 = uncapped.
+   */
+  fpsCap: number;
 }
 
 // Density anchors reuse the project's already-calibrated values
@@ -28,14 +35,18 @@ export const PERF_PRESETS: Record<PerfPresetId, PerfPreset> = {
     dprCap: 1.0,
     bloom: false,
     maxPulses: 90,
+    fpsCap: 30,
   },
   balanced: {
     id: "balanced",
     label: "Balanced",
     density: 0.7,
-    dprCap: 1.25,
+    dprCap: 1.0,
     bloom: false,
     maxPulses: 160,
+    // Default tier: 30 fps + DPR 1.0 keeps the full neuron field on screen while
+    // holding GPU low. Raise to Cinematic (or lift the FPS cap) for a high-end GPU.
+    fpsCap: 30,
   },
   cinematic: {
     id: "cinematic",
@@ -44,6 +55,7 @@ export const PERF_PRESETS: Record<PerfPresetId, PerfPreset> = {
     dprCap: 1.75,
     bloom: true,
     maxPulses: 320,
+    fpsCap: 60,
   },
 };
 

@@ -42,6 +42,7 @@ import { runSleepCycle } from "../memory/sleepCycle.js";
 import { buildEpisodes, listEpisodes } from "../memory/episodes.js";
 import { runWorkspaceCycle } from "../core/workspace.js";
 import { loadPredictiveState } from "../reasoning/predictiveProcessing.js";
+import { getNarrative, synthesizeNarrative } from "../core/narrative.js";
 
 export const brainRouter = Router();
 
@@ -128,6 +129,18 @@ brainRouter.post("/brain/sleep", (_req, res) => {
 
 brainRouter.post("/brain/workspace", (_req, res) => {
   void runWorkspaceCycle()
+    .then((report) => res.json(report))
+    .catch((err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) }));
+});
+
+// MYTHOS — the brain's self-narrative ("who I am / how I've grown").
+brainRouter.get("/brain/narrative", (_req, res) => {
+  res.json({ narrative: getNarrative() });
+});
+
+// Synthesize one self-narrative now (distill + persist) — the runtime check.
+brainRouter.post("/brain/narrate", (_req, res) => {
+  void synthesizeNarrative()
     .then((report) => res.json(report))
     .catch((err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) }));
 });

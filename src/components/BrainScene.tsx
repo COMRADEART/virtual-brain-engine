@@ -703,6 +703,9 @@ export function BrainScene({
     const clock = new THREE.Clock();
     let animationFrame = 0;
     let audioFrameCounter = 0;
+    // Frame governor state (see the FPS cap in renderFrame). 0 → first frame
+    // always renders.
+    let lastFrameMs = 0;
 
     // Pause simulation when the tab is hidden to save GPU/CPU.
     const handleVisibilityChange = () => {
@@ -712,7 +715,20 @@ export function BrainScene({
 
 const renderFrame = () => {
     animationFrame = window.requestAnimationFrame(renderFrame);
-    const delta = Math.min(clock.getDelta(), 0.033);
+    // GPU governor: cap rendered FPS so a continuously-animating scene doesn't
+    // peg the GPU at the display's full refresh (60/120/144 Hz). Skipping here
+    // skips simulation.step + composer.render together; clock.getDelta() then
+    // measures the longer gap, so the simulation still advances in real time and
+    // every neuron stays on screen — we just draw fewer frames. 0 = uncapped.
+    const fpsCap = perfPresetRef.current.fpsCap;
+    if (fpsCap > 0) {
+      const nowMs = performance.now();
+      if (nowMs - lastFrameMs < 1000 / fpsCap - 1) {
+        return;
+      }
+      lastFrameMs = nowMs;
+    }
+    const delta = Math.min(clock.getDelta(), 0.05);
     const elapsed = clock.elapsedTime;
     const simulation = simulationRef.current;
     const graphRenderer = graphRendererRef.current;

@@ -21,6 +21,8 @@ import { currentStage, stageAllows } from "../core/stages.js";
 import { getBeliefEngine } from "../core/beliefs.js";
 import { listProcedures } from "../memory/procedural.js";
 import { runWorkspaceCycle } from "../core/workspace.js";
+import { emitMonologue } from "../core/monologue.js";
+import { getNarrative } from "../core/narrative.js";
 import { CONFIG } from "../config.js";
 import { createSafetyGate } from "../core/safety.js";
 import { createCognitiveSwarm } from "../core/swarm.js";
@@ -346,11 +348,31 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   // LLM micro-thought, written back as memory + broadcast as an idle-thought.
   // Skips quietly when no connector / no bids; failures never crash the core.
   let workspaceTick: NodeJS.Timeout | null = null;
-  if (CONFIG.workspaceEnabled) {
+  if (CONFIG.workspaceEnabled || CONFIG.innerMonologue) {
     workspaceTick = setInterval(() => {
-      void runWorkspaceCycle().catch((err) =>
-        console.warn("[brain-core] workspace cycle failed:", err),
-      );
+      if (CONFIG.workspaceEnabled) {
+        void runWorkspaceCycle().catch((err) =>
+          console.warn("[brain-core] workspace cycle failed:", err),
+        );
+      }
+      // MYTHOS M2 — author one first-person monologue line into the cognition
+      // stream on the workspace cadence ("I wonder… / I'm working toward… / I
+      // keep turning over the belief that…"). Internally rate-limited; the
+      // composer draws on the current stage, a contested belief, an active goal,
+      // and the self-narrative identity. Never throws.
+      if (CONFIG.innerMonologue) {
+        try {
+          const contested = getBeliefEngine().reExaminationCandidates(1)[0]?.statement ?? null;
+          emitMonologue({
+            stage: currentStage(),
+            contestedBelief: contested,
+            activeGoal: organism.getActiveGoalTitles(1)[0] ?? null,
+            narrativeIdentity: getNarrative()?.identity ?? null,
+          });
+        } catch (err) {
+          console.warn("[brain-core] inner monologue failed:", err);
+        }
+      }
     }, CONFIG.workspaceIntervalMin * 60_000);
     if (typeof workspaceTick.unref === "function") workspaceTick.unref();
   }

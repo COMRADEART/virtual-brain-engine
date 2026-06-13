@@ -37,6 +37,7 @@ import { MemorySystem } from "./MemorySystem";
 import { NeuromodulationSystem } from "./NeuromodulationSystem";
 import { PredictiveCodingEngine } from "./PredictiveCodingEngine";
 import { RealisticConnectome } from "./RealisticConnectome";
+import { PathwayPlasticity } from "./pathwayPlasticity";
 import type { CognitiveState } from "./cognitiveStates";
 import type { LogicalRegionId } from "../../shared/pipeline";
 import type { NeuromodSnapshot } from "../../shared/brainSnapshot";
@@ -146,6 +147,12 @@ export class AdvancedBrainCore implements BrainSimulation {
   private readonly regionNeurons: number[][];
   /** visual pathways grouped by their source node (for spike-driven pulses). */
   private readonly pathwaysBySource: number[][];
+  /** Self-improving VISIBLE pathways: a learned weight per drawn pathway that
+   *  strengthens the routes pulses use, biases spike-driven + spontaneous
+   *  routing toward them, and holds a faint persistent glow so the emergent
+   *  communication channels are visible. Complements (does not replace) the
+   *  neuron-level STDP on the connectome — this is the layer the renderer sees. */
+  private readonly pathwayPlast: PathwayPlasticity;
   /** action-eligible pathways for the spontaneous baseline visual flow. */
   private eligiblePathways: number[] = [];
   private readonly regionDrive: Float32Array; // per region, this frame
@@ -194,6 +201,7 @@ export class AdvancedBrainCore implements BrainSimulation {
     this.regionIntensity = new Float32Array(this.R);
     this.regionFlashIntensity = new Float32Array(this.R);
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
+    this.pathwayPlast = new PathwayPlasticity(graph.pathways.length);
     this.membranePotentialNorm = new Float32Array(this.N);
     this.burstStatus = new Float32Array(this.N);
     this.firedFlash = new Float32Array(this.N);
@@ -508,6 +516,7 @@ export class AdvancedBrainCore implements BrainSimulation {
       flash[i] *= flashDecay;
     }
     this.updateBursts(frameSpikes, dt);
+    this.pathwayPlast.decay(dt); // relax learned pathway weights toward baseline
     this.advancePulses(dt);
     this.spawnPulses(frameSpikes, dt);
     this._memoryIntensity = Math.max(this._memoryIntensity * Math.pow(0.92, dt), this.memory.isReplaying() ? 0.6 : 0);
@@ -656,7 +665,14 @@ export class AdvancedBrainCore implements BrainSimulation {
 
   private advancePulses(dt: number): void {
     const pathwayDecay = Math.pow(0.08, dt);
-    for (let i = 0; i < this.pathwayIntensity.length; i++) this.pathwayIntensity[i] *= pathwayDecay;
+    // Decay the visible intensity but hold a faint floor on learned routes so the
+    // self-organized wiring reads as standing structure between pulses.
+    for (let i = 0; i < this.pathwayIntensity.length; i++) {
+      let v = this.pathwayIntensity[i] * pathwayDecay;
+      const floor = this.pathwayPlast.floor(i);
+      if (floor > v) v = floor;
+      this.pathwayIntensity[i] = v;
+    }
 
     for (let index = this._pulses.length - 1; index >= 0; index--) {
       const pulse = this._pulses[index];
@@ -666,6 +682,8 @@ export class AdvancedBrainCore implements BrainSimulation {
       if (glow > this.pathwayIntensity[pi]) this.pathwayIntensity[pi] = glow;
 
       if (pulse.progress >= 1) {
+        // Successful traversal strengthens the route ("fire together, wire together").
+        this.pathwayPlast.potentiate(pi, pulse.intensity);
         const last = this._pulses.pop()!;
         if (index < this._pulses.length) this._pulses[index] = last;
       }
@@ -682,19 +700,26 @@ export class AdvancedBrainCore implements BrainSimulation {
       if (made >= MAX_NEW_PULSES_PER_FRAME || this._pulses.length >= this.maxPulses) break;
       const out = this.pathwaysBySource[i];
       if (out.length === 0) continue;
-      const p = out[(this.nextPulseId + i) % out.length];
+      // Route toward the synapse this neuron has learned to favour, not round-robin,
+      // so strengthened channels carry more traffic (emergent communication).
+      const p = this.pathwayPlast.pick(out, Math.random);
+      if (p < 0) continue;
+      this.pathwayPlast.potentiate(p, 0.4);
       this.pushPulse(p, color);
       made++;
     }
 
     // Spontaneous baseline flow along the action's network so the selected
-    // behaviour always reads visually, even when spiking is sparse.
+    // behaviour always reads visually, even when spiking is sparse. Also routed
+    // by learned weight so the baseline reinforces the same channels.
     const action = ACTION_BY_ID[this.actionId];
     this.spawnAccumulator += dt * (action?.impulseRate ?? 6) * this.speed * 0.6;
     while (this.spawnAccumulator >= 1) {
       this.spawnAccumulator -= 1;
       if (this._pulses.length >= this.maxPulses || this.eligiblePathways.length === 0) break;
-      const p = this.eligiblePathways[Math.floor(Math.random() * this.eligiblePathways.length)];
+      const p = this.pathwayPlast.pick(this.eligiblePathways, Math.random);
+      if (p < 0) break;
+      this.pathwayPlast.potentiate(p, 0.4);
       this.pushPulse(p, color);
     }
   }

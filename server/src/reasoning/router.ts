@@ -291,6 +291,10 @@ export function routeQuery(
   opts?: {
     queryEmbedding?: number[];
     regionPrototypes?: Partial<Record<LogicalRegionId, number[]>>;
+    // Difficulty a query must reach to take the "full" (thorough) route. Defaults
+    // to DEPTH_DIFFICULTY_THRESHOLD; fast mode raises it so more queries take the
+    // cheap embed→search→stream path. Clamped to [0,1].
+    depthThreshold?: number;
   },
 ): RouteDecision {
   const tokenList = tokenize(query);
@@ -340,7 +344,11 @@ export function routeQuery(
 
   const strongCount = scores.filter((s) => s.score >= STRONG_REGION_THRESHOLD).length;
   const difficulty = estimateDifficulty(query, tokenList, strongCount);
-  const depth: RouteDepth = difficulty >= DEPTH_DIFFICULTY_THRESHOLD ? "full" : "shallow";
+  const threshold =
+    opts?.depthThreshold !== undefined
+      ? Math.min(1, Math.max(0, opts.depthThreshold))
+      : DEPTH_DIFFICULTY_THRESHOLD;
+  const depth: RouteDepth = difficulty >= threshold ? "full" : "shallow";
 
   return { experts, scores, difficulty, depth, usedEmbedding };
 }

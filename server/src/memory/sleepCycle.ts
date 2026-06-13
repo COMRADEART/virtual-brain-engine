@@ -36,6 +36,7 @@ import { tokens } from "../attention/saliency.js";
 import { CONFIG } from "../config.js";
 import { getBeliefEngine } from "../core/beliefs.js";
 import { extractProcedures } from "./procedural.js";
+import { synthesizeNarrative } from "../core/narrative.js";
 
 export interface EpisodeForSleep {
   id: string;
@@ -278,6 +279,19 @@ export async function runSleepCycle(opts: SleepOptions = {}): Promise<SleepRepor
       }
     } catch (err) {
       surfaceError("sleepCycle.distillGroup", err);
+    }
+  }
+
+  // MYTHOS M1 — after consolidation, refresh the brain's self-narrative
+  // (generative-agents-style reflection over beliefs/goals/stage/competence/
+  // episodes). Resolves its OWN connector (NOT sleep's injected one), so the
+  // hermetic sleep selfcheck — which has no default connector — adds no LLM
+  // call and stays unperturbed. Failure-isolated: never affects the sleep report.
+  if (CONFIG.selfNarrative) {
+    try {
+      await synthesizeNarrative();
+    } catch (err) {
+      surfaceError("sleepCycle.narrative", err);
     }
   }
   return report;

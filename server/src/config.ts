@@ -210,6 +210,63 @@ export interface ServerConfig {
   // ON by default; skipped quietly when no connector is configured.
   workspaceEnabled: boolean;
   workspaceIntervalMin: number;
+  // --- Fast mode ("be like Fable: fast + efficient") --------------------------
+  // Biases the pipeline's adaptive compute toward the cheap path: more queries
+  // answer directly from retrieved memory (embed → search → stream) instead of
+  // paying two blocking LLM round-trips (reasoning + contradiction check) before
+  // the answer streams, and the streamed answer is length-capped so it stays
+  // tight. Genuinely hard/compound queries still take the full path. ON by
+  // default for this personal brain; set BRAIN_FAST_MODE=false for the thorough
+  // path on every query.
+  fastMode: boolean;
+  // Depth gate used when fastMode is on. A query's difficulty must reach THIS to
+  // take the full (slow, thorough) route; below it answers on the fast path.
+  // Higher than the base DEPTH_DIFFICULTY_THRESHOLD (0.45) so single-trigger
+  // explanatory queries go fast, while compound/multi-clause ones stay full.
+  fastModeDepthThreshold: number;
+  // Max tokens for the streamed answer in fast mode (request-level num_predict /
+  // max_tokens). Keeps responses crisp instead of rambling to the context limit.
+  fastModeMaxTokens: number;
+  // --- Fable + Mythos upgrade -------------------------------------------------
+  // FABLE F1 — shallow→full salvage: when a shallow (fast) route retrieves
+  // nothing / weak memory, transparently escalate to the full path instead of
+  // answering thin (the cascade "escalate on weak signal" pattern). ON by
+  // default but inert unless retrieval is actually thin → no-regression on the
+  // common fast case.
+  fastSalvage: boolean;
+  // Top retrieval score below which a shallow route is escalated (with 0 hits it
+  // always escalates). [0,1].
+  fastSalvageScoreFloor: number;
+  // FABLE F2 — speculative parallel reasoning: on a genuinely hard (full +
+  // high-difficulty) route, sample N reasoning drafts concurrently and keep the
+  // most consistent by local lexical consensus (no judge, no logprobs). OFF by
+  // default — it changes the hot-path LLM call count; opt in with
+  // PARALLEL_REASONING=true. Failure-isolated → falls back to a single draft.
+  parallelReasoning: boolean;
+  // Number of parallel reasoning drafts (clamped 2..3).
+  parallelReasoningDrafts: number;
+  // FABLE F3 — outcome-learned adaptive compute: nudge the depth threshold from
+  // observed citation outcomes, with a warm-start floor that returns the base
+  // threshold EXACTLY until enough observations accrue (no-regression). OFF by
+  // default — opt in with ADAPTIVE_DEPTH=true.
+  adaptiveDepth: boolean;
+  // Per-observation count below which adaptiveDepth returns the base threshold
+  // unchanged (the no-regression warm-start floor).
+  adaptiveDepthWarmAt: number;
+  // MYTHOS M1 — narrative self-synthesis: during the sleep cycle, distill the
+  // brain's identity material (beliefs/goals/stage/competence/episodes) into a
+  // coherent first-person self-narrative (generative-agents-style reflection).
+  // ON by default; degrades to a no-op without a connector, exactly like sleep.
+  selfNarrative: boolean;
+  // MYTHOS M2 — first-person inner monologue: the brain authors "I wonder… / I'm
+  // working toward… / I keep turning over the belief that…" lines into the
+  // cognition stream on the workspace cadence. ON by default; rate-limited.
+  innerMonologue: boolean;
+  // MYTHOS M3 — narrative-grounded reasoning: inject a compact first-person
+  // identity preamble (from M1) into the reasoning + response prompts so answers
+  // stay consistent with who the brain is. OFF by default — it changes hot-path
+  // prompt content; opt in with NARRATIVE_GROUNDING=true.
+  narrativeGrounding: boolean;
   // --- Scheduled SQLite backup ------------------------------------------------
   // The whole brain lives in one SQLite file; snapshot it with VACUUM INTO on
   // boot + an interval so a disk fault / bad migration is recoverable. ON by
@@ -314,6 +371,19 @@ export const CONFIG: ServerConfig = {
   sleepIntervalHours: Math.max(1, num("SLEEP_INTERVAL_HOURS", 24)),
   workspaceEnabled: bool("WORKSPACE", true),
   workspaceIntervalMin: Math.max(1, num("WORKSPACE_INTERVAL_MIN", 10)),
+  fastMode: bool("BRAIN_FAST_MODE", true),
+  fastModeDepthThreshold: Math.min(1, Math.max(0, num("BRAIN_FAST_MODE_DEPTH_THRESHOLD", 0.65))),
+  fastModeMaxTokens: Math.max(128, num("BRAIN_FAST_MODE_MAX_TOKENS", 768)),
+  // Fable + Mythos upgrade.
+  fastSalvage: bool("FAST_SALVAGE", true),
+  fastSalvageScoreFloor: Math.min(1, Math.max(0, num("FAST_SALVAGE_SCORE_FLOOR", 0.25))),
+  parallelReasoning: bool("PARALLEL_REASONING", false),
+  parallelReasoningDrafts: Math.min(3, Math.max(2, num("PARALLEL_REASONING_DRAFTS", 2))),
+  adaptiveDepth: bool("ADAPTIVE_DEPTH", false),
+  adaptiveDepthWarmAt: Math.max(1, num("ADAPTIVE_DEPTH_WARM_AT", 20)),
+  selfNarrative: bool("SELF_NARRATIVE", true),
+  innerMonologue: bool("INNER_MONOLOGUE", true),
+  narrativeGrounding: bool("NARRATIVE_GROUNDING", false),
   backupEnabled: bool("BACKUP_ENABLED", true),
   backupIntervalHours: Math.max(1, num("BACKUP_INTERVAL_HOURS", 24)),
   backupKeep: Math.max(1, num("BACKUP_KEEP", 7)),

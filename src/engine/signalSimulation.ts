@@ -10,6 +10,7 @@ import type {
   SynapticPathway,
 } from "./types";
 import type { ReplayEvent } from "../../shared/replay";
+import { PathwayPlasticity } from "./pathwayPlasticity";
 
 const DEFAULT_MAX_PULSES = 260;
 
@@ -96,6 +97,12 @@ export class SignalSimulation {
   // so the visual feels like a momentary burst on top of steady-state activity.
   readonly regionFlashIntensity: Float32Array;
   readonly pathwayIntensity: Float32Array;
+  // Self-improving pathways: a learned per-pathway weight that strengthens the
+  // routes pulses actually use, biases future routing toward them, and keeps a
+  // faint persistent glow so the emergent wiring is visible (see
+  // pathwayPlasticity.ts). Reinitialised in setGraph when the pathway count
+  // changes.
+  private pathwayPlast: PathwayPlasticity;
   private _memoryIntensity = 0;
   get memoryIntensity(): number {
     return this._memoryIntensity;
@@ -115,6 +122,7 @@ export class SignalSimulation {
     this.regionIntensity = new Float32Array(graph.regionOrder.length);
     this.regionFlashIntensity = new Float32Array(graph.regionOrder.length);
     this.pathwayIntensity = new Float32Array(graph.pathways.length);
+    this.pathwayPlast = new PathwayPlasticity(graph.pathways.length);
     this.rebuildEligiblePathways();
     this.initializeEmergentAction();
   }
@@ -176,6 +184,7 @@ export class SignalSimulation {
     this.spawnAccumulator = 0;
     this.nextPulseId = 1;
     this.pathwayIntensity.fill(0);
+    this.pathwayPlast = new PathwayPlasticity(graph.pathways.length);
     this.rebuildEligiblePathways();
   }
 
@@ -272,9 +281,16 @@ export class SignalSimulation {
       this.regionFlashIntensity[index] *= flashDecay;
     }
 
+    // Self-improving pathways: relax the learned weights toward baseline, then
+    // decay the visible intensity but hold a faint floor on strengthened routes
+    // so the emergent wiring reads as standing structure between pulses.
     const pathwayDecay = Math.pow(0.08, deltaSeconds);
+    this.pathwayPlast.decay(deltaSeconds);
     for (let index = 0; index < this.pathwayIntensity.length; index += 1) {
-      this.pathwayIntensity[index] *= pathwayDecay;
+      let v = this.pathwayIntensity[index] * pathwayDecay;
+      const floor = this.pathwayPlast.floor(index);
+      if (floor > v) v = floor;
+      this.pathwayIntensity[index] = v;
     }
 
     this._memoryIntensity *= Math.pow(0.92, deltaSeconds);
@@ -335,6 +351,9 @@ export class SignalSimulation {
           this.regionIntensity[targetNode.regionIndex],
           pulse.intensity,
         );
+        // Successful traversal strengthens the route ("fire together, wire
+        // together") so future pulses preferentially flow this way.
+        this.pathwayPlast.potentiate(pulse.pathwayIndex, pulse.intensity);
         const last = this.pulses.pop()!;
         if (index < this.pulses.length) {
           this.pulses[index] = last;
@@ -373,15 +392,43 @@ export class SignalSimulation {
     }
   }
 
+  // Weighted choice over the action-eligible pathways, blending the static
+  // structural weight with the LEARNED plasticity weight so strengthened routes
+  // carry more traffic. Allocation-free (no transient weights array per spawn).
+  private pickEligiblePathway(): SynapticPathway | undefined {
+    const items = this.eligiblePathways;
+    const n = items.length;
+    if (n === 0) {
+      return undefined;
+    }
+    let total = 0;
+    for (let i = 0; i < n; i += 1) {
+      total += this.eligibleWeights[i] * this.pathwayPlast.weight[items[i].id];
+    }
+    if (total <= 0) {
+      return undefined;
+    }
+    let cursor = this.random() * total;
+    for (let i = 0; i < n; i += 1) {
+      cursor -= this.eligibleWeights[i] * this.pathwayPlast.weight[items[i].id];
+      if (cursor <= 0) {
+        return items[i];
+      }
+    }
+    return items[n - 1];
+  }
+
   private spawnPulse(activeRegionSet: Set<BrainRegionId>): void {
     if (this.pulses.length >= this.maxPulses || this.eligiblePathways.length === 0) {
       return;
     }
 
-    const pathway = weightedPick(this.eligiblePathways, this.eligibleWeights, this.random);
+    const pathway = this.pickEligiblePathway();
     if (!pathway) {
       return;
     }
+    // A modest bump on use; the full reward lands when the pulse completes.
+    this.pathwayPlast.potentiate(pathway.id, 0.4);
 
     const sourceActive = activeRegionSet.has(pathway.sourceRegionId);
     const targetActive = activeRegionSet.has(pathway.targetRegionId);

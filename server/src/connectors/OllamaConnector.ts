@@ -12,6 +12,21 @@ interface ChatChunk {
   error?: string;
 }
 
+// Map SendOptions onto Ollama's `options` block. Returns undefined when nothing
+// is set so the request body stays minimal (and Ollama uses its own defaults).
+// num_predict is Ollama's max-tokens knob — without this maxTokens was silently
+// dropped, so fast mode's response cap had no effect locally.
+function buildOptions(opts: SendOptions): Record<string, number> | undefined {
+  const options: Record<string, number> = {};
+  if (opts.temperature !== undefined) {
+    options.temperature = opts.temperature;
+  }
+  if (opts.maxTokens !== undefined && Number.isFinite(opts.maxTokens)) {
+    options.num_predict = opts.maxTokens;
+  }
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
 function wrapFetchError(err: unknown, status?: number): ConnectorError {
   if (err instanceof ConnectorError) {
     return err;
@@ -73,7 +88,7 @@ export class OllamaConnector implements Connector {
       // under `format:"json"` and (b) adds large latency to every pipeline step.
       // Ignored by non-thinking models, so it's a safe default for a responsive brain.
       think: false,
-      options: opts.temperature !== undefined ? { temperature: opts.temperature } : undefined,
+      options: buildOptions(opts),
     };
     if (opts.format === "json") {
       body.format = "json";
@@ -117,7 +132,7 @@ export class OllamaConnector implements Connector {
           messages,
           stream: true,
           think: false, // see send(): keep reasoning models from stalling/adding latency
-          options: opts.temperature !== undefined ? { temperature: opts.temperature } : undefined,
+          options: buildOptions(opts),
         }),
         signal: opts.signal,
       });

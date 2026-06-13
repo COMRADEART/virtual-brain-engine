@@ -80,9 +80,12 @@ export interface UiPrefs {
   bloomStrength: number;
   /**
    * Target size of the GPU neuron FIELD — the point cloud rendered alongside the
-   * interactive graph (see NeuronField.ts). 1,000,000 by default: a real million
-   * neurons on GPU-capable hardware. Capped down automatically on software/weak
-   * renderers (BrainScene.effectiveFieldCount); 0 turns the field off.
+   * interactive graph (see NeuronField.ts). 500,000 by default: still a dense
+   * nebula of neurons, but ~half the additive fill-rate of a full million (the
+   * single biggest GPU cost), so the scene stays light. Settings → Scene →
+   * "Neurons" goes back up to 1,000,000 on a GPU with headroom, or down to 0 to
+   * turn the field off. Capped automatically on software/weak renderers
+   * (BrainScene.effectiveFieldCount).
    */
   neuronFieldCount: number;
 }
@@ -95,7 +98,7 @@ export const DEFAULT_UI_PREFS: UiPrefs = {
   glass: "standard",
   motion: "full",
   bloomStrength: 0.45,
-  neuronFieldCount: 1_000_000,
+  neuronFieldCount: 500_000,
 };
 
 const STORAGE_KEY = "brain-ui-prefs";

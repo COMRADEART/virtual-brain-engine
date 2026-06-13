@@ -39,8 +39,18 @@ import {
 } from "./ranker.js";
 import { applyMemoryRetrievalBoost, onConversationMessage, processNewMemory } from "../memory/consolidationEngine.js";
 import { updateMemoryImportance } from "../memory/memoryLifecycle.js";
-import { getRegionPrototypes, routeQuery, type RouteDecision } from "./router.js";
+import { getRegionPrototypes, routeQuery, DEPTH_DIFFICULTY_THRESHOLD, type RouteDecision } from "./router.js";
 import { profileForRoute, modelForProfile } from "./modelRouting.js";
+// Fable + Mythos upgrade (each flag-gated + failure-isolated; see config.ts).
+import { shouldEscalate, salvageReason } from "./fastSalvage.js";
+import { bestOfParallel } from "./parallelReasoning.js";
+import {
+  loadAdaptiveDepthState,
+  saveAdaptiveDepthState,
+  adjustThreshold,
+  observeDepthOutcome,
+} from "./adaptiveDepth.js";
+import { getNarrative, narrativePreamble } from "../core/narrative.js";
 import {
   decide as controllerDecide,
   reward as applyControllerReward,
@@ -259,10 +269,14 @@ async function chatJson<T>(
   system: string,
   prompt: string,
   model?: string,
+  temperature = 0.2,
 ): Promise<T | null> {
-  const text = await connector.send(prompt, { system, format: "json", temperature: 0.2, model });
+  const text = await connector.send(prompt, { system, format: "json", temperature, model });
   return safeJson<T>(text);
 }
+
+// FABLE F2 — difficulty at/above which a full route samples parallel drafts.
+const PARALLEL_REASONING_DIFFICULTY_FLOOR = 0.8;
 
 // Embeddings fallback chain. If the active chat connector cannot embed (e.g.
 // GPT4All HTTP, or an OpenAI-compatible runtime configured without an
@@ -354,7 +368,22 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // optional embedding-refined upgrade once the query embedding exists (memory
   // step below). `route.depth === "shallow"` lets the reasoning step skip the
   // expensive LLM plan call entirely.
-  let route: RouteDecision = routeQuery(req.prompt);
+  // Fast mode ("be like Fable"): raise the depth gate so more queries take the
+  // cheap embed→search→stream path and skip the two blocking LLM round-trips.
+  let depthThreshold = CONFIG.fastMode ? CONFIG.fastModeDepthThreshold : undefined;
+  // FABLE F3 — outcome-learned adaptive compute: nudge the threshold from past
+  // citation outcomes. Warm-start floor returns the base EXACTLY until enough
+  // observations accrue, so this is a strict no-op on a cold brain. OFF by
+  // default; failure-isolated → falls back to the static threshold.
+  if (CONFIG.adaptiveDepth) {
+    try {
+      const base = CONFIG.fastMode ? CONFIG.fastModeDepthThreshold : DEPTH_DIFFICULTY_THRESHOLD;
+      depthThreshold = adjustThreshold(base, loadAdaptiveDepthState(), CONFIG.adaptiveDepthWarmAt);
+    } catch (err) {
+      surfaceError("pipeline.adaptiveDepth", err);
+    }
+  }
+  let route: RouteDecision = routeQuery(req.prompt, { depthThreshold });
   const swarm = getCognitiveSwarm();
   swarm.routeCognitiveWorkflow(
     `Answer user request: ${req.prompt.slice(0, 180)}`,
@@ -404,7 +433,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // skips retrieval — we just keep the lexical route.
       try {
         const protos = await getRegionPrototypes({ embed: embedFn });
-        route = routeQuery(req.prompt, { queryEmbedding: embedding, regionPrototypes: protos });
+        route = routeQuery(req.prompt, { queryEmbedding: embedding, regionPrototypes: protos, depthThreshold });
       } catch {
         // keep lexical route
       }
@@ -607,10 +636,31 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     filePath: hit.memory.filePath ?? undefined,
     score: hit.score,
   }));
+  // FABLE F1 — shallow→full salvage. A shallow (fast) route that retrieved
+  // nothing / weak memory is escalated to the full path so the answer is
+  // deepened (reasoning + error check) instead of answered thin — the cascade
+  // "escalate on weak signal" pattern. Flag-gated and inert when retrieval is
+  // strong (no-regression on the common fast case). connector is guaranteed
+  // non-null here (the run early-returns above when it isn't), so the deeper
+  // path can actually run. Uses actualTopScore (raw vec top) as the honest
+  // "did we find anything relevant" signal.
+  let salvageNote = "";
+  if (CONFIG.fastSalvage) {
+    const salvageInput = {
+      depth: route.depth,
+      hitCount: memoryHits.length,
+      topScore: actualTopScore,
+      fastMode: CONFIG.fastMode,
+    };
+    if (shouldEscalate(salvageInput, CONFIG.fastSalvageScoreFloor)) {
+      salvageNote = ` · escalated:${salvageReason(salvageInput, CONFIG.fastSalvageScoreFloor)}`;
+      route = { ...route, depth: "full" };
+    }
+  }
   const controllerNote = controllerDecision
     ? ` · rl(k=${controllerDecision.retrievalK},${Object.values(controllerDecision.source).includes("policy") ? "policy" : "warmup"})`
     : "";
-  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${feedForwardNote}${multiQueryNote}${hebbianNote}${webAugmentNote}${controllerNote}`;
+  const rankerTag = ` · ranker α=${rankAlpha.toFixed(2)}${rankWarm ? " (warm)" : ""}${saliencyApplied ? " · saliency" : ""}${feedForwardNote}${multiQueryNote}${hebbianNote}${webAugmentNote}${controllerNote}${salvageNote}`;
   const memoryDetail = memoryError
     ? memoryError
     : embedder && embedder !== connector
@@ -634,6 +684,22 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // no-op — wiring this finally makes the Model Hub assignments take effect.
   const chosenProfile = controllerDecision?.modelProfile ?? profileForRoute(route);
   const routedModelName = modelForProfile(chosenProfile) ?? undefined;
+
+  // MYTHOS M3 — narrative-grounded reasoning. Prepend a compact first-person
+  // identity preamble (from the M1 self-narrative) to the reasoning + response
+  // system prompts so the answer stays consistent with who the brain is. OFF by
+  // default; failure-isolated; empty when no narrative exists yet (a no-op).
+  let narrativeGroundingBlock = "";
+  if (CONFIG.narrativeGrounding) {
+    try {
+      const pre = narrativePreamble(getNarrative());
+      if (pre) {
+        narrativeGroundingBlock = `Your identity (keep your answer consistent with who you are; this is your voice, NOT factual memory to cite):\n${pre}`;
+      }
+    } catch (err) {
+      surfaceError("pipeline.narrativeGrounding", err);
+    }
+  }
 
   // 3. REASONING
   // Flash the routed expert cortices (deduped with reasoning-cortex) instead of
@@ -680,19 +746,44 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     };
     reasoningDetail = `Skipped LLM reasoning — ${routeSummary}`;
   } else {
+    const reasoningUser = [
+      conversationBlock,
+      `Question:\n${req.prompt}`,
+      `Memory snippets:\n${memoryList || "(empty)"}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const reasoningSystem = narrativeGroundingBlock
+      ? `${narrativeGroundingBlock}\n\n${REASONING_SYSTEM}`
+      : REASONING_SYSTEM;
+    let parallelNote = "";
     try {
-      const parsed = await chatJson<ReasoningOut>(
-        connector,
-        REASONING_SYSTEM,
-        [
-          conversationBlock,
-          `Question:\n${req.prompt}`,
-          `Memory snippets:\n${memoryList || "(empty)"}`,
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-        routedModelName,
-      );
+      let parsed: ReasoningOut | null = null;
+      // FABLE F2 — on a genuinely hard route, sample N reasoning drafts in
+      // parallel and keep the most consistent (local lexical consensus, no
+      // judge, no logprobs). bestOfParallel never throws; a draft whose JSON
+      // is unparseable is treated as a failure, and if EVERY draft failed we
+      // fall back to a single call (so this can never regress the route).
+      if (CONFIG.parallelReasoning && route.difficulty >= PARALLEL_REASONING_DIFFICULTY_FLOOR) {
+        const res = await bestOfParallel<ReasoningOut>(
+          CONFIG.parallelReasoningDrafts,
+          (i) =>
+            chatJson<ReasoningOut>(connector, reasoningSystem, reasoningUser, routedModelName, 0.2 + i * 0.3).then(
+              (r) => {
+                if (!r) throw new Error("unparseable reasoning draft");
+                return r;
+              },
+            ),
+          (d) => d.plan ?? "",
+        );
+        parsed = res.best;
+        if (res.ran > 1) parallelNote = ` · parallel(${res.ran} drafts, agree ${res.agreement.toFixed(2)})`;
+        if (!parsed) {
+          parsed = await chatJson<ReasoningOut>(connector, reasoningSystem, reasoningUser, routedModelName);
+        }
+      } else {
+        parsed = await chatJson<ReasoningOut>(connector, reasoningSystem, reasoningUser, routedModelName);
+      }
       if (parsed) {
         reasoning = {
           plan: parsed.plan ?? "",
@@ -709,7 +800,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       failPipelineRun(runId, "reasoning failed");
       return;
     }
-    reasoningDetail = reasoning.plan.slice(0, 200);
+    reasoningDetail = reasoning.plan.slice(0, 200) + parallelNote;
   }
   emitAll(
     makeEvent(cid, runId, "reasoning", "complete", {
@@ -793,7 +884,11 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // 6. RESPONSE
   emitAll(makeEvent(cid, runId, "response", "start"), emit);
   const knownIds = new Set(promptHits.map((hit) => hit.memory.id));
-  const responseSystem = buildResponseSystem(memoryHits.length > 0);
+  const baseResponseSystem = buildResponseSystem(memoryHits.length > 0);
+  // MYTHOS M3 — same identity preamble grounds the final answer's voice.
+  const responseSystem = narrativeGroundingBlock
+    ? `${narrativeGroundingBlock}\n\n${baseResponseSystem}`
+    : baseResponseSystem;
   const responsePrompt = [
     conversationBlock,
     `User question:\n${req.prompt}`,
@@ -833,6 +928,10 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
           system: responseSystem,
           temperature: 0.3,
           model: routedModelName,
+          // Fast mode: cap the answer so it stays tight instead of rambling to
+          // the context limit (honored by both connectors as num_predict /
+          // max_tokens). Request options always win, so a caller can override.
+          maxTokens: CONFIG.fastMode ? CONFIG.fastModeMaxTokens : undefined,
         })) {
           assembled += token;
           emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: token }), emit);
@@ -881,6 +980,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
           for await (const token of localConnector.stream(responsePrompt, {
             system: responseSystem,
             temperature: 0.3,
+            maxTokens: CONFIG.fastMode ? CONFIG.fastModeMaxTokens : undefined,
           })) {
             assembled += token;
             emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: token }), emit);
@@ -1187,6 +1287,22 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       controllerCtx,
       computeControllerOutcome(citedIds, promptHits.length, webHitIds),
     );
+  }
+  // FABLE F3 — record this cycle's depth outcome so the adaptive-compute gate
+  // learns what's actually easy (warm-start floor keeps it a no-op until it has
+  // data). route.depth reflects any F1 escalation. Failure-isolated; strict
+  // no-op when ADAPTIVE_DEPTH is off.
+  if (CONFIG.adaptiveDepth) {
+    try {
+      saveAdaptiveDepthState(
+        observeDepthOutcome(loadAdaptiveDepthState(), {
+          depth: route.depth,
+          citedCount: citedIds.size,
+        }),
+      );
+    } catch (err) {
+      surfaceError("pipeline.adaptiveDepthObserve", err);
+    }
   }
   completePipelineRun(runId, finalAnswer);
   // Background consolidation (replay, novelty, prefetch). Best-effort and runs
