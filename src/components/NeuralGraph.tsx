@@ -42,6 +42,11 @@ export class NeuralGraphRenderer {
   private readonly lineColors: Float32Array;
   private readonly baseRegionColors: THREE.Color[];
   private readonly signalRegionColors: THREE.Color[];
+  // Per-region color recomputed ONCE per frame in updateNeuronColors and then
+  // shared across every neuron in that region. Region intensity is per-region, so
+  // the old per-neuron lerp was redundant work — at thousands of neurons this
+  // hoist is what keeps the legacy color loop cheap as the population doubles.
+  private readonly frameRegionColors: THREE.Color[];
   private readonly matrix = new THREE.Matrix4();
   private readonly color = new THREE.Color();
   // aScale: per-instance multiplier in shader mode (visibility * LOD). Length N,
@@ -72,6 +77,7 @@ export class NeuralGraphRenderer {
     this.group.name = "NeuralGraph";
     this.baseRegionColors = graph.regionOrder.map((regionId) => new THREE.Color(REGION_BY_ID[regionId].color));
     this.signalRegionColors = this.baseRegionColors.map((color) => color.clone().lerp(new THREE.Color("#ffffff"), 0.36));
+    this.frameRegionColors = this.baseRegionColors.map((color) => color.clone());
 
     this.neuronMesh = this.createNeuronMesh();
     this.pathwayLines = this.createPathwayLines();
@@ -360,18 +366,25 @@ export class NeuralGraphRenderer {
     regionFlashIntensity: Float32Array,
     visibility: RegionVisibility,
   ): void {
+    // Compute the lit color for each region ONCE this frame (regionOrder length,
+    // ~14 entries) instead of re-deriving it inside the per-neuron loop. The
+    // per-neuron loop below then just copies the precomputed region color.
+    for (let regionIndex = 0; regionIndex < this.frameRegionColors.length; regionIndex += 1) {
+      const baseIntensity = regionIntensity[regionIndex] ?? 0;
+      const flash = regionFlashIntensity[regionIndex] ?? 0;
+      const intensity = Math.min(1, baseIntensity + flash * 1.1);
+      this.frameRegionColors[regionIndex]
+        .copy(this.baseRegionColors[regionIndex])
+        .lerp(this.signalRegionColors[regionIndex], intensity);
+    }
+
     for (let index = 0; index < this.graph.nodes.length; index += 1) {
       const node = this.graph.nodes[index];
       if (!visibility[node.regionId]) {
         this.neuronMesh.setColorAt(index, this.black);
         continue;
       }
-
-      const baseIntensity = regionIntensity[node.regionIndex] ?? 0;
-      const flash = regionFlashIntensity[node.regionIndex] ?? 0;
-      const intensity = Math.min(1, baseIntensity + flash * 1.1);
-      this.color.copy(this.baseRegionColors[node.regionIndex]).lerp(this.signalRegionColors[node.regionIndex], intensity);
-      this.neuronMesh.setColorAt(index, this.color);
+      this.neuronMesh.setColorAt(index, this.frameRegionColors[node.regionIndex]);
     }
 
     if (this.neuronMesh.instanceColor) {

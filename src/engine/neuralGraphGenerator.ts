@@ -16,6 +16,17 @@ interface GenerateOptions {
 
 export const PATHWAY_SEGMENTS = 8;
 
+// Neuron population is boosted independently of connectivity. Doubling the
+// rendered neuron count (e.g. the Cinematic preset's ~3000 → ~6000) is cheap —
+// neurons are one InstancedMesh, so the GPU cost of an extra instance is
+// negligible. The expensive parts are the synaptic PATHWAYS (line vertices + a
+// per-frame color rewrite) and pulses. So we scale the neuron count by this factor
+// while DIVIDING the internal connection degree by the same factor (see
+// internalDegree below) — total pathway count stays roughly flat, keeping GPU/CPU
+// use low while the brain looks visibly denser. Keep getEstimatedNeuronCount() in
+// sync with this.
+export const NEURON_DENSITY_BOOST = 2.0;
+
 function mulberry32(seed: number): () => number {
   return () => {
     let value = (seed += 0x6d2b79f5);
@@ -240,9 +251,13 @@ function pickNodeInRange(random: () => number, range: RegionNodeRange): number {
   return range.start + Math.floor(random() * range.count);
 }
 
+function regionNeuronCount(baseNeuronCount: number, density: number): number {
+  return Math.max(18, Math.round(baseNeuronCount * density * NEURON_DENSITY_BOOST));
+}
+
 export function getEstimatedNeuronCount(density: number): number {
   return REGION_DEFINITIONS.reduce(
-    (total, region) => total + Math.max(18, Math.round(region.baseNeuronCount * density)),
+    (total, region) => total + regionNeuronCount(region.baseNeuronCount, density),
     0,
   );
 }
@@ -257,7 +272,7 @@ export function generateNeuralGraph({ density, seed = 7 }: GenerateOptions): Neu
 
   for (const region of REGION_DEFINITIONS) {
     const start = nodes.length;
-    const count = Math.max(18, Math.round(region.baseNeuronCount * density));
+    const count = regionNeuronCount(region.baseNeuronCount, density);
     const regionIndex = REGION_INDEX[region.id];
 
     for (let index = 0; index < count; index += 1) {
@@ -266,7 +281,10 @@ export function generateNeuralGraph({ density, seed = 7 }: GenerateOptions): Neu
         regionId: region.id,
         regionIndex,
         position: randomInEllipsoid(random, region.center, region.radius),
-        size: 0.012 + random() * 0.018,
+        // Slightly smaller per-neuron radius than before: with ~2x the population
+        // packed into the same volume, this keeps the cloud granular and nebula-like
+        // under additive blending instead of blooming into a solid blob.
+        size: 0.0095 + random() * 0.0155,
       });
     }
 
@@ -298,7 +316,11 @@ export function generateNeuralGraph({ density, seed = 7 }: GenerateOptions): Neu
 
   for (const region of REGION_DEFINITIONS) {
     const range = regionRanges[region.id];
-    const internalDegree = Math.max(3, Math.round(4.2 * Math.sqrt(density)));
+    // The internal-edge loop runs once per neuron, so total internal pathways scale
+    // with the (boosted) neuron count. Divide the per-neuron degree by the same boost
+    // so the total pathway budget — the real GPU/CPU cost — stays ~flat even though
+    // the neuron population doubled. Floor of 2 keeps every neuron wired in.
+    const internalDegree = Math.max(2, Math.round((4.2 * Math.sqrt(density)) / NEURON_DENSITY_BOOST));
 
     for (let offset = 0; offset < range.count; offset += 1) {
       const source = range.start + offset;
