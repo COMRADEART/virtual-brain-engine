@@ -658,6 +658,16 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   const memoryList = promptHits
     .map((hit) => formatSnippetForPrompt(hit.memory, snippetFor(hit.memory)))
     .join("\n\n");
+  // LATENCY — overlap the project-name inference with the reasoning + error LLM
+  // calls. inferProjectName depends only on the prompt + retrieved hits (NOT the
+  // reasoning plan), and its result isn't read until the learning step, so
+  // kicking it off here lets it run concurrently instead of adding a serial
+  // round-trip before the response streams. Shallow routes skip it entirely
+  // (adaptive compute, like the reasoning step). Failure-isolated → null.
+  const projectPromise: Promise<string | null> =
+    route.depth === "full" && memoryHits.length > 0
+      ? inferProjectName(connector, req.prompt, memoryHits).catch(() => null)
+      : Promise.resolve(null);
   type ReasoningOut = { plan: string; openQuestions: string[] };
   let reasoning: ReasoningOut = { plan: "", openQuestions: [] };
   let reasoningDetail: string;
@@ -715,21 +725,25 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
 
   // 4. PROJECT
   emitAll(makeEvent(cid, runId, "project", "start"), emit);
-  let projectName: string | null = null;
-  if (memoryHits.length > 0) {
-    projectName = await inferProjectName(connector, req.prompt, memoryHits);
-    if (projectName) {
-      memoryHits = memoryHits
-        .map((hit) => ({
-          ...hit,
-          score: hit.score * (hit.memory.projectName === projectName ? 1.4 : 0.8),
-        }))
-        .sort((a, b) => b.score - a.score);
-    }
+  // Await the inference kicked off before the reasoning step (full routes only),
+  // so the round-trip overlapped the reasoning call rather than blocking here.
+  const projectName: string | null = await projectPromise;
+  if (projectName) {
+    memoryHits = memoryHits
+      .map((hit) => ({
+        ...hit,
+        score: hit.score * (hit.memory.projectName === projectName ? 1.4 : 0.8),
+      }))
+      .sort((a, b) => b.score - a.score);
   }
   emitAll(
     makeEvent(cid, runId, "project", "complete", {
-      detail: projectName ? `Re-ranked by project ${projectName}` : "No project re-rank",
+      detail:
+        route.depth !== "full"
+          ? "Skipped project re-rank — shallow route"
+          : projectName
+            ? `Re-ranked by project ${projectName}`
+            : "No project re-rank",
     }),
     emit,
   );
@@ -739,28 +753,38 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   emitAll(makeEvent(cid, runId, "error", "start"), emit);
   type ErrorOut = { contradictions: string[]; missing: string[]; confidence: number };
   let errorReport: ErrorOut = { contradictions: [], missing: [], confidence: memoryHits.length > 0 ? 0.6 : 0.2 };
-  try {
-    const parsed = await chatJson<ErrorOut>(
-      connector,
-      ERROR_SYSTEM,
-      `Question:\n${req.prompt}\n\nReasoning:\n${reasoning.plan}\n\nMemory:\n${memoryList || "(empty)"}`,
-    );
-    if (parsed) {
-      errorReport = {
-        contradictions: Array.isArray(parsed.contradictions) ? parsed.contradictions : [],
-        missing: Array.isArray(parsed.missing) ? parsed.missing : [],
-        confidence: typeof parsed.confidence === "number" ? parsed.confidence : errorReport.confidence,
-      };
+  // Adaptive compute: the error step (contradiction/missing-data detection) is an
+  // advisory LLM round-trip. On a shallow route (easy lookup query) we skip it —
+  // exactly like the reasoning step — and keep the sensible defaults, so an easy
+  // question goes embed → search → response with no extra round-trips. Hard
+  // (full) queries still get the full check.
+  if (route.depth === "full") {
+    try {
+      const parsed = await chatJson<ErrorOut>(
+        connector,
+        ERROR_SYSTEM,
+        `Question:\n${req.prompt}\n\nReasoning:\n${reasoning.plan}\n\nMemory:\n${memoryList || "(empty)"}`,
+      );
+      if (parsed) {
+        errorReport = {
+          contradictions: Array.isArray(parsed.contradictions) ? parsed.contradictions : [],
+          missing: Array.isArray(parsed.missing) ? parsed.missing : [],
+          confidence: typeof parsed.confidence === "number" ? parsed.confidence : errorReport.confidence,
+        };
+      }
+    } catch (err) {
+      // Soft-fail: the error step is advisory, so we keep the default
+      // errorReport and let the pipeline continue — but surface it so a broken
+      // connector or malformed JSON doesn't masquerade as "no issues found".
+      surfaceError("pipeline.errorStep", err);
     }
-  } catch (err) {
-    // Soft-fail: the error step is advisory, so we keep the default
-    // errorReport and let the pipeline continue — but surface it so a broken
-    // connector or malformed JSON doesn't masquerade as "no issues found".
-    surfaceError("pipeline.errorStep", err);
   }
   emitAll(
     makeEvent(cid, runId, "error", "complete", {
-      detail: `confidence ${errorReport.confidence.toFixed(2)}, ${errorReport.contradictions.length} contradictions`,
+      detail:
+        route.depth !== "full"
+          ? `confidence ${errorReport.confidence.toFixed(2)} (skipped check — shallow route)`
+          : `confidence ${errorReport.confidence.toFixed(2)}, ${errorReport.contradictions.length} contradictions`,
     }),
     emit,
   );
