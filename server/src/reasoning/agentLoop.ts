@@ -338,7 +338,9 @@ function regionForAction(actionId: string): LogicalRegionId {
     actionId === "system-info" ||
     actionId === "trigger-scan" ||
     actionId === "open-path" ||
-    actionId === "open-url"
+    actionId === "open-url" ||
+    actionId === "run-command" ||
+    actionId === "launch-app"
   ) {
     return "file-memory";
   }

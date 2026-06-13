@@ -13,9 +13,11 @@
 // two; today this keeps the user-command trail clean and queryable.
 
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import os from "node:os";
+import { CONFIG } from "../config.js";
 import { getActionDef, isAllowlisted, validateArgs } from "./registry.js";
 import { consumeConfirmToken } from "./confirmTokens.js";
 import { insertActionLog } from "../db/repositories/actions.js";
@@ -76,6 +78,105 @@ function guardFsPath(p: string): { ok: true; path: string } | { ok: false; error
   if (isUncPath(resolved)) return { ok: false, error: "refused: UNC / network paths are not allowed" };
   if (isExcludedPath(resolved)) return { ok: false, error: "refused: sensitive location (.env/.ssh/keys/credentials)" };
   return { ok: true, path: resolved };
+}
+
+// ─── "Do any task on the laptop" — shell execution ──────────────────────────
+// run-command / launch-app run a REAL child process on the user's own machine.
+// They reach the handler ONLY after the executor's allowlist + confirm gate +
+// (re-checked) ALLOW_SHELL flag pass. Output is captured and size-capped.
+const MAX_SHELL_OUTPUT = 16 * 1024; // per stream
+
+// Kill the command's WHOLE process tree, not just the parent shell — a command
+// that backgrounds a grandchild (`Start-Process …`, `foo &`) would otherwise
+// outlive a timeout. Windows has no POSIX groups, so taskkill /T walks the tree
+// by pid; POSIX run-command is spawned `detached` (its own group), so a negative
+// pid SIGKILLs the whole group.
+function killProcessTree(child: import("node:child_process").ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+    return;
+  }
+  if (process.platform === "win32") {
+    try {
+      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+    } catch {
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+    }
+  } else {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}
+
+function runShellCommand(
+  command: string,
+  cwd: string | undefined,
+  timeoutMs: number,
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolveP) => {
+    const isWin = process.platform === "win32";
+    const file = isWin ? "powershell.exe" : "/bin/sh";
+    const args = isWin
+      ? ["-NoProfile", "-NonInteractive", "-Command", command]
+      : ["-c", command];
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let child: import("node:child_process").ChildProcess;
+    try {
+      child = spawn(file, args, {
+        cwd: cwd ?? os.homedir(),
+        windowsHide: true,
+        env: process.env,
+        // POSIX: own process group so a timeout can kill the whole tree.
+        detached: !isWin,
+      });
+    } catch (err) {
+      resolveP({ code: null, stdout: "", stderr: err instanceof Error ? err.message : String(err), timedOut: false });
+      return;
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killProcessTree(child);
+    }, timeoutMs);
+    child.stdout?.on("data", (d: Buffer) => {
+      if (stdout.length < MAX_SHELL_OUTPUT) stdout += d.toString();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      if (stderr.length < MAX_SHELL_OUTPUT) stderr += d.toString();
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolveP({ code: null, stdout, stderr: stderr || (err instanceof Error ? err.message : String(err)), timedOut });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolveP({ code, stdout: stdout.slice(0, MAX_SHELL_OUTPUT), stderr: stderr.slice(0, MAX_SHELL_OUTPUT), timedOut });
+    });
+  });
+}
+
+// PowerShell single-quoted literal: everything is literal except ' → ''. Used to
+// safely pass an app path / args to Start-Process without a shell-injection hole
+// (run-command is deliberately raw; launch-app's app/args are NOT).
+function psSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
 }
 
 export interface ExecuteInput {
@@ -309,6 +410,68 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
     const content = String(args.content);
     await fs.writeFile(g.path, content, "utf8");
     return { summary: `Wrote ${content.length} chars to ${g.path}`, data: { path: g.path, bytes: Buffer.byteLength(content, "utf8") } };
+  },
+  // --- "Do any task on the laptop" -------------------------------------------
+  // The universal "do anything on this PC" tool. ALLOW_SHELL is re-checked here
+  // (defense in depth — the registry already hides it when off). A non-zero exit
+  // is NOT a handler failure: the command ran, and the agent loop needs to SEE
+  // the output + exit code to decide what to do next, so we return success with
+  // the real status in the summary. Only a spawn failure / timeout throws.
+  "run-command": async (args) => {
+    if (!CONFIG.allowShell) throw new Error("shell actions are disabled (set ALLOW_SHELL=true to enable)");
+    const command = String(args.command);
+    let cwd: string | undefined;
+    if (typeof args.cwd === "string" && args.cwd.length > 0) {
+      const g = guardFsPath(args.cwd);
+      if (!g.ok) throw new Error(`cwd ${g.error}`);
+      cwd = g.path;
+    }
+    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : CONFIG.shellTimeoutMs;
+    const r = await runShellCommand(command, cwd, timeoutMs);
+    if (r.timedOut) {
+      throw new Error(`command timed out after ${timeoutMs}ms${r.stdout ? `\n${r.stdout}` : ""}`);
+    }
+    const output = [r.stdout, r.stderr]
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .join("\n")
+      .slice(0, MAX_SHELL_OUTPUT);
+    const head = command.length > 70 ? `${command.slice(0, 70)}…` : command;
+    return {
+      summary: `$ ${head} → exit ${r.code ?? "?"}${output ? `\n${output.slice(0, 1200)}` : ""}`,
+      data: { command, exitCode: r.code, ok: r.code === 0, output },
+    };
+  },
+  "launch-app": async (args) => {
+    if (!CONFIG.allowShell) throw new Error("shell actions are disabled (set ALLOW_SHELL=true to enable)");
+    const app = String(args.app);
+    const extra = typeof args.args === "string" ? args.args.trim() : "";
+    const isWin = process.platform === "win32";
+    let file: string;
+    let spawnArgs: string[];
+    if (isWin) {
+      const argList = extra ? ` -ArgumentList ${psSingleQuote(extra)}` : "";
+      file = "powershell.exe";
+      spawnArgs = ["-NoProfile", "-NonInteractive", "-Command", `Start-Process -FilePath ${psSingleQuote(app)}${argList}`];
+    } else if (process.platform === "darwin") {
+      file = "open";
+      spawnArgs = extra ? ["-a", app, "--args", ...extra.split(/\s+/)] : ["-a", app];
+    } else {
+      file = app;
+      spawnArgs = extra ? extra.split(/\s+/) : [];
+    }
+    await new Promise<void>((resolveP, rejectP) => {
+      try {
+        const child = spawn(file, spawnArgs, { detached: true, stdio: "ignore", windowsHide: false, env: process.env });
+        child.on("error", (err) => rejectP(err));
+        child.unref();
+        // A launch is fire-and-forget: resolve once it's started (or errored).
+        setTimeout(() => resolveP(), 200);
+      } catch (err) {
+        rejectP(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+    return { summary: `Launched ${app}${extra ? ` ${extra}` : ""}`, data: { app, args: extra } };
   },
   // --- Git actions -------------------------------------------------------------
   "git-clone": async (args) => {

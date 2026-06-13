@@ -300,6 +300,26 @@ check("triage: 'research X' → loop", triage("research quantum computing for me
   check("unknown tool: loop still finishes", finalText(c.frames) !== undefined);
 }
 
+// ── "Do any task" run-command is confirm-tier and gated (never spawned) ──────
+{
+  // The universal shell tool must be CONFIRM-tier: in safe-only mode the loop
+  // refuses it and returns BEFORE executeAction, so no child process is ever
+  // spawned. This proves the broadest capability in the brain is gated like any
+  // other confirm-tier action — hermetically, with zero real side effects.
+  __setAgentConnector(
+    scripted([
+      '{"thought":"run a command","tool":{"action":"run-command","args":{"command":"echo hi"}},"final":""}',
+      '{"thought":"done","tool":null,"final":"I could not run that without permission."}',
+    ]),
+  );
+  const c = collector();
+  const run = startAgentRun({ prompt: "run echo hi", mode: "safe-only", scope: [] });
+  await runAgentLoop(run, c.emit);
+  const tr = toolResults(c.frames, "run-command");
+  check("run-command: confirm-tier refused in safe-only (never spawned)", tr.length === 1 && tr[0].tool?.ok === false);
+  check("run-command: loop still finishes after refusal", finalText(c.frames) !== undefined);
+}
+
 // ── Resilience: a transient send() failure is RETRIED, not fatal ─────────────
 {
   // First send() throws; robustSend retries and the second succeeds with a

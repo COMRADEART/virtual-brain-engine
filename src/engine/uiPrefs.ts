@@ -78,6 +78,13 @@ export interface UiPrefs {
   motion: UiMotion;
   /** UnrealBloomPass strength (visible on presets with bloom enabled). */
   bloomStrength: number;
+  /**
+   * Target size of the GPU neuron FIELD — the point cloud rendered alongside the
+   * interactive graph (see NeuronField.ts). 1,000,000 by default: a real million
+   * neurons on GPU-capable hardware. Capped down automatically on software/weak
+   * renderers (BrainScene.effectiveFieldCount); 0 turns the field off.
+   */
+  neuronFieldCount: number;
 }
 
 export const DEFAULT_UI_PREFS: UiPrefs = {
@@ -88,6 +95,7 @@ export const DEFAULT_UI_PREFS: UiPrefs = {
   glass: "standard",
   motion: "full",
   bloomStrength: 0.45,
+  neuronFieldCount: 1_000_000,
 };
 
 const STORAGE_KEY = "brain-ui-prefs";

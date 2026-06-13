@@ -59,6 +59,15 @@ const MOTION_LEVELS: Array<{ id: UiMotion; label: string }> = [
   { id: "reduced", label: "Reduced" },
 ];
 
+// Neuron-field (GPU point cloud) size presets. 1M is the headline default; the
+// renderer caps this down automatically on software/weak GPUs (BrainScene).
+const NEURON_FIELD_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 0, label: "Off" },
+  { value: 250_000, label: "250k" },
+  { value: 1_000_000, label: "1M" },
+  { value: 2_000_000, label: "2M" },
+];
+
 const SHORTCUT_ORDER: ShortcutAction[] = [
   "overview",
   "inside",
@@ -286,6 +295,27 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps): JSX.Elemen
                 onChange={(e) => update({ bloomStrength: Number(e.target.value) })}
               />
               <span className="settings-slider-value">{prefs.bloomStrength.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div className="setting-row">
+            <span>
+              Neurons
+              <small className="setting-hint">GPU point-cloud size — auto-capped on weak GPUs</small>
+            </span>
+            <div className="settings-segmented" role="radiogroup" aria-label="Neuron field size">
+              {NEURON_FIELD_OPTIONS.map(({ value, label }) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={prefs.neuronFieldCount === value ? "active" : ""}
+                  role="radio"
+                  aria-checked={prefs.neuronFieldCount === value}
+                  onClick={() => update({ neuronFieldCount: value })}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
         </section>

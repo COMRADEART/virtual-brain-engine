@@ -116,6 +116,19 @@ export interface ServerConfig {
   // plain question straight to the 7-step pipeline and only multi-step / tool /
   // "do X" requests into the loop. Set AGENT_TRIAGE=false to always use the loop.
   agentTriage: boolean;
+  // --- "Do any task on the laptop" -------------------------------------------
+  // When true, the registry exposes the confirm-tier `run-command` / `launch-app`
+  // actions — the universal "do anything on this PC" primitives (an arbitrary
+  // shell command + launching an app). They run a real child process on the
+  // user's machine, so this is the broadest capability in the brain. It is STILL
+  // fully gated: every invocation goes through the permissioned executor (confirm
+  // token OR a user-granted session scope) and is audited; nothing runs
+  // unapproved. Default ON for this personal computer-brain, since the whole
+  // point is to act on the machine. Set ALLOW_SHELL=false to remove these actions
+  // from the allowlist entirely (the resolver/loop then can't even propose them).
+  allowShell: boolean;
+  // Hard cap (ms) on a single run-command before it is killed. Clamped 1s..600s.
+  shellTimeoutMs: number;
   // Optional prompt variant tag for A/B testing. When set, every usage log entry
   // carries this as `stepTimings.prompt_variant`, enabling per-variant quality
   // comparison. Empty = no variant tagging. Default: ""
@@ -277,6 +290,8 @@ export const CONFIG: ServerConfig = {
   agentMaxRounds: Math.min(50, Math.max(1, num("AGENT_MAX_ROUNDS", 12))),
   agentConfirmMode: oneOf("AGENT_CONFIRM_MODE", ["ask", "scope", "safe-only"] as const, "ask"),
   agentTriage: bool("AGENT_TRIAGE", true),
+  allowShell: bool("ALLOW_SHELL", true),
+  shellTimeoutMs: Math.min(600_000, Math.max(1_000, num("SHELL_TIMEOUT_MS", 120_000))),
   promptVariant: str("PROMPT_VARIANT", ""),
   dedupSimilarityThreshold: num("DEDUP_SIMILARITY_THRESHOLD", 0.92),
   dedupMaxPairs: num("DEDUP_MAX_PAIRS", 50),

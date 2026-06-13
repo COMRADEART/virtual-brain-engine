@@ -5,6 +5,7 @@
 // risk/surface field on a caller-submitted plan.
 
 import { z } from "zod";
+import { CONFIG } from "../config.js";
 import type { ActionId, ActionRiskTier, ActionSpec } from "../../../shared/actions.js";
 
 export interface ActionDef extends ActionSpec {
@@ -200,6 +201,50 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       })
       .strict(),
   },
+  // --- "Do any task on the laptop" -------------------------------------------
+  // The universal computer-control primitives. They run a REAL child process on
+  // the user's own machine, so they are confirm-tier and only surfaced to the
+  // resolver / agent loop / UI when CONFIG.allowShell is on (see the list
+  // functions below; the executor independently re-checks the flag). This is the
+  // broadest capability in the brain — the confirm gate + audit are the guard.
+  "run-command": {
+    id: "run-command",
+    title: "Run a command",
+    description:
+      "Run any shell command on this computer (PowerShell on Windows, /bin/sh otherwise) and return its output. The universal 'do anything on my PC' tool: install software, control apps, automate files, query the system, chain steps. Output is captured and size-capped; the command is killed after a timeout. Prefer a single self-contained command line.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      command: "the shell command line to run",
+      cwd: "optional absolute working directory (defaults to the home folder)",
+      timeoutMs: "optional kill timeout in ms (1000-600000)",
+    },
+    schema: z
+      .object({
+        command: z.string().min(1).max(8000),
+        cwd: z.string().min(1).max(4096).optional(),
+        timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+      })
+      .strict(),
+  },
+  "launch-app": {
+    id: "launch-app",
+    title: "Launch an app",
+    description:
+      "Start an application or open a document on this computer by name or path (e.g. 'notepad', 'code', 'chrome', or an absolute path). Use this to open programs. Runs detached so it never blocks.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      app: "the app name or absolute path to launch",
+      args: "optional space-separated arguments to pass",
+    },
+    schema: z
+      .object({
+        app: z.string().min(1).max(4096),
+        args: z.string().max(8000).optional(),
+      })
+      .strict(),
+  },
   // --- Phase 3b: OS-surface actions (executed in Tauri, not the server) ------
   "open-path": {
     id: "open-path",
@@ -341,24 +386,46 @@ const REGISTRY: Record<ActionId, ActionDef> = {
   },
 };
 
+// The shell ("do any task") actions are gated behind CONFIG.allowShell. When the
+// flag is off we hide them from every caller (resolver, agent loop, UI) so the
+// model can't even propose them; the executor re-checks the flag independently.
+const SHELL_ACTION_IDS: ReadonlySet<string> = new Set(["run-command", "launch-app"]);
+
+export function isShellAction(id: string): boolean {
+  return SHELL_ACTION_IDS.has(id);
+}
+
+function isVisibleAction(def: ActionDef): boolean {
+  return !SHELL_ACTION_IDS.has(def.id) || CONFIG.allowShell;
+}
+
 export function listActionDefs(): ActionDef[] {
-  return Object.values(REGISTRY);
+  return Object.values(REGISTRY).filter(isVisibleAction);
 }
 
 // The UI-facing view: every field of ActionSpec EXCEPT the (non-serialisable)
 // zod schema.
 export function listActionSpecs(): ActionSpec[] {
-  return Object.values(REGISTRY).map(({ schema: _schema, ...spec }) => spec);
+  return Object.values(REGISTRY)
+    .filter(isVisibleAction)
+    .map(({ schema: _schema, ...spec }) => spec);
 }
 
+// A hidden shell action (ALLOW_SHELL off) resolves to null/false here too — NOT
+// just in the catalog — so a disabled action is indistinguishable from one that
+// never existed: executeAction takes its clean 403 "not allowlisted" path BEFORE
+// the confirm gate / token consumption / audit, instead of resolving the def and
+// only stopping at the handler's belt-and-suspenders flag re-check.
 export function getActionDef(id: string): ActionDef | null {
-  return Object.prototype.hasOwnProperty.call(REGISTRY, id)
-    ? REGISTRY[id as ActionId]
-    : null;
+  if (!Object.prototype.hasOwnProperty.call(REGISTRY, id)) return null;
+  if (SHELL_ACTION_IDS.has(id) && !CONFIG.allowShell) return null;
+  return REGISTRY[id as ActionId];
 }
 
 export function isAllowlisted(id: string): id is ActionId {
-  return Object.prototype.hasOwnProperty.call(REGISTRY, id);
+  if (!Object.prototype.hasOwnProperty.call(REGISTRY, id)) return false;
+  if (SHELL_ACTION_IDS.has(id) && !CONFIG.allowShell) return false;
+  return true;
 }
 
 export interface ArgValidation {

@@ -42,6 +42,14 @@ export type ActionId =
   | "list-directory"
   | "read-file"
   | "write-file"
+  // "Do any task on the laptop" — the universal computer-control primitives. They
+  // run a real child process on the user's own machine (an arbitrary shell
+  // command / launching an app), so they are confirm-tier and only present in the
+  // registry when ALLOW_SHELL is on (server/src/config.ts). Still fully gated:
+  // every run goes through the permissioned executor (confirm token OR a granted
+  // session scope) and is audited — see server/src/actions/executor.ts.
+  | "run-command"
+  | "launch-app"
   // Phase 3b — OS-surface actions. The server validates/gates/audits and returns
   // an osDirective; the actual OS call runs in Tauri (capability-scoped), never
   // in the headless server.
@@ -72,6 +80,8 @@ export const ACTION_IDS: ActionId[] = [
   "list-directory",
   "read-file",
   "write-file",
+  "run-command",
+  "launch-app",
   "open-path",
   "open-url",
   "git-clone",

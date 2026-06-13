@@ -6,7 +6,7 @@
 // (a static import of that, or of Three.js, regresses the main canvas chunk).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Brain, Maximize2, MessageCircle, Mic, Send, Volume2, VolumeX, X } from "lucide-react";
+import { Activity, Brain, Maximize2, MessageCircle, Mic, Send, ShieldCheck, Square, Volume2, VolumeX, X, Zap } from "lucide-react";
 import { subscribeBrainBus } from "../../engine/brainBus";
 import { apiClient } from "../../engine/apiClient";
 import { MOOD_COLOR, MOOD_LABEL, moodFor, type Mood } from "./petMood";
@@ -16,7 +16,39 @@ import { confirmScope } from "./confirmSummary";
 import { usePushToTalk } from "./usePushToTalk";
 import type { AgentRuntimeState } from "../../../shared/pipeline";
 import type { PersonalityState } from "../../../shared/phase2";
-import type { AgentConfirmRequest } from "../../../shared/agent";
+import type { AgentConfirmMode, AgentConfirmRequest } from "../../../shared/agent";
+import type { ActionRiskTier } from "../../../shared/actions";
+
+// How autonomously the pet runs confirm-tier actions (the "do any task on the
+// laptop" power level). Maps onto the agent loop's confirmMode + a granted scope:
+//   ask  → pause for approval on every confirm-tier action (safest; default)
+//   auto → run anything within a granted ceiling without prompting (session-scope,
+//          audited honestly — the way to let it chain multi-step PC tasks)
+//   safe → never run confirm-tier actions on its own (read-only)
+type PetAutonomy = "ask" | "auto" | "safe";
+
+const FULL_SCOPE: { allow: ActionRiskTier[] } = { allow: ["safe", "confirm"] };
+
+function agentOptionsFor(a: PetAutonomy): { confirmMode: AgentConfirmMode; scope?: { allow: ActionRiskTier[] } } {
+  if (a === "auto") return { confirmMode: "scope", scope: FULL_SCOPE };
+  if (a === "safe") return { confirmMode: "safe-only" };
+  return { confirmMode: "ask" };
+}
+
+function readAutonomy(): PetAutonomy {
+  try {
+    const v = window.localStorage.getItem("pet-autonomy");
+    return v === "auto" || v === "safe" ? v : "ask";
+  } catch {
+    return "ask";
+  }
+}
+
+const AUTONOMY_OPTIONS: Array<{ id: PetAutonomy; label: string; icon: typeof Zap; title: string }> = [
+  { id: "ask", label: "Ask", icon: ShieldCheck, title: "Ask before each action that changes anything" },
+  { id: "auto", label: "Auto", icon: Zap, title: "Let me run multi-step tasks on your PC without asking each step" },
+  { id: "safe", label: "Read", icon: Square, title: "Read-only — never change anything on its own" },
+];
 
 const COLLAPSED: [number, number] = [220, 240];
 const EXPANDED: [number, number] = [320, 440];
@@ -52,10 +84,23 @@ export function PetWindow(): JSX.Element {
   // run is parked server-side under confirm.runId; we resume it via confirmAgent.
   const [pendingConfirm, setPendingConfirm] = useState<AgentConfirmRequest | null>(null);
   const [voiceOn, setVoiceOn] = useState(false);
+  // How autonomously the pet acts on the computer (persisted). The loop reads it
+  // via a ref so the stable streamAgent callback always sees the latest value.
+  const [autonomy, setAutonomy] = useState<PetAutonomy>(readAutonomy);
   const resetTimer = useRef<number | null>(null);
   const askAbort = useRef<AbortController | null>(null);
   const voiceOnRef = useRef(voiceOn);
   voiceOnRef.current = voiceOn;
+  const autonomyRef = useRef(autonomy);
+  autonomyRef.current = autonomy;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("pet-autonomy", autonomy);
+    } catch {
+      /* ignore */
+    }
+  }, [autonomy]);
 
   useEffect(() => {
     const invoke = tauriInvoke();
@@ -160,7 +205,7 @@ export function PetWindow(): JSX.Element {
   const streamAgent = useCallback(
     async (
       question: string,
-      resume?: { runId: string; approve: boolean },
+      resume?: { runId: string; approve: boolean; grant?: boolean },
     ) => {
       askAbort.current?.abort();
       const controller = new AbortController();
@@ -173,8 +218,17 @@ export function PetWindow(): JSX.Element {
       };
       try {
         const stream = resume
-          ? apiClient.confirmAgent({ runId: resume.runId, approve: resume.approve }, controller.signal)
-          : apiClient.agent({ prompt: question }, controller.signal);
+          ? apiClient.confirmAgent(
+              {
+                runId: resume.runId,
+                approve: resume.approve,
+                // "Run all": widen the run's grant so the rest of the task runs
+                // without a prompt for each step (session-scope, audited honestly).
+                grantScope: resume.grant ? FULL_SCOPE : undefined,
+              },
+              controller.signal,
+            )
+          : apiClient.agent({ prompt: question, ...agentOptionsFor(autonomyRef.current) }, controller.signal);
         for await (const frame of stream) {
           if (!("type" in frame)) continue; // PipelineEvent telemetry → visualizer only
           switch (frame.type) {
@@ -216,7 +270,9 @@ export function PetWindow(): JSX.Element {
             case "final":
               answer = frame.text ?? answer;
               render();
-              if (voiceOnRef.current && answer) {
+              // Skip TTS if the user already pressed Stop — voiceSpeak isn't
+              // cancellable, so awaiting it would defer the loop's cleanup.
+              if (voiceOnRef.current && answer && !controller.signal.aborted) {
                 try {
                   const result = await apiClient.voiceSpeak(answer.slice(0, 1500));
                   if (result.audioBase64) {
@@ -293,6 +349,21 @@ export function PetWindow(): JSX.Element {
     }
   }, [pendingConfirm, asking, streamAgent]);
 
+  // Approve AND grant the run a risk ceiling so the rest of the task runs without
+  // a prompt for every step — the way to let it carry out a multi-step PC job.
+  const runAllPending = useCallback(async () => {
+    if (!pendingConfirm || asking) return;
+    const runId = pendingConfirm.runId;
+    setPendingConfirm(null);
+    setAsking(true);
+    setExchanges((list) => updateLastAnswer(list, "working…"));
+    try {
+      await streamAgent("", { runId, approve: true, grant: true });
+    } finally {
+      setAsking(false);
+    }
+  }, [pendingConfirm, asking, streamAgent]);
+
   // Deny the action and let the loop continue (it wraps up without it).
   const cancelPending = useCallback(async () => {
     if (!pendingConfirm) return;
@@ -305,6 +376,17 @@ export function PetWindow(): JSX.Element {
       setAsking(false);
     }
   }, [pendingConfirm, streamAgent]);
+
+  // Abort an in-flight run (the brain keeps any work already committed; the
+  // stream just stops). Clears any pending confirm too.
+  const stop = useCallback(() => {
+    askAbort.current?.abort();
+    askAbort.current = null;
+    stopPetAudio(); // silence any clip already playing / mid-synthesis
+    setPendingConfirm(null);
+    setAsking(false);
+    setSubtitle("stopped");
+  }, []);
 
   const mood: Mood = useMemo(() => moodFor(lastState, personality), [lastState, personality]);
   const color = MOOD_COLOR[mood];
@@ -403,6 +485,18 @@ export function PetWindow(): JSX.Element {
         }
         .pet-quick button:hover { background: rgba(40,40,60,0.85); color: #fff; }
         .pet-quick button:disabled { opacity: 0.4; cursor: default; }
+        .pet-stop { color: #ff8b8b; }
+        .pet-stop:hover { background: rgba(60,20,20,0.85); color: #fff; }
+        .pet-autonomy {
+          display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+        }
+        .pet-autonomy-label { font-size: 9px; color: #6a6a82; margin-right: 1px; }
+        .pet-autonomy button {
+          display: inline-flex; align-items: center; gap: 3px;
+          font-size: 9px; padding: 2px 7px; border-radius: 999px; cursor: pointer;
+          border: 1px solid rgba(255,255,255,0.12); color: #b9b9cf; background: rgba(20,20,30,0.55);
+        }
+        .pet-autonomy button.active { color: #0a0a0f; background: ${color}; border-color: transparent; }
         .pet-inputbar {
           display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px;
           border-radius: 999px; background: rgba(12, 12, 20, 0.72); border: 1px solid ${color}44;
@@ -420,6 +514,17 @@ export function PetWindow(): JSX.Element {
       `}</style>
 
       <div className="pet-controls">
+        {asking ? (
+          <button
+            type="button"
+            className="pet-iconbtn pet-stop"
+            title="Stop"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={stop}
+          >
+            <Square size={11} />
+          </button>
+        ) : null}
         <button
           type="button"
           className="pet-iconbtn"
@@ -544,6 +649,9 @@ export function PetWindow(): JSX.Element {
                 <button type="button" disabled={asking} onClick={() => void runPending()}>
                   run ✓
                 </button>
+                <button type="button" disabled={asking} onClick={() => void runAllPending()} title="Run this and the rest of the task without asking again">
+                  run all ✓✓
+                </button>
                 <button type="button" disabled={asking} onClick={() => void cancelPending()}>
                   cancel
                 </button>
@@ -558,11 +666,42 @@ export function PetWindow(): JSX.Element {
               >
                 what am I doing?
               </button>
+              <button
+                type="button"
+                disabled={asking}
+                onClick={() => void submit("Show me my system info — CPU, memory, disk.")}
+              >
+                system info
+              </button>
+              <button
+                type="button"
+                disabled={asking}
+                onClick={() => void submit("What apps and processes are running on my PC right now?")}
+              >
+                what's running
+              </button>
               <button type="button" onClick={openMainWindow}>
-                open brain os
+                brain os
               </button>
             </div>
           )}
+
+          <div className="pet-autonomy" role="radiogroup" aria-label="Autonomy">
+            <span className="pet-autonomy-label">acts:</span>
+            {AUTONOMY_OPTIONS.map(({ id, label, icon: Icon, title }) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={autonomy === id}
+                className={autonomy === id ? "active" : ""}
+                title={title}
+                onClick={() => setAutonomy(id)}
+              >
+                <Icon size={9} /> {label}
+              </button>
+            ))}
+          </div>
           <form
             className="pet-inputbar"
             onSubmit={(e) => {
@@ -572,7 +711,7 @@ export function PetWindow(): JSX.Element {
           >
             <input
               type="text"
-              placeholder="ask, command, or research the web…"
+              placeholder="ask, command, or run anything on your PC…"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               autoFocus

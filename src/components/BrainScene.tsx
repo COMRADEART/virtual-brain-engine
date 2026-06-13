@@ -7,6 +7,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { createBrainShell, setBrainShellOpacity } from "./BrainShell";
 import { NeuralGraphRenderer } from "./NeuralGraph";
+import { NeuronField } from "./NeuronField";
 import type { AiPickEvent } from "./AiPickOverlay";
 import { ACTION_BY_ID } from "../engine/brainRegions";
 import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
@@ -251,6 +252,10 @@ export function BrainScene({
   const controlsRef = useRef<OrbitControls | null>(null);
   const shellRef = useRef<THREE.Group | null>(null);
   const graphRendererRef = useRef<NeuralGraphRenderer | null>(null);
+  // The million-neuron GPU point cloud + the interactive graph's metrics, so the
+  // status readout can report the true neuron total (graph + field).
+  const neuronFieldRef = useRef<NeuronField | null>(null);
+  const graphMetricsRef = useRef<BrainMetrics>({ neurons: 0, pathways: 0, regions: 0 });
   const visualEffectsRef = useRef<BrainVisualEffects | null>(null);
   const simulationRef = useRef<SimulationLike | null>(null);
   const performanceManagerRef = useRef<PerformanceManager | null>(null);
@@ -445,6 +450,7 @@ export function BrainScene({
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, perfPreset.dprCap));
       renderer.setSize(width, height);
       composer?.setSize(width, height);
+      neuronFieldRef.current?.setPixelRatio(Math.min(window.devicePixelRatio, perfPreset.dprCap));
     }
     if (bloomPassRef.current) {
       bloomPassRef.current.enabled = perfPreset.bloom;
@@ -708,7 +714,16 @@ const renderFrame = () => {
         selectedRegionRef.current,
         elapsed,
       );
-      
+
+      // Drive the million-neuron field from the SAME region-activity buffers —
+      // a tiny per-region uniform copy, independent of the field's point count.
+      neuronFieldRef.current?.update(
+        simulation.regionIntensity,
+        simulation.regionFlashIntensity,
+        visibilityRef.current,
+        elapsed,
+      );
+
       // Update advanced visual effects if available
       if (visualEffects) {
         // Update with core simulation data
@@ -1021,8 +1036,16 @@ const adjustedDensity = performanceManager
       }
     }
 
-    onMetricsChange({
+    // Stash the interactive graph's metrics so the field-build effect (below)
+    // can report the COMBINED neuron total. The neuron count the status bar
+    // shows is the clickable graph PLUS the GPU field.
+    graphMetricsRef.current = {
       neurons: graph.nodes.length,
+      pathways: graph.pathways.length,
+      regions: graph.regionOrder.length,
+    };
+    onMetricsChange({
+      neurons: graph.nodes.length + (neuronFieldRef.current?.count ?? 0),
       pathways: graph.pathways.length,
       regions: graph.regionOrder.length,
     });
@@ -1056,6 +1079,52 @@ const adjustedDensity = performanceManager
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [neuronDensity, onMetricsChange]);
 
+  // ─── The million-neuron field ──────────────────────────────────────────────
+  // A GPU point cloud (NeuronField) rendered alongside the interactive graph,
+  // driven each frame by the SAME region-intensity buffer (see renderFrame). It
+  // is independent of the interactive graph, so it rebuilds ONLY when the target
+  // size changes (a rare Settings tweak) — never on a density/action tick. The
+  // count is capability-capped so a million points never tanks a software/
+  // headless renderer.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) {
+      return;
+    }
+    const previous = neuronFieldRef.current;
+    if (previous) {
+      scene.remove(previous.points);
+      previous.dispose();
+      neuronFieldRef.current = null;
+    }
+
+    const target = effectiveFieldCount(uiPrefs.neuronFieldCount);
+    if (target > 0) {
+      const field = new NeuronField({
+        count: target,
+        pixelRatio: Math.min(window.devicePixelRatio, perfPresetRef.current.dprCap),
+      });
+      neuronFieldRef.current = field;
+      scene.add(field.points);
+    }
+
+    // Report the COMBINED neuron total (interactive graph + field).
+    onMetricsChange({
+      neurons: graphMetricsRef.current.neurons + (neuronFieldRef.current?.count ?? 0),
+      pathways: graphMetricsRef.current.pathways,
+      regions: graphMetricsRef.current.regions,
+    });
+
+    return () => {
+      const field = neuronFieldRef.current;
+      if (field) {
+        sceneRef.current?.remove(field.points);
+        field.dispose();
+        neuronFieldRef.current = null;
+      }
+    };
+  }, [uiPrefs.neuronFieldCount, onMetricsChange]);
+
   useEffect(() => {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
@@ -1086,6 +1155,20 @@ const adjustedDensity = performanceManager
     )}
   </div>
 );
+}
+
+// Clamp the requested neuron-field size to what the renderer can actually draw.
+// GPU-capable hardware (the same gate that turns the spiking substrate on) gets
+// the full requested count up to a sane ceiling; a software / SwiftShader
+// renderer (headless verify:canvas smokes, weak GPUs) is held to a modest count
+// so a million-point cloud can never blank the canvas or stall the render check.
+function effectiveFieldCount(requested: number): number {
+  if (!Number.isFinite(requested) || requested <= 0) {
+    return 0;
+  }
+  const capable = detectSpikingCapability();
+  const cap = capable ? 2_000_000 : 50_000;
+  return Math.min(Math.floor(requested), cap);
 }
 
 function getCameraPreset(mode: CameraPresetRequest["mode"]): {
