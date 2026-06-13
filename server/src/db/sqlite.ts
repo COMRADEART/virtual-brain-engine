@@ -290,6 +290,61 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Belief engine (core/beliefs.ts) — beliefs table for DBs that predate it.
+    // Fresh DBs get it from schema.sql's CREATE TABLE IF NOT EXISTS; this is
+    // the create-on-legacy path (same pattern as 0009-episodes).
+    id: 10,
+    name: "0010-beliefs",
+    run: (db) => {
+      if (!tableExists(db, "beliefs")) {
+        db.exec(`
+          CREATE TABLE beliefs (
+            id                 TEXT PRIMARY KEY,
+            statement          TEXT NOT NULL,
+            statement_hash     TEXT NOT NULL UNIQUE,
+            confidence         REAL NOT NULL DEFAULT 0.6,
+            domain             TEXT,
+            status             TEXT NOT NULL DEFAULT 'active'
+                                 CHECK (status IN ('active', 'contested', 'weakening', 'retired')),
+            supporting_ids     TEXT NOT NULL DEFAULT '[]',
+            contradicting_ids  TEXT NOT NULL DEFAULT '[]',
+            evidence_count     INTEGER NOT NULL DEFAULT 0,
+            formed_at          TEXT NOT NULL,
+            last_updated       TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_beliefs_status  ON beliefs(status, last_updated DESC)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_beliefs_updated ON beliefs(last_updated DESC)");
+      }
+    },
+  },
+  {
+    // Procedural memory (memory/procedural.ts) — procedures table for DBs
+    // that predate it. Fresh DBs get it from schema.sql; create-on-legacy.
+    id: 11,
+    name: "0011-procedures",
+    run: (db) => {
+      if (!tableExists(db, "procedures")) {
+        db.exec(`
+          CREATE TABLE procedures (
+            id             TEXT PRIMARY KEY,
+            title          TEXT NOT NULL,
+            trigger_class  TEXT NOT NULL,
+            steps_json     TEXT NOT NULL DEFAULT '[]',
+            source         TEXT NOT NULL DEFAULT 'action-sequence'
+                             CHECK (source IN ('action-sequence', 'reasoning-config')),
+            success_count  INTEGER NOT NULL DEFAULT 0,
+            failure_count  INTEGER NOT NULL DEFAULT 0,
+            score          REAL NOT NULL DEFAULT 0.5,
+            last_used_at   TEXT,
+            created_at     TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_procedures_score ON procedures(score DESC, success_count DESC)");
+      }
+    },
+  },
 ];
 
 // Exported for the perception/memory selfchecks: they need to apply the

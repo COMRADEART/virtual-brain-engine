@@ -345,6 +345,26 @@ export function BrainScene({
     });
   }, []);
 
+  // Unified cognition stream: every "mental act" (belief formed, goal grown,
+  // curiosity spike, reflection, dream, thought, procedure learned, stage
+  // advance) flashes its mapped cortices. Magnitude keeps these subordinate
+  // to pipeline flashes (0.3-0.9 vs the pipeline's step gains), and the idle
+  // breathing loop is untouched — cognition flashes ARE the organism's life
+  // between prompts.
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      if (message.type !== "cognition") {
+        return;
+      }
+      const gain = 0.3 + 0.6 * Math.max(0, Math.min(1, message.event.magnitude));
+      message.event.logicalRegions.forEach((region, index) => {
+        window.setTimeout(() => {
+          simulationRef.current?.flashLogicalRegion(region, gain);
+        }, index * 70);
+      });
+    });
+  }, []);
+
   // Model Hub: a downloading model streams into the brain — flash the model-hub
   // cortex as progress arrives (brighter on completion). Reuses the same
   // flashLogicalRegion path the idle breathing loop already exercises.

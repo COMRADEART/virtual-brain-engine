@@ -29,6 +29,7 @@ interface CommandPaletteProps {
 
   // Phase 2 panel controls
   onToggleDigitalTwin: (collapsed?: boolean) => void;
+  onToggleCognitionStream: (collapsed?: boolean) => void;
   onOpenUnifiedTab: (tab: "ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism") => void;
   onToggleUnifiedPanel: (collapsed?: boolean) => void;
   onOpenModelHub: () => void;
@@ -47,7 +48,7 @@ const CATEGORY_LABELS: Record<Command["category"], string> = {
 export function CommandPalette({
   isOpen, onClose, currentLayout, currentPerfMode,
   onLayoutChange, onCyclePreset, onFocusMode, onCompactMode, onFullMode,
-  onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
+  onToggleDigitalTwin, onToggleCognitionStream, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
   onOpenSettings, onScreenshot,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
@@ -135,6 +136,14 @@ export function CommandPalette({
       action: () => { onToggleDigitalTwin(); onClose(); },
     },
     {
+      id: "toggle-cognition-stream",
+      label: "Toggle Cognition Stream",
+      description: "The organism's inner life: beliefs, goals, curiosity, reflections, dreams + developmental stage",
+      category: "panels",
+      icon: <Sparkles size={16} />,
+      action: () => { onToggleCognitionStream(); onClose(); },
+    },
+    {
       id: "toggle-unified",
       label: "Toggle Unified Panel",
       description: "Show or hide the main Brain OS panel",
@@ -208,7 +217,7 @@ export function CommandPalette({
     },
   ], [
     currentLayout, currentPerfMode, onLayoutChange, onCompactMode, onFullMode, onFocusMode, onCyclePreset, onClose,
-    onToggleDigitalTwin, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
+    onToggleDigitalTwin, onToggleCognitionStream, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
   ]);
 
   const filtered = useMemo(() => {

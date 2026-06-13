@@ -7677,3 +7677,122 @@ h1, h2, h3 {
   .training-bar__fill { transition: none; }
   .training-bar__fill--indeterminate { animation: none; transform: none; width: 100%; opacity: 0.4; }
 }
+
+/* ── Cognition Stream Panel (.cogstream-*) — the organism's inner life ────── */
+.cogstream-panel {
+  position: absolute;
+  right: 16px;
+  bottom: 430px;
+  z-index: 6;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(48vh, 480px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(27, 28, 38, 0.92), rgba(12, 13, 18, 0.9));
+  color: #cfe9f4;
+  font-size: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(10px);
+}
+[data-theme="light"] .cogstream-panel {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--text);
+}
+.cogstream-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  position: sticky;
+  top: 0;
+  background: inherit;
+}
+.cogstream-head > span:first-of-type { flex: 0 0 auto; }
+.cogstream-stage-badge {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  color: var(--accent, #8b7cff);
+}
+.cogstream-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+}
+.cogstream-body { padding: 8px 10px; }
+.cogstream-error { color: var(--amber, #ffce6b); font-size: 11px; margin: 4px 0; }
+.cogstream-empty { color: #9fb4c9; font-size: 11px; line-height: 1.5; margin: 4px 0; }
+.cogstream-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cogstream-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.02);
+}
+.cogstream-badge {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: #9fb4c9;
+}
+.cogstream-row.k-belief .cogstream-badge { color: var(--amber, #ffce6b); border-color: rgba(255, 206, 107, 0.35); }
+.cogstream-row.k-goal .cogstream-badge { color: var(--green, #5fcf8a); border-color: rgba(95, 207, 138, 0.35); }
+.cogstream-row.k-curiosity .cogstream-badge { color: var(--accent, #8b7cff); border-color: rgba(var(--accent-rgb), 0.4); }
+.cogstream-row.k-reflect .cogstream-badge,
+.cogstream-row.k-dream .cogstream-badge { color: #b9a7ff; border-color: rgba(185, 167, 255, 0.35); }
+.cogstream-row.k-skill .cogstream-badge { color: #7fd4d0; border-color: rgba(127, 212, 208, 0.35); }
+.cogstream-row.k-stage { border-color: rgba(var(--accent-rgb), 0.5); background: rgba(var(--accent-rgb), 0.08); }
+.cogstream-row.k-stage .cogstream-badge { color: var(--accent, #8b7cff); border-color: rgba(var(--accent-rgb), 0.5); }
+.cogstream-label {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.cogstream-detail { color: #9fb4c9; font-size: 10px; }
+.cogstream-mag {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #8b7cff);
+  align-self: center;
+}
+.cogstream-time {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: #7a8aa0;
+  font-variant-numeric: tabular-nums;
+}

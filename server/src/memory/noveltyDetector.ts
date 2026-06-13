@@ -3,6 +3,7 @@ import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import { insertRelation } from "../db/repositories/memory.js";
 import { surfaceError } from "../util/diagnostics.js";
 import { cosineSimilarity, getStoredEmbedding, getStoredEmbeddings } from "./embeddingSimilarity.js";
+import { getBeliefEngine } from "../core/beliefs.js";
 
 export interface NoveltyResult {
   isNovel: boolean;
@@ -281,6 +282,9 @@ export function tagContradiction(memoryId: string, contradictoryWithId: string):
        WHERE id = ?`,
     ).run(metadata, new Date().toISOString(), memoryId);
     insertRelation(memoryId, contradictoryWithId, "contradicts", 0.9);
+    // Belief seam: any belief leaning on either memory takes a confidence hit
+    // and turns `contested` (core/beliefs.ts is failure-isolated internally).
+    getBeliefEngine().recordContradiction(memoryId, contradictoryWithId);
   } catch (err) {
     surfaceError("noveltyDetector.tagContradiction", err);
   }

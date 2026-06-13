@@ -23,6 +23,7 @@ import type {
 import type { BrainBusVisualMessage } from "./vision";
 import type { BrainStateSnapshot } from "./brainState";
 import type { SelfConsciousnessState } from "./selfConsciousness";
+import type { CognitionEvent } from "./cognition";
 
 export type LogicalRegionId =
   | "memory-core"
@@ -176,4 +177,10 @@ export type BrainBusMessage =
   // --- Self-Consciousness (selfConsciousness.ts → brainCore.ts bridge) ---
   // Emitted whenever the self-model, affect, or metacognitive state changes
   // so the SelfConsciousnessPanel reflects live updates without polling.
-  | { type: "self-snapshot"; state: SelfConsciousnessState; timestamp: string };
+  | { type: "self-snapshot"; state: SelfConsciousnessState; timestamp: string }
+  // --- Unified cognition stream (shared/cognition.ts) ---
+  // One event per "mental act" (belief formed/updated, goal formed, curiosity
+  // spike, reflection, dream, thought, procedure learned, stage advance).
+  // BrainScene flashes event.logicalRegions; the CognitionStreamPanel renders
+  // the organism's running inner life.
+  | { type: "cognition"; event: CognitionEvent; timestamp: string };

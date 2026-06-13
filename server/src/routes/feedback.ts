@@ -30,6 +30,7 @@ import {
   observeOutcome,
   saveSelfModelState,
 } from "../core/selfModel.js";
+import { getBeliefEngine } from "../core/beliefs.js";
 
 export const feedbackRouter = Router();
 
@@ -97,6 +98,16 @@ feedbackRouter.post("/feedback", (req, res) => {
     getNeuromodulators().onFeedback(rating);
   } catch (err) {
     console.warn("[feedback] neuromodulator pulse failed:", err);
+  }
+
+  // Belief seam: the verdict reaches the beliefs that lean on the memories
+  // this answer cited — 👎 nudges them down, 👍 nudges them up. Best-effort.
+  try {
+    if (snapshot && snapshot.citedIds.size > 0) {
+      getBeliefEngine().onAnswerFeedback(snapshot.citedIds, rating);
+    }
+  } catch (err) {
+    console.warn("[feedback] belief nudge failed:", err);
   }
 
   // Self-model calibration: this verdict is a REAL outcome for the confidence

@@ -60,6 +60,7 @@ import { getCognitiveSwarm } from "../core/swarm.js";
 import { getImaginationEngine } from "../core/imagination.js";
 import { getPersistentOrganism } from "../core/organism.js";
 import { getBrainState, shouldBroadenRetrieval } from "../core/brainState.js";
+import { getBeliefEngine } from "../core/beliefs.js";
 import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
 import type { AttentionFocus } from "../../../shared/brainState.js";
 import { hybridEnabled, shouldAugment, webResearch } from "../web/research.js";
@@ -1050,6 +1051,10 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
         const sr = computeSurprise(prediction, actual);
         if (sr.surprise > 0) getNeuromodulators().onSurprise(sr.surprise);
         if (sr.knowledgeGap) getBrainState().noteOpenQuestion(req.prompt, cid);
+        // Belief seam: strong surprise softly erodes lexically-related beliefs
+        // (reality diverged from expectation). Lives inside this EXISTING
+        // failure-isolated predictive block — not a new pipeline call site.
+        if (sr.surprise >= 0.3) getBeliefEngine().noteSurprise(req.prompt, sr.surprise);
       }
       savePredictiveState(observeRetrieval(loadPredictiveState(), req.prompt, actual));
     } catch (err) {

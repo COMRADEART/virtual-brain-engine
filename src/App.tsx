@@ -14,6 +14,7 @@ import { LearningLabPanel } from "./components/LearningLabPanel";
 import { BrainStatePanel } from "./components/BrainStatePanel";
 import { MemoryInspectorPanel } from "./components/MemoryInspectorPanel";
 import { SelfConsciousnessPanel } from "./components/SelfConsciousnessPanel";
+import { CognitionStreamPanel } from "./components/cognition/CognitionStreamPanel";
 import { IdleThoughtTicker } from "./components/IdleThoughtTicker";
 import { RegionControls } from "./components/RegionControls";
 import { UnifiedPanel } from "./components/UnifiedPanel";
@@ -72,6 +73,7 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
   // 3D scene is the centerpiece on first load. The user opens panels they need
   // via the CommandPalette / tab icons; the previous default buried the scene.
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useLocalStorage<boolean>("brain-twin-collapsed", true);
+  const [cognitionCollapsed, setCognitionCollapsed] = useLocalStorage<boolean>("brain-cognition-collapsed", true);
   const [unifiedTab, setUnifiedTab] = useLocalStorage<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("brain-unified-tab", "ask");
   const [unifiedCollapsed, setUnifiedCollapsed] = useLocalStorage<boolean>("brain-unified-collapsed", true);
   const [modelHubOpen, setModelHubOpen] = useState(false);
@@ -109,6 +111,11 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
   const toggleDigitalTwin = useCallback((collapsed?: boolean) => {
     setMode("full");
     setDigitalTwinCollapsed((c) => (collapsed !== undefined ? collapsed : !c));
+  }, [setMode]);
+
+  const toggleCognitionStream = useCallback((collapsed?: boolean) => {
+    setMode("full");
+    setCognitionCollapsed((c) => (collapsed !== undefined ? collapsed : !c));
   }, [setMode]);
 
   const toggleUnifiedPanel = useCallback((collapsed?: boolean) => {
@@ -459,6 +466,10 @@ useEffect(() => {
           <BrainStatePanel />
           <MemoryInspectorPanel />
           <SelfConsciousnessPanel />
+          <CognitionStreamPanel
+            collapsed={cognitionCollapsed}
+            onCollapsedChange={setCognitionCollapsed}
+          />
           <IdleThoughtTicker />
           <UnifiedPanel
             tab={unifiedTab}
@@ -508,6 +519,7 @@ useEffect(() => {
         onCompactMode={() => setMode("compact")}
         onFullMode={() => setMode("full")}
         onToggleDigitalTwin={toggleDigitalTwin}
+        onToggleCognitionStream={toggleCognitionStream}
         onOpenUnifiedTab={openUnifiedTab}
         onToggleUnifiedPanel={toggleUnifiedPanel}
         onOpenModelHub={() => setModelHubOpen(true)}

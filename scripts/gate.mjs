@@ -72,6 +72,10 @@ const steps = [
   { label: "workspace selfcheck", args: ["--prefix", "server", "run", "workspace:selfcheck"] },
   { label: "embodiment selfcheck", args: ["--prefix", "server", "run", "embodiment:selfcheck"] },
   { label: "episodes selfcheck", args: ["--prefix", "server", "run", "episodes:selfcheck"] },
+  { label: "beliefs selfcheck", args: ["--prefix", "server", "run", "beliefs:selfcheck"] },
+  { label: "goals selfcheck", args: ["--prefix", "server", "run", "goals:selfcheck"] },
+  { label: "procedural selfcheck", args: ["--prefix", "server", "run", "procedural:selfcheck"] },
+  { label: "stages selfcheck", args: ["--prefix", "server", "run", "stages:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline

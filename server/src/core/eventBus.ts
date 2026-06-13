@@ -32,6 +32,7 @@ import type {
 } from "../../../shared/organism.js";
 import type { BrainStateSnapshot } from "../../../shared/brainState.js";
 import type { SelfConsciousnessState } from "../../../shared/selfConsciousness.js";
+import type { CognitionEvent } from "../../../shared/cognition.js";
 
 /**
  * Internal events emitted by agents. These are distinct from the frontend
@@ -181,6 +182,17 @@ export type BrainEvent =
       // the SelfConsciousnessPanel reflects live updates.
       kind: "self-snapshot";
       state: SelfConsciousnessState;
+      at: string;
+    }
+  | {
+      // Unified cognition stream — one event per "mental act" (belief formed/
+      // updated, goal formed, curiosity spike, reflection, dream, thought,
+      // procedure learned, developmental stage advance). Producers emit these
+      // directly (belief engine, goal manager, stage tracker) and the bridge in
+      // brainCore.ts ALSO synthesizes them from legacy thought events so the
+      // browser sees ONE continuous inner-monologue stream.
+      kind: "cognition";
+      event: CognitionEvent;
       at: string;
     };
 

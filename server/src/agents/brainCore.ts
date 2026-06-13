@@ -8,12 +8,18 @@
 // receive them with no protocol change.
 
 import type { BrainBusMessage } from "../../../shared/pipeline.js";
+import { clampMagnitude, regionsFor, type CognitionEvent } from "../../../shared/cognition.js";
 import { getEventBus, nowIso, type BrainEvent } from "../core/eventBus.js";
 import { gatherCuriosity } from "../core/curiosity.js";
 import { createCognitiveEvolutionEngine } from "../core/evolution.js";
 import { createImaginationEngine } from "../core/imagination.js";
 import { createPersistentOrganism } from "../core/organism.js";
+import { createGoalManager } from "../core/goalManager.js";
 import { createBrainState } from "../core/brainState.js";
+import { getKernel } from "../core/kernel.js";
+import { currentStage, stageAllows } from "../core/stages.js";
+import { getBeliefEngine } from "../core/beliefs.js";
+import { listProcedures } from "../memory/procedural.js";
 import { runWorkspaceCycle } from "../core/workspace.js";
 import { CONFIG } from "../config.js";
 import { createSafetyGate } from "../core/safety.js";
@@ -186,6 +192,84 @@ function toWireMessage(event: BrainEvent): BrainBusMessage | null {
         state: event.state,
         timestamp: event.at,
       };
+    case "cognition":
+      return {
+        type: "cognition",
+        event: event.event,
+        timestamp: event.at,
+      };
+  }
+}
+
+// ── Internal monologue unification ──────────────────────────────────────────
+// The brain already THINKS in several places — workspace micro-thoughts and
+// idle sampling (`idle-thought`), curiosity (`exploration-scheduled`),
+// imagination reflections/dreams, and selfConsciousness monologues (inside
+// `self-snapshot`). Rather than a fourth thought engine, this PURE mapping
+// synthesizes one `cognition` event from each legacy thought event at the one
+// point they all already pass through (the bridge below), so the browser sees
+// a single continuous inner-life stream. `lastMonologueAt` threads the dedup
+// state for `self-snapshot` (which re-emits its whole state constantly).
+export function toCognition(
+  event: BrainEvent,
+  lastMonologueAt?: string,
+): CognitionEvent | null {
+  switch (event.kind) {
+    case "idle-thought":
+      return {
+        kind: "thought",
+        label: event.preview,
+        magnitude: clampMagnitude(event.importance),
+        logicalRegions: regionsFor("thought"),
+        reason: event.reason,
+        at: event.at,
+      };
+    case "exploration-scheduled":
+      return {
+        kind: "curiosity-spike",
+        label: `Curious about: ${event.target}`,
+        magnitude: clampMagnitude(event.curiosity),
+        logicalRegions: regionsFor("curiosity-spike"),
+        reason: event.reason,
+        at: event.at,
+      };
+    case "imagination-reflection":
+      return {
+        kind: "reflection",
+        label: event.reflection.lesson || `Reflected on: ${event.reflection.actualSummary}`,
+        detail: `prediction accuracy ${(event.reflection.accuracy * 100).toFixed(0)}%`,
+        magnitude: clampMagnitude(1 - event.reflection.accuracy),
+        logicalRegions: regionsFor("reflection"),
+        reason: "imagination:reflection",
+        at: event.at,
+      };
+    case "imagination-dream":
+      return {
+        kind: "dream",
+        label: `Dreamed ${event.abstractions.length} abstraction(s)`,
+        detail: event.abstractions[0]?.concept,
+        magnitude: clampMagnitude(0.3 + 0.1 * event.abstractions.length),
+        logicalRegions: regionsFor("dream"),
+        reason: "imagination:dream",
+        at: event.at,
+      };
+    case "self-snapshot": {
+      const m = event.state.recentMonologues[0];
+      if (!m) return null;
+      // Dedup: self-snapshot re-emits constantly; only a NEW monologue counts.
+      if (lastMonologueAt && m.timestamp <= lastMonologueAt) return null;
+      return {
+        kind: "monologue",
+        label: m.content,
+        detail: m.kind,
+        magnitude: clampMagnitude(m.confidence),
+        logicalRegions: regionsFor("monologue"),
+        reason: `self-consciousness:${m.trigger}`,
+        at: m.timestamp,
+      };
+    }
+    default:
+      return null;
   }
 }
 
@@ -196,9 +280,20 @@ export interface BrainCoreHandle {
 export async function startBrainCore(): Promise<BrainCoreHandle> {
   const bus = getEventBus();
 
+  // Monologue-dedup watermark for toCognition's self-snapshot mapping.
+  let lastMonologueAt = "";
   const unbridge = bus.onAny((event) => {
     const message = toWireMessage(event);
     if (message) broadcast(message);
+    // Unified inner-monologue stream: synthesize a `cognition` frame from the
+    // legacy thought events so every thought producer feeds ONE stream.
+    if (event.kind !== "cognition") {
+      const cog = toCognition(event, lastMonologueAt);
+      if (cog) {
+        if (cog.kind === "monologue") lastMonologueAt = cog.at;
+        broadcast({ type: "cognition", event: cog, timestamp: cog.at });
+      }
+    }
     // A new summary changes the memory count the StatusBar shows; refresh it.
     if (event.kind === "summary-created") {
       try {
@@ -225,6 +320,11 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   const unorganism = bus.onAny((event) => organism.observeBrainEvent(event));
   const stopOrganismAutonomy = organism.startAutonomy();
   organism.wake();
+
+  // Goal manager — activates the goal HIERARCHY over the organism's persisted
+  // goals and grows it from curiosity (`exploration-scheduled`) and high-
+  // divergence reflections. Subscriptions are failure-isolated by the bus.
+  const goalManager = createGoalManager(bus, organism);
 
   // Central cognitive loop. Created on the same process bus so its throttled
   // `brain-state` events fan out through the bridge above. The decay heartbeat
@@ -310,8 +410,11 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       // gatherCuriosity() reads the causal ledger + organism health and scores
       // the uncertainty frontier. When it crosses CURIOSITY_EXPLORE_THRESHOLD
       // the IdleAgent fires `exploration-scheduled` instead of an idle thought.
+      // Developmental gate: self-initiated exploration unlocks at stage 5
+      // (returning null below it keeps the IdleAgent itself untouched).
       curiosityProvider: () => {
         try {
+          if (!stageAllows("exploration")) return null;
           return gatherCuriosity().curiosity;
         } catch {
           return null;
@@ -322,8 +425,54 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
 
   await runtime.start();
   runtime.startCycle(AGENT_CYCLE_MS);
+
+  // Brain Kernel — passive registry + the developmental-stage ratchet. Every
+  // cognitive module registers a tiny status probe; a throwing probe reports
+  // {ok:false} inside the kernel, never here. The kernel owns ONLY the new
+  // stage-recompute interval — every existing timer keeps its owner.
+  const kernel = getKernel();
+  kernel.registerModule("organism", () => ({
+    ok: true,
+    detail: `health ${organism.getHealthScore().toFixed(2)}, ${organism.getActiveGoalTitles(99).length} active goal(s)`,
+  }));
+  kernel.registerModule("brain-state", () => {
+    const s = brainState.snapshot();
+    return { ok: true, detail: `${s.cycles} cycle(s), confidence ${s.confidence.toFixed(2)}` };
+  });
+  kernel.registerModule("workspace", () => ({
+    ok: true,
+    detail: CONFIG.workspaceEnabled ? `every ${CONFIG.workspaceIntervalMin}min` : "disabled",
+  }));
+  kernel.registerModule("imagination", () => ({
+    ok: true,
+    detail: `${imagination.snapshot().sessions.length} session(s)`,
+  }));
+  kernel.registerModule("evolution", () => ({
+    ok: true,
+    detail: `${evolution.snapshot().mutations.length} mutation(s)`,
+  }));
+  kernel.registerModule("swarm", () => ({ ok: true }));
+  kernel.registerModule("self-consciousness", () => ({
+    ok: true,
+    detail: `${selfConsciousness.snapshot().recentMonologues.length} recent monologue(s)`,
+  }));
+  kernel.registerModule("beliefs", () => {
+    const stats = getBeliefEngine().beliefStats();
+    return { ok: true, detail: `${stats.total} belief(s), ${stats.contested} contested` };
+  });
+  kernel.registerModule("goal-manager", () => ({
+    ok: true,
+    detail: `tree depth ${goalManager.goalTreeDepth()}`,
+  }));
+  kernel.registerModule("procedural-memory", () => ({
+    ok: true,
+    detail: `${listProcedures(200).length} procedure(s)`,
+  }));
+  kernel.registerModule("stages", () => ({ ok: true, detail: `stage ${currentStage()}` }));
+  const stopStageCycle = kernel.startStageCycle();
+
   console.log(
-    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism, self-consciousness)",
+    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism, goal-manager, beliefs, self-consciousness, kernel)",
   );
 
   return {
@@ -341,6 +490,9 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       stopDreaming();
       stopEvolutionLoop();
       stopOrganismAutonomy();
+      goalManager.stop();
+      stopStageCycle();
+      kernel.stop();
       clearInterval(brainStateTick);
       if (workspaceTick) clearInterval(workspaceTick);
       await runtime.stop();

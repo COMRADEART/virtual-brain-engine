@@ -798,6 +798,48 @@ CREATE TABLE IF NOT EXISTS episodes (
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_span ON episodes(started_at, ended_at);
 
+-- Belief engine (core/beliefs.ts) — observations become evolving stances.
+-- Mutable confidence + dual evidence lists + status make this a real table,
+-- not a memory_points kind (source_type carries a CHECK; metadata JSON is
+-- unindexable for the status/hash queries the engine runs). supporting_ids /
+-- contradicting_ids reference memory_points ids — provenance stays in the
+-- memory graph. Rows are never deleted: beliefs retire, they don't vanish.
+CREATE TABLE IF NOT EXISTS beliefs (
+  id                 TEXT PRIMARY KEY,
+  statement          TEXT NOT NULL,
+  statement_hash     TEXT NOT NULL UNIQUE,
+  confidence         REAL NOT NULL DEFAULT 0.6,
+  domain             TEXT,
+  status             TEXT NOT NULL DEFAULT 'active'
+                       CHECK (status IN ('active', 'contested', 'weakening', 'retired')),
+  supporting_ids     TEXT NOT NULL DEFAULT '[]',
+  contradicting_ids  TEXT NOT NULL DEFAULT '[]',
+  evidence_count     INTEGER NOT NULL DEFAULT 0,
+  formed_at          TEXT NOT NULL,
+  last_updated       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_beliefs_status  ON beliefs(status, last_updated DESC);
+CREATE INDEX IF NOT EXISTS idx_beliefs_updated ON beliefs(last_updated DESC);
+
+-- Procedural memory (memory/procedural.ts) — the 6th memory layer: action
+-- sequences and reasoning configurations that WORKED, mined from the action
+-- audit during sleep and retrieved as hints by the agent loop. score is the
+-- Laplace-smoothed success rate.
+CREATE TABLE IF NOT EXISTS procedures (
+  id             TEXT PRIMARY KEY,
+  title          TEXT NOT NULL,
+  trigger_class  TEXT NOT NULL,
+  steps_json     TEXT NOT NULL DEFAULT '[]',
+  source         TEXT NOT NULL DEFAULT 'action-sequence'
+                   CHECK (source IN ('action-sequence', 'reasoning-config')),
+  success_count  INTEGER NOT NULL DEFAULT 0,
+  failure_count  INTEGER NOT NULL DEFAULT 0,
+  score          REAL NOT NULL DEFAULT 0.5,
+  last_used_at   TEXT,
+  created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_procedures_score ON procedures(score DESC, success_count DESC);
+
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INTEGER PRIMARY KEY,

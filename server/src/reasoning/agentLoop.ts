@@ -32,6 +32,7 @@ import { isDynamicAction, getDynamicAction, listDynamicActions } from "../action
 import { executeAction, type ExecuteInput } from "../actions/executor.js";
 import { mintConfirmToken } from "../actions/confirmTokens.js";
 import { keywordSearch, upsertMemoryPoint } from "../db/repositories/memory.js";
+import { creditMatchingProcedures, proceduresFor, proceduresPromptBlock } from "../memory/procedural.js";
 import { formatSnippetForPrompt } from "./untrusted.js";
 import { runPipeline } from "./pipeline.js";
 import { broadcast } from "../ws/brainBus.js";
@@ -93,6 +94,10 @@ interface AgentRun {
   intentNudges: number;
   forceAnswer: boolean;
   createdAt: number;
+  /** Successfully executed action ids, in order — procedural-memory credit. */
+  executedOk: string[];
+  /** "Known procedures" hint block computed once at run start ("" = none). */
+  proceduresHint: string;
   pending?: { action: string; args: Record<string, unknown>; risk: ActionRiskTier; rationale: string };
 }
 
@@ -245,6 +250,8 @@ function buildUserPrompt(run: AgentRun): string {
   return [
     ctx,
     ctx ? "" : null,
+    run.proceduresHint || null,
+    run.proceduresHint ? "" : null,
     `Request: ${run.prompt}`,
     "",
     "Progress so far:",
@@ -381,6 +388,9 @@ function emitPipe(
 function pushResult(run: AgentRun, action: string, args: Record<string, unknown>, ok: boolean, detail: string): void {
   const head = `${ok ? "✓" : "✗"} ${action}(${JSON.stringify(args)})`;
   run.transcript.push(`${head} → ${detail}`.slice(0, 1600));
+  // Procedural memory: remember the ordered successful action trail so a
+  // "done" run can credit the procedures it matched.
+  if (ok) run.executedOk.push(action);
 }
 
 function previewData(data: unknown): string {
@@ -419,6 +429,18 @@ export function startAgentRun(input: StartAgentInput): AgentRun {
     intentNudges: 0,
     forceAnswer: false,
     createdAt: now,
+    executedOk: [],
+    // Procedural memory: known tool sequences that worked for similar tasks
+    // ride into every round's prompt as hints. Failure-isolated — an empty
+    // block costs nothing and changes no behavior.
+    proceduresHint: (() => {
+      try {
+        return proceduresPromptBlock(proceduresFor(input.prompt, 3));
+      } catch (err) {
+        surfaceError("agentLoop.proceduresHint", err);
+        return "";
+      }
+    })(),
   };
   RUNS.set(run.runId, run);
   return run;
@@ -692,6 +714,15 @@ async function finishWithAnswer(
   // light up response-center → learning-center).
   emitPipe(run, emit, "response", "progress", ["response-center"], { tokensDelta: text });
   emit(agentEvent(run, "delta", { text }));
+  // Procedural memory: a run the model declared DONE credits every stored
+  // procedure whose steps appeared (in order) in the successful action trail.
+  if (status === "done" && run.executedOk.length > 0) {
+    try {
+      creditMatchingProcedures(run.executedOk);
+    } catch (err) {
+      surfaceError("agentLoop.procedureCredit", err);
+    }
+  }
   persistExchange(run, text);
   emitPipe(run, emit, "learning", "complete", ["learning-feedback-center"], { finalAnswer: text });
   emit(agentEvent(run, "final", { text }));

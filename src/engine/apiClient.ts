@@ -50,6 +50,7 @@ import type {
 } from "../../shared/perception";
 import type { PipelineEvent } from "../../shared/pipeline";
 import type { BrainStateSnapshot } from "../../shared/brainState";
+import type { KernelStatusInfo } from "../../shared/cognition";
 import type { SelfConsciousnessState } from "../../shared/selfConsciousness";
 import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
 import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionRiskTier, ActionSpec } from "../../shared/actions";
@@ -611,6 +612,12 @@ export const apiClient = {
   // streams over the bus as { type: "brain-state" }; this is the poll fallback.
   brainState(): Promise<BrainStateSnapshot> {
     return json<BrainStateSnapshot>(`/api/brain/state`);
+  },
+
+  // Brain Kernel — the single status surface: every cognitive module's health
+  // probe + the developmental stage (1-7) + recent bus activity.
+  brainKernel(): Promise<KernelStatusInfo> {
+    return json<KernelStatusInfo>(`/api/brain/kernel`);
   },
 
   // Self-Consciousness engine: the brain's model of itself — self-model,

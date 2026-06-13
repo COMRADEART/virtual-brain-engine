@@ -50,6 +50,8 @@ interface GoalUpdateInput {
   blockers?: string[];
   attempt?: Omit<GoalAttempt, "id" | "createdAt">;
   confidence?: number;
+  /** Goal-id links to children (core/goalManager.ts hierarchy). */
+  subgoals?: string[];
 }
 
 interface ResearchInput {
@@ -293,6 +295,7 @@ export class PersistentOrganismEngine {
       blockers: input.blockers ?? goal.blockers,
       attempts: attempt ? [...goal.attempts, attempt].slice(-18) : goal.attempts,
       confidence: clamp01(input.confidence ?? goal.confidence),
+      subgoals: input.subgoals ?? goal.subgoals,
       updatedAt: nowIso(),
     };
     this.saveGoal(next);

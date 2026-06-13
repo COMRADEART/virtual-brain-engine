@@ -34,6 +34,8 @@ import { updateMemoryImportance } from "./memoryLifecycle.js";
 import { decayAssociations } from "./hebbian.js";
 import { tokens } from "../attention/saliency.js";
 import { CONFIG } from "../config.js";
+import { getBeliefEngine } from "../core/beliefs.js";
+import { extractProcedures } from "./procedural.js";
 
 export interface EpisodeForSleep {
   id: string;
@@ -48,6 +50,8 @@ export interface SleepReport {
   distilled: number;
   demoted: number;
   hebbian: { decayed: number; pruned: number };
+  beliefs: { formed: number; decayed: number; retired: number };
+  procedures: { learned: number };
   reason?: string;
 }
 
@@ -180,8 +184,22 @@ export interface SleepOptions {
  */
 export async function runSleepCycle(opts: SleepOptions = {}): Promise<SleepReport> {
   const hebbian = decayAssociations();
+  // Beliefs decay "during sleep" too — same use-it-or-lose-it cadence as the
+  // Hebbian edges, no separate timer. Failure-isolated inside the engine.
+  const beliefDecay = getBeliefEngine().decayTick();
+  // Procedural consolidation: mine the action audit for recurring successful
+  // sequences (memory/procedural.ts). Failure-isolated inside the module.
+  const proceduresLearned = extractProcedures();
   const episodes = gatherEpisodes();
-  const report: SleepReport = { scanned: episodes.length, groups: 0, distilled: 0, demoted: 0, hebbian };
+  const report: SleepReport = {
+    scanned: episodes.length,
+    groups: 0,
+    distilled: 0,
+    demoted: 0,
+    hebbian,
+    beliefs: { formed: 0, decayed: beliefDecay.decayed, retired: beliefDecay.retired },
+    procedures: { learned: proceduresLearned },
+  };
 
   const groups = groupEpisodes(episodes);
   report.groups = groups.length;
@@ -232,6 +250,19 @@ export async function runSleepCycle(opts: SleepOptions = {}): Promise<SleepRepor
           } catch {
             // relation failures never block the cycle
           }
+        }
+        // A distilled fact is the brain's primary belief source: durable,
+        // evidence-backed (the source episodes), already deduplicated by the
+        // engine's statement hash. Failure-isolated inside the engine.
+        try {
+          const belief = getBeliefEngine().formBeliefFromFact(
+            fact,
+            group.map((e) => e.id),
+            group[0].projectName,
+          );
+          if (belief) report.beliefs.formed += 1;
+        } catch (err) {
+          surfaceError("sleepCycle.formBelief", err);
         }
         report.distilled += 1;
       }

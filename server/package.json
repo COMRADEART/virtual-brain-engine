@@ -46,6 +46,10 @@
     "workspace:selfcheck": "tsx scripts/workspace-selfcheck.ts",
     "embodiment:selfcheck": "tsx scripts/embodiment-selfcheck.ts",
     "episodes:selfcheck": "tsx scripts/episodes-selfcheck.ts",
+    "beliefs:selfcheck": "tsx scripts/beliefs-selfcheck.ts",
+    "goals:selfcheck": "tsx scripts/goals-selfcheck.ts",
+    "procedural:selfcheck": "tsx scripts/procedural-selfcheck.ts",
+    "stages:selfcheck": "tsx scripts/stages-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },

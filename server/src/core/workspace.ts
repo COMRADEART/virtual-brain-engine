@@ -27,12 +27,15 @@ import { getEventBus, nowIso } from "./eventBus.js";
 import { getBrainState } from "./brainState.js";
 import { gatherCuriosity } from "./curiosity.js";
 import { getPersistentOrganism } from "./organism.js";
+import { getBeliefEngine } from "./beliefs.js";
+import { getGoalManager } from "./goalManager.js";
+import { stageAllows } from "./stages.js";
 import { getDefaultConnectorInstance } from "../connectors/registry.js";
 import type { Connector } from "../connectors/Connector.js";
 import { upsertMemoryPoint } from "../db/repositories/memory.js";
 import { surfaceError } from "../util/diagnostics.js";
 
-export type WorkspaceBidKind = "open-question" | "curiosity" | "goal";
+export type WorkspaceBidKind = "open-question" | "curiosity" | "goal" | "belief";
 
 export interface WorkspaceBid {
   id: string;
@@ -51,10 +54,12 @@ export interface WorkspaceReport {
 }
 
 // Salience scales per bidder. Open questions dominate (they are the brain's
-// own flagged failures); curiosity follows; standing goals only win an
+// own flagged failures); curiosity follows; contested beliefs bid in between
+// (a shaken conviction deserves a moment); standing goals only win an
 // otherwise-empty round.
 export const OPEN_QUESTION_SCALE = 0.9;
 export const CURIOSITY_SCALE = 0.8;
+export const BELIEF_SCALE = 0.7;
 export const GOAL_SALIENCE = 0.35;
 export const THOUGHT_IMPORTANCE = 0.55;
 
@@ -109,9 +114,11 @@ export function collectBids(): WorkspaceBid[] {
   }
 
   // Curiosity frontier (expected information gain over the causal map).
+  // Developmental gate: curiosity-driven cognition unlocks at stage 5
+  // (fail-open — a broken tracker never silences the bidder).
   try {
-    const c = gatherCuriosity();
-    if (c.topTarget && c.curiosity > 0) {
+    const c = stageAllows("curiosity-bids") ? gatherCuriosity() : null;
+    if (c && c.topTarget && c.curiosity > 0) {
       bids.push({
         id: `cur-${c.topTarget}`,
         kind: "curiosity",
@@ -123,16 +130,51 @@ export function collectBids(): WorkspaceBid[] {
     surfaceError("workspace.bids.curiosity", err);
   }
 
-  // Standing goals — low salience; they win only an otherwise-quiet round.
+  // Contested / weakening beliefs — the brain re-examines its own shaken
+  // convictions. Salience rises as confidence falls; the winning micro-thought
+  // becomes a memory whose contradiction/reinforcement re-enters the belief
+  // engine through the storage-time novelty seam. Unlocks at stage 2.
   try {
-    const goals = getPersistentOrganism().getActiveGoalTitles(3);
-    for (const [i, title] of goals.entries()) {
+    const beliefCandidates = stageAllows("belief-bids")
+      ? getBeliefEngine().reExaminationCandidates(2)
+      : [];
+    for (const belief of beliefCandidates) {
       bids.push({
-        id: `goal-${i}-${title.slice(0, 24)}`,
-        kind: "goal",
-        label: `One concrete next step toward the goal: ${title}`,
-        salience: clamp01(GOAL_SALIENCE - i * 0.05),
+        id: `belief-${belief.id}`,
+        kind: "belief",
+        label: `Re-examine the belief "${belief.statement}" — it has ${belief.contradictingIds.length} contradicting observation(s) and confidence ${belief.confidence.toFixed(2)}. Is it still true?`,
+        salience: clamp01(BELIEF_SCALE * (1 - belief.confidence)),
       });
+    }
+  } catch (err) {
+    surfaceError("workspace.bids.beliefs", err);
+  }
+
+  // Standing goals — low salience; they win only an otherwise-quiet round.
+  // Hierarchy-aware: the goal manager's deepest actionable LEAVES bid (a leaf
+  // is the next thing actually doable; depth adds a small bonus). Falls back
+  // to the organism's flat title list if the manager has no tree to offer.
+  try {
+    const leaves = getGoalManager().nextActionableLeaves(3);
+    if (leaves.length > 0) {
+      for (const [i, leaf] of leaves.entries()) {
+        bids.push({
+          id: `goal-${leaf.goal.id}`,
+          kind: "goal",
+          label: `One concrete next step toward the goal: ${leaf.goal.title}`,
+          salience: clamp01(GOAL_SALIENCE + Math.min(0.15, leaf.depth * 0.05) - i * 0.05),
+        });
+      }
+    } else {
+      const goals = getPersistentOrganism().getActiveGoalTitles(3);
+      for (const [i, title] of goals.entries()) {
+        bids.push({
+          id: `goal-${i}-${title.slice(0, 24)}`,
+          kind: "goal",
+          label: `One concrete next step toward the goal: ${title}`,
+          salience: clamp01(GOAL_SALIENCE - i * 0.05),
+        });
+      }
     }
   } catch (err) {
     surfaceError("workspace.bids.goals", err);
