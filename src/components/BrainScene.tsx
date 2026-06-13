@@ -488,6 +488,32 @@ export function BrainScene({
     scene.fog = new THREE.FogExp2("#03080d", 0.08);
     sceneRef.current = scene;
 
+    // Atmospheric backdrop (a dim nebula) so the brain reads as floating in
+    // deep space rather than over flat color. backgroundIntensity keeps it
+    // subtle — it never competes with the additive neurons or trips the bloom
+    // threshold — and fog leaves the background untouched, so this is pure
+    // depth. Failure-isolated: a missing asset just keeps the prior
+    // transparent background, so verify:canvas / the Tauri build still render.
+    let backdropTexture: THREE.Texture | null = null;
+    let backdropCancelled = false;
+    new THREE.TextureLoader().load(
+      "/space-backdrop.webp",
+      (tex) => {
+        if (backdropCancelled) {
+          tex.dispose();
+          return;
+        }
+        tex.colorSpace = THREE.SRGBColorSpace;
+        backdropTexture = tex;
+        scene.background = tex;
+        scene.backgroundIntensity = 0.4;
+      },
+      undefined,
+      () => {
+        // Asset absent — leave the transparent background in place.
+      },
+    );
+
     const camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.01, 90);
     camera.position.set(0.1, 0.12, 4.25);
     cameraRef.current = camera;
@@ -875,6 +901,12 @@ const handlePointerClick = (event: PointerEvent) => {
 
     return () => {
       cancelled = true;
+      backdropCancelled = true;
+      scene.background = null;
+      if (backdropTexture) {
+        backdropTexture.dispose();
+        backdropTexture = null;
+      }
       window.cancelAnimationFrame(animationFrame);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       renderer.domElement.removeEventListener("click", handlePointerClick);
