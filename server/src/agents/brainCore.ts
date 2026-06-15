@@ -20,6 +20,8 @@ import { getKernel } from "../core/kernel.js";
 import { currentStage, stageAllows } from "../core/stages.js";
 import { getBeliefEngine } from "../core/beliefs.js";
 import { listProcedures } from "../memory/procedural.js";
+import { getSpine } from "../spine/cord.js";
+import { getMcpHub } from "../mcp/hub.js";
 import { runWorkspaceCycle } from "../core/workspace.js";
 import { emitMonologue } from "../core/monologue.js";
 import { getNarrative } from "../core/narrative.js";
@@ -406,6 +408,18 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
     bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
   });
 
+  // Spinal cord — works the descending task queue (Hermes) on a tick so queued
+  // motor commands get dispatched even with no client attached. An empty queue
+  // ticks to a no-op; every dispatch is failure-isolated so a tick error can
+  // never crash the core. The cord itself is a lazy singleton (getSpine).
+  const SPINE_TICK_MS = 30_000;
+  const spineTick = setInterval(() => {
+    void getSpine()
+      .tick()
+      .catch((err) => console.warn("[brain-core] spine tick failed:", err));
+  }, SPINE_TICK_MS);
+  if (typeof spineTick.unref === "function") spineTick.unref();
+
   const runtime = new AgentRuntime({ bus, safety: createSafetyGate() });
   runtime.register(new ObserverAgent());
   runtime.register(new SummaryAgent());
@@ -491,10 +505,12 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
     detail: `${listProcedures(200).length} procedure(s)`,
   }));
   kernel.registerModule("stages", () => ({ ok: true, detail: `stage ${currentStage()}` }));
+  kernel.registerModule("spinal-cord", () => getSpine().health());
+  kernel.registerModule("mcp-hub", () => getMcpHub().health());
   const stopStageCycle = kernel.startStageCycle();
 
   console.log(
-    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism, goal-manager, beliefs, self-consciousness, kernel)",
+    "[brain-core] agentic layer started (observer, summary, scheduler, system-sensor, idle, cognitive-swarm, imagination, evolution, organism, goal-manager, beliefs, self-consciousness, spinal-cord, kernel)",
   );
 
   return {
@@ -516,6 +532,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       stopStageCycle();
       kernel.stop();
       clearInterval(brainStateTick);
+      clearInterval(spineTick);
       if (workspaceTick) clearInterval(workspaceTick);
       await runtime.stop();
     },

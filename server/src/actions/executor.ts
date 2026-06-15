@@ -27,11 +27,12 @@ import { isExcludedPath } from "../ingest/governance.js";
 import { webSearch } from "../web/search.js";
 import { webResearch } from "../web/research.js";
 import { githubSearch } from "../github/discovery.js";
-import { discoverAndLearn } from "../github/index.js";
-import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import { discoverAndLearn, learnRepoRef } from "../github/index.js";
+import { getDefaultConnectorInstance, resolveEmbedFn } from "../connectors/registry.js";
 import { runScan, scanState } from "../scanner/indexer.js";
 import { surfaceError } from "../util/diagnostics.js";
 import type { ActionAuthorization, ActionId, ActionResult, ActionRiskTier, OsDirective } from "../../../shared/actions.js";
+import { applyEdits, summarizeFailure, type BuildTestResult, type PatchEdit } from "../../../shared/coding.js";
 import {
   cloneRepo,
   listRepoFiles,
@@ -48,6 +49,7 @@ import {
   getDynamicHandler,
   executeDynamicHandler,
 } from "./dynamicRegistry.js";
+import { callMcpTool } from "../mcp/hub.js";
 import { probeState, recordActionOutcome } from "./consequences.js";
 
 // Filesystem actions touch the REAL machine (same box as the user), so they are
@@ -177,6 +179,38 @@ function runShellCommand(
 // (run-command is deliberately raw; launch-app's app/args are NOT).
 function psSingleQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
+}
+
+// Shared body of run-build / run-tests. Spawns the (default or supplied) command
+// in the guarded cwd and returns a BuildTestResult. A non-zero exit is a NORMAL
+// result (passed=false) — the loop must SEE it to fix the code; only spawn
+// failure / timeout throws. ALLOW_SHELL is re-checked here (defense in depth).
+async function buildOrTest(
+  args: Record<string, unknown>,
+  defaultCommand: string,
+): Promise<{ summary: string; data: BuildTestResult }> {
+  if (!CONFIG.allowShell) throw new Error("build/test actions are disabled (set ALLOW_SHELL=true to enable)");
+  const g = guardFsPath(String(args.cwd));
+  if (!g.ok) throw new Error(`cwd ${g.error}`);
+  const command = typeof args.command === "string" && args.command.trim().length > 0 ? args.command.trim() : defaultCommand;
+  const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : CONFIG.shellTimeoutMs;
+  const r = await runShellCommand(command, g.path, timeoutMs);
+  if (r.timedOut) {
+    throw new Error(`command timed out after ${timeoutMs}ms${r.stdout ? `\n${r.stdout}` : ""}`);
+  }
+  const result: BuildTestResult = {
+    command,
+    cwd: g.path,
+    exitCode: r.code,
+    passed: r.code === 0,
+    stdout: r.stdout,
+    stderr: r.stderr,
+    truncated: r.stdout.length >= MAX_SHELL_OUTPUT || r.stderr.length >= MAX_SHELL_OUTPUT,
+  };
+  const summary = result.passed
+    ? `✓ \`${command}\` passed (exit 0)`
+    : `✗ ${summarizeFailure(result)}`;
+  return { summary, data: result };
 }
 
 export interface ExecuteInput {
@@ -348,6 +382,28 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
       data: { repos: r.repos.length, reposLearned: r.reposLearned, ingested: r.ingested, deduped: r.deduped },
     };
   },
+  // "Add this repo to the brain" — learn ONE specific repository's README. Embeds
+  // via resolveEmbedFn (default connector, else local Ollama) so the README joins
+  // the vector index even when the default model is remote. Egress + parse failures
+  // come back as a clear summary, never a throw (learnRepoRef never throws).
+  "github-learn-repo": async (args) => {
+    const ref = String(args.repo);
+    const r = await learnRepoRef(ref, { embed: resolveEmbedFn() });
+    if (!r.ok) {
+      return { summary: `Couldn't learn ${r.repo || ref} — ${r.reason ?? "unknown error"}`, data: r };
+    }
+    if (r.ingested === 0) {
+      return {
+        summary: `${r.repo} — nothing new learned${r.reason ? ` (${r.reason})` : ""}`,
+        data: { repo: r.repo, ingested: r.ingested, deduped: r.deduped },
+      };
+    }
+    const dup = r.deduped > 0 ? `, ${r.deduped} already known` : "";
+    return {
+      summary: `Learned ${r.repo}${r.stars ? ` (★${r.stars})` : ""} — ${r.ingested} new memor${r.ingested === 1 ? "y" : "ies"}${dup}`,
+      data: { repo: r.repo, url: r.url, stars: r.stars, ingested: r.ingested, deduped: r.deduped },
+    };
+  },
   // --- System actions --------------------------------------------------------
   "system-info": async () => {
     const cpus = os.cpus();
@@ -411,6 +467,39 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
     await fs.writeFile(g.path, content, "utf8");
     return { summary: `Wrote ${content.length} chars to ${g.path}`, data: { path: g.path, bytes: Buffer.byteLength(content, "utf8") } };
   },
+  // --- Coding mastery (verify-until-correct) ---------------------------------
+  // apply-patch: read the file (guarded), apply literal find/replace edits via the
+  // PURE applyEdits helper, write it back through the SAME guarded fs path. The
+  // patch primitive never touches fs itself — guardFsPath (absolute-only, UNC
+  // reject, isExcludedPath, TOCTOU-safe canonicalization) governs both read+write.
+  "apply-patch": async (args) => {
+    const g = guardFsPath(String(args.path));
+    if (!g.ok) throw new Error(g.error);
+    const edits = (Array.isArray(args.edits) ? args.edits : []) as PatchEdit[];
+    let original: string;
+    try {
+      const st = await fs.stat(g.path);
+      if (!st.isFile()) throw new Error("not a file");
+      if (st.size > MAX_READ_BYTES) throw new Error(`file too large to patch (${st.size} bytes > ${MAX_READ_BYTES})`);
+      original = await fs.readFile(g.path, "utf8");
+    } catch (err) {
+      throw new Error(`cannot read ${g.path}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+    const r = applyEdits(original, edits);
+    if (!r.ok || r.content === undefined) throw new Error(r.error ?? "patch failed");
+    await fs.writeFile(g.path, r.content, "utf8");
+    return {
+      summary: `Patched ${g.path} (${r.applied} edit${r.applied === 1 ? "" : "s"})`,
+      data: { path: g.path, applied: r.applied },
+    };
+  },
+  // run-build / run-tests: run a real build/test command and return its exit code
+  // so the agent loop SEES failures and self-corrects. A non-zero exit is NOT a
+  // handler failure — the command ran; only spawn failure / timeout throws. The
+  // `passed` flag in `data` is what the verify gate reads. ALLOW_SHELL re-checked
+  // (defense in depth — the registry already hides these when off).
+  "run-build": async (args) => buildOrTest(args, "npm run build"),
+  "run-tests": async (args) => buildOrTest(args, "npm test"),
   // --- "Do any task on the laptop" -------------------------------------------
   // The universal "do anything on this PC" tool. ALLOW_SHELL is re-checked here
   // (defense in depth — the registry already hides it when off). A non-zero exit
@@ -561,45 +650,78 @@ export async function executeAction(input: ExecuteInput): Promise<ExecuteResult>
     };
   }
 
-  // Handle dynamic actions differently
+  // Handle dynamic actions (registered skills + MCP-server tools). Both reuse THIS
+  // branch's allowlist + zod + confirm/scope gate; an MCP-backed def is dispatched
+  // to the MCP hub instead of the sandboxed new Function() handler (the eval
+  // sandbox is NEVER relaxed). AUDIT PARITY: every attempt — refusal, success, or
+  // failure — is written to action_log here, exactly like the static path below
+  // (this branch previously logged nothing, leaving dynamic/MCP calls out of the
+  // trail). authorizedVia stays honest: session-scope is audited as confirmed=false.
   if (isDynamic) {
     const dynDef = getDynamicAction(input.actionId);
     if (!dynDef) {
       return { ok: false, actionId: input.actionId, summary: "", error: "dynamic action not found", status: 403 };
     }
 
-    // Validate args against the dynamic schema
+    const auditDyn = (
+      ok: boolean,
+      confirmed: boolean,
+      authorizedVia: ActionAuthorization,
+      summary: string,
+      loggedArgs: Record<string, unknown>,
+    ): void => {
+      try {
+        insertActionLog({ actionId: input.actionId, args: loggedArgs, risk: dynDef.risk, confirmed, authorizedVia, ok, summary });
+      } catch (err) {
+        surfaceError("action:auditLog", err);
+      }
+    };
+
+    // Validate args against the dynamic schema.
     const parsed = dynDef.schema.safeParse(input.args ?? {});
     if (!parsed.success) {
-      return {
-        ok: false,
-        actionId: input.actionId,
-        summary: "",
-        error: `invalid args: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
-        status: 400,
-      };
+      const error = `invalid args: ${parsed.error.issues.map((i) => i.message).join("; ")}`;
+      auditDyn(false, false, "none", error, {});
+      return { ok: false, actionId: input.actionId, summary: "", error, status: 400 };
     }
+    const dynArgs = parsed.data as Record<string, unknown>;
 
-    // Confirm check for confirm-tier dynamic actions. A confirm token (per-plan
-    // human approval) takes precedence; failing that, the agent loop's granted
-    // session scope authorises the action when its risk is within the ceiling.
+    // Confirm gate — a plan-bound confirm token (bound to the RAW minted args)
+    // wins; failing that, the agent loop's granted session scope authorises the
+    // action when its risk is within the ceiling. The tier comes from the
+    // registry, never the caller. A refusal is audited, not silent.
     const needsConfirm = dynDef.risk !== "safe";
+    let confirmed = false;
+    let authorizedVia: ActionAuthorization = needsConfirm ? "none" : "safe";
     if (needsConfirm) {
-      const tokenOk =
-        Boolean(input.confirmToken) &&
-        consumeConfirmToken(input.confirmToken as string, input.actionId, input.args as Record<string, unknown>);
-      const scopeOk = !tokenOk && Boolean(input.sessionScope?.allow.includes(dynDef.risk));
-      if (!tokenOk && !scopeOk) {
-        return { ok: false, actionId: input.actionId, summary: "", error: "confirmation required", status: 403 };
+      if (input.confirmToken && consumeConfirmToken(input.confirmToken, input.actionId, (input.args ?? {}) as Record<string, unknown>)) {
+        confirmed = true;
+        authorizedVia = "confirm-token";
+      } else if (input.sessionScope?.allow.includes(dynDef.risk)) {
+        authorizedVia = "session-scope";
+      } else {
+        const error = "confirmation required (missing or invalid confirm token)";
+        auditDyn(false, false, "none", error, dynArgs);
+        return { ok: false, actionId: input.actionId, summary: "", error, status: 403 };
       }
     }
 
-    // Execute the dynamic handler
+    // Execute: MCP-backed def → hub dispatch; else the sandboxed handler.
     try {
-      const result = await executeDynamicHandler(input.actionId, parsed.data as Record<string, unknown>);
+      let result: { summary: string; data?: unknown };
+      if (dynDef.mcp) {
+        const r = await callMcpTool(dynDef.mcp.server, dynDef.mcp.tool, dynArgs);
+        if (!r.ok) throw new Error(r.error ?? "MCP tool failed");
+        result = { summary: r.content.slice(0, 2000) || `${dynDef.mcp.tool} ok`, data: r.data };
+      } else {
+        result = await executeDynamicHandler(input.actionId, dynArgs);
+      }
+      auditDyn(true, confirmed, authorizedVia, result.summary, dynArgs);
       return { ok: true, actionId: input.actionId, summary: result.summary, data: result.data, status: 200 };
     } catch (err) {
-      return { ok: false, actionId: input.actionId, summary: "", error: err instanceof Error ? err.message : String(err), status: 500 };
+      const error = err instanceof Error ? err.message : String(err);
+      auditDyn(false, confirmed, authorizedVia, error, dynArgs);
+      return { ok: false, actionId: input.actionId, summary: "", error, status: 500 };
     }
   }
 

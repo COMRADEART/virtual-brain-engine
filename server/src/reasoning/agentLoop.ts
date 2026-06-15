@@ -38,6 +38,15 @@ import { runPipeline } from "./pipeline.js";
 import { broadcast } from "../ws/brainBus.js";
 import { surfaceError } from "../util/diagnostics.js";
 import type { ActionRiskTier, ActionSpec } from "../../../shared/actions.js";
+import {
+  assertVerified,
+  isMutatingActionId,
+  isVerifyActionId,
+  sessionMutatedCode,
+  verifyResultPassed,
+  type CodingTrailEntry,
+  type VerifyOutcome,
+} from "../../../shared/coding.js";
 import type {
   AgentConfirmDecision,
   AgentConfirmMode,
@@ -96,6 +105,8 @@ interface AgentRun {
   createdAt: number;
   /** Successfully executed action ids, in order — procedural-memory credit. */
   executedOk: string[];
+  /** Ordered code-edit / verify trail — drives the verify-until-correct honesty gate. */
+  codingTrail: CodingTrailEntry[];
   /** "Known procedures" hint block computed once at run start ("" = none). */
   proceduresHint: string;
   pending?: { action: string; args: Record<string, unknown>; risk: ActionRiskTier; rationale: string };
@@ -217,6 +228,27 @@ function buildSystemPrompt(): string {
     "- YOU decide when the job is done. When every concrete thing the user asked for has actually succeeded, stop calling tools and write \"final\". Do not repeat a tool call you already ran.",
     "- If you are genuinely blocked (a capability is missing or permission was denied), say so plainly in \"final\" and stop.",
     "- For factual/knowledge questions, prefer deep-reason so the answer is grounded in memory.",
+    codingProtocolBlock(),
+  ]
+    .filter((l) => l.length > 0)
+    .join("\n");
+}
+
+// The verify-until-correct contract, injected only when the build/test tools are
+// actually available (ALLOW_SHELL on). It turns the existing ReAct rounds into a
+// closed coding loop: edit → run-build/run-tests → read the failure → fix → repeat
+// until a verification exits 0. The brain must NEVER claim code works unverified.
+function codingProtocolBlock(): string {
+  if (!CONFIG.allowShell) return "";
+  return [
+    "",
+    "CODING PROTOCOL — when the task is to write, fix, or refactor code:",
+    "1. Read the relevant file(s) first (read-file) so your edits match the real code.",
+    "2. Make precise edits with apply-patch (literal find/replace). Do not rewrite whole files when a targeted edit will do.",
+    "3. After editing, you MUST run run-build and/or run-tests in the project directory and READ the result.",
+    "4. If the exit code is non-zero, the code is NOT done: read the error output, fix it with another apply-patch, and run the verification AGAIN. Repeat.",
+    `5. Aim to converge within ~${CONFIG.codingMaxVerifyRounds} verify→fix cycles. Only declare "final" once a build/test has exited 0 AFTER your last edit.`,
+    "6. NEVER write a final answer claiming the code works unless a verification actually passed after your last edit. If you cannot make it pass, say so honestly in \"final\" and include the last failing output.",
   ].join("\n");
 }
 
@@ -432,6 +464,7 @@ export function startAgentRun(input: StartAgentInput): AgentRun {
     forceAnswer: false,
     createdAt: now,
     executedOk: [],
+    codingTrail: [],
     // Procedural memory: known tool sequences that worked for similar tasks
     // ride into every round's prompt as hints. Failure-isolated — an empty
     // block costs nothing and changes no behavior.
@@ -667,16 +700,28 @@ async function executeAndReport(
   let error: string | undefined;
   let osDirective: AgentToolEvent["osDirective"];
   let dataPreview = "";
+  let resultData: unknown;
   try {
     const result = await executeAction(execInput);
     ok = result.ok;
     summary = result.summary;
     error = result.error;
     osDirective = result.osDirective;
+    resultData = result.data;
     dataPreview = previewData(result.data);
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
   }
+  // Coding honesty trail: record code edits + verification outcomes in order so
+  // finishWithAnswer can prove whether the final code was actually verified.
+  const verify = isVerifyActionId(action);
+  run.codingTrail.push({
+    action,
+    ok,
+    mutating: ok && isMutatingActionId(action),
+    verify,
+    verifyPassed: verify && ok && verifyResultPassed(resultData),
+  });
   const authorizedVia = risk === "safe" ? "safe" : execInput.confirmToken ? "confirm-token" : execInput.sessionScope ? "session-scope" : "none";
   const tEvt: AgentToolEvent = { actionId: action, args, risk, ok, summary, error, authorizedVia, osDirective };
   emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
@@ -710,7 +755,22 @@ async function finishWithAnswer(
   status: AgentRunStatus,
   started: number,
 ): Promise<void> {
-  const text = answer.trim() || "(no answer produced)";
+  let text = answer.trim() || "(no answer produced)";
+  // ── Coding honesty gate ─────────────────────────────────────────────────
+  // If this run actually changed code, decide whether it was VERIFIED (a build/
+  // test exited 0 after the last edit). The brain never silently claims unverified
+  // code works: when verification didn't pass, stamp the outcome and append an
+  // explicit caveat so the user knows the code is unproven.
+  let verified: VerifyOutcome | undefined;
+  if (sessionMutatedCode(run.codingTrail)) {
+    verified = assertVerified(run.codingTrail);
+    if (CONFIG.codingVerifyRequired && verified !== "passed") {
+      text +=
+        verified === "failed"
+          ? "\n\n⚠️ NOT VERIFIED — the last build/test after my edits FAILED. The code changes above are NOT proven to work; the failing output is in the steps above."
+          : "\n\n⚠️ NOT VERIFIED — I changed code but did not get a build/test to pass afterward, so I cannot confirm it works. Treat these changes as unverified.";
+    }
+  }
   // Stream the answer (the connector returned it whole; emit as one delta +
   // pipeline frames so the existing visualizer + any pipeline-shaped consumer
   // light up response-center → learning-center).
@@ -727,7 +787,7 @@ async function finishWithAnswer(
   }
   persistExchange(run, text);
   emitPipe(run, emit, "learning", "complete", ["learning-feedback-center"], { finalAnswer: text });
-  emit(agentEvent(run, "final", { text }));
+  emit(agentEvent(run, "final", verified ? { text, verified } : { text }));
   finalizeMetrics(run, emit, status, started);
   RUNS.delete(run.runId);
 }

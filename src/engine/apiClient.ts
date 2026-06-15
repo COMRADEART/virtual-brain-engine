@@ -55,7 +55,15 @@ import type { SelfConsciousnessState } from "../../shared/selfConsciousness";
 import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
 import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionRiskTier, ActionSpec } from "../../shared/actions";
 import type { AgentConfirmDecision, AgentConfirmMode, AgentStreamFrame } from "../../shared/agent";
-import type { IngestItem, IngestRunResult, IngestSourceId, IngestStatus } from "../../shared/ingest";
+import type { SpineSnapshot, SpineEvent, SpinalPersonaId } from "../../shared/spine";
+
+// A frame on the /api/spine/dispatch SSE stream: a spine-event envelope, or any
+// agent-loop / pipeline frame (the deliberate tract reuses the agent loop).
+export type SpineStreamFrame =
+  | { type: "spine"; event: SpineEvent; timestamp: string }
+  | AgentStreamFrame;
+import type { FileIngestResult, IngestItem, IngestRunResult, IngestSourceId, IngestStatus } from "../../shared/ingest";
+import type { SettingsView, UpdateSettingsResult } from "../../shared/settings";
 import type { ModelPullState, ModelsView } from "../../shared/models";
 import type { WebResearchView, WebSearchOutcome } from "../../shared/web";
 import type { SwarmConsensusRound, SwarmNodeDescriptor, SwarmSnapshot, SwarmTask } from "../../shared/swarm";
@@ -788,6 +796,30 @@ export const apiClient = {
     return json(`/api/ingest/web`, { method: "POST", body: JSON.stringify({ url }) });
   },
 
+  // "Read any file into the brain": upload a file's base64 bytes; the server
+  // extracts readable content (text/code directly, HTML/PDF/Office best-effort,
+  // images via the perception worker's caption) and ingests it as governed,
+  // retrievable memory. `dataBase64` may be a raw base64 string or a data: URL.
+  ingestFile(input: { filename: string; mimeType?: string; dataBase64: string }): Promise<FileIngestResult> {
+    return json(`/api/ingest/file`, { method: "POST", body: JSON.stringify(input) });
+  },
+
+  // ----- Runtime application settings (edit the brain's own knobs) ----------
+  // GET returns the curated catalog + current effective values; POST applies a
+  // validated patch to the live config (and persists it); reset restores the
+  // .env baseline. Boot-time knobs are flagged requiresRestart in the view.
+  getSettings(): Promise<SettingsView> {
+    return json<SettingsView>(`/api/settings`);
+  },
+
+  updateSettings(patch: Record<string, boolean | number | string>): Promise<UpdateSettingsResult> {
+    return json<UpdateSettingsResult>(`/api/settings`, { method: "POST", body: JSON.stringify({ patch }) });
+  },
+
+  resetSettings(): Promise<{ ok: boolean; view: SettingsView }> {
+    return json(`/api/settings/reset`, { method: "POST" });
+  },
+
   // ----- Hybrid web (FRIDAY online): local + internet side by side ----------
   // Both egress and are gated by LOCAL_ONLY server-side — they return
   // { ok:false, reason } (never a thrown error) when the brain is local-only.
@@ -958,6 +990,25 @@ export const apiClient = {
   // streaming the same kinds of frames).
   confirmAgent(input: AgentConfirmDecision, signal?: AbortSignal): AsyncGenerator<AgentStreamFrame> {
     return sseStream<AgentStreamFrame>("/api/agent/confirm", input, signal);
+  },
+
+  // ----- Spinal cord: the brain↔body conduit (reflex/program/deliberate) -----
+  // GET the full status surface (queue, recent commands, reflexes, personas).
+  spineState(): Promise<SpineSnapshot> {
+    return json<SpineSnapshot>(`/api/spine/state`);
+  },
+  // POST /api/spine/dispatch (SSE): send ONE descending intent down the cord and
+  // stream spine/agent/pipeline frames as it routes (reflex/program/deliberate).
+  spineDispatch(
+    input: {
+      intent: string;
+      personaId?: SpinalPersonaId;
+      confirmMode?: AgentConfirmMode;
+      scope?: { allow: ActionRiskTier[] };
+    },
+    signal?: AbortSignal,
+  ): AsyncGenerator<SpineStreamFrame> {
+    return sseStream<SpineStreamFrame>("/api/spine/dispatch", input, signal);
   },
 
   async voiceSpeak(text: string, voice?: string): Promise<{

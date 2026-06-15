@@ -81,6 +81,11 @@ const steps = [
   { label: "adaptivedepth selfcheck", args: ["--prefix", "server", "run", "adaptivedepth:selfcheck"] },
   { label: "narrative selfcheck", args: ["--prefix", "server", "run", "narrative:selfcheck"] },
   { label: "monologue selfcheck", args: ["--prefix", "server", "run", "monologue:selfcheck"] },
+  { label: "settings selfcheck", args: ["--prefix", "server", "run", "settings:selfcheck"] },
+  { label: "fileingest selfcheck", args: ["--prefix", "server", "run", "fileingest:selfcheck"] },
+  { label: "spine selfcheck", args: ["--prefix", "server", "run", "spine:selfcheck"] },
+  { label: "coding selfcheck", args: ["--prefix", "server", "run", "coding:selfcheck"] },
+  { label: "mcp selfcheck", args: ["--prefix", "server", "run", "mcp:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline

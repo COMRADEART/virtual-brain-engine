@@ -8,6 +8,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { createBrainShell, setBrainShellOpacity } from "./BrainShell";
 import { NeuralGraphRenderer } from "./NeuralGraph";
 import { NeuronField } from "./NeuronField";
+import { SpineColumn } from "./SpineColumn";
 import type { AiPickEvent } from "./AiPickOverlay";
 import { ACTION_BY_ID } from "../engine/brainRegions";
 import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
@@ -255,6 +256,9 @@ export function BrainScene({
   // The million-neuron GPU point cloud + the interactive graph's metrics, so the
   // status readout can report the true neuron total (graph + field).
   const neuronFieldRef = useRef<NeuronField | null>(null);
+  // The spinal cord — a descending nerve bundle below the brain that animates the
+  // server's spine subsystem (efferent commands down, afferent feedback up).
+  const spineColumnRef = useRef<SpineColumn | null>(null);
   const graphMetricsRef = useRef<BrainMetrics>({ neurons: 0, pathways: 0, regions: 0 });
   const visualEffectsRef = useRef<BrainVisualEffects | null>(null);
   const simulationRef = useRef<SimulationLike | null>(null);
@@ -370,6 +374,42 @@ export function BrainScene({
     });
   }, []);
 
+  // The spinal cord: every motor command travelling the cord spawns a glowing
+  // impulse on the 3D column — EFFERENT (down) on dispatch/reflex/program,
+  // AFFERENT (up) on feedback — and co-flashes the mapped cortices so cognition
+  // and the body read as one connected nervous system.
+  useEffect(() => {
+    return subscribeBrainBus((message) => {
+      if (message.type !== "spine") {
+        return;
+      }
+      const ev = message.event;
+      const spine = spineColumnRef.current;
+      if (spine) {
+        if (ev.kind === "feedback") {
+          // Afferent: the outcome climbs back up — green ok / red blocked.
+          spine.spawnImpulse(-1, ev.ok === false ? "#ff6f7a" : "#7CFFB2", 1.05, 3.6);
+        } else if (ev.kind !== "command-queued") {
+          // Efferent: a command descends, tinted by the tract it took.
+          const byTract =
+            ev.tract === "reflex"
+              ? { color: "#ffb347", speed: 1.7, size: 3.0 }
+              : ev.tract === "program"
+                ? { color: "#7CFFB2", speed: 1.15, size: 3.4 }
+                : { color: "#6fe8ff", speed: 0.85, size: 3.8 };
+          spine.spawnImpulse(1, byTract.color, byTract.speed, byTract.size);
+        }
+      }
+      // Co-flash the cortices this tract engages (subordinate to pipeline flashes).
+      const gain = ev.kind === "feedback" ? 0.4 : 0.55;
+      ev.logicalRegions.forEach((region, index) => {
+        window.setTimeout(() => {
+          simulationRef.current?.flashLogicalRegion(region, gain);
+        }, index * 70);
+      });
+    });
+  }, []);
+
   // Model Hub: a downloading model streams into the brain — flash the model-hub
   // cortex as progress arrives (brighter on completion). Reuses the same
   // flashLogicalRegion path the idle breathing loop already exercises.
@@ -451,6 +491,7 @@ export function BrainScene({
       renderer.setSize(width, height);
       composer?.setSize(width, height);
       neuronFieldRef.current?.setPixelRatio(Math.min(window.devicePixelRatio, perfPreset.dprCap));
+      spineColumnRef.current?.setPixelRatio(Math.min(window.devicePixelRatio, perfPreset.dprCap));
     }
     if (bloomPassRef.current) {
       bloomPassRef.current.enabled = perfPreset.bloom;
@@ -623,6 +664,16 @@ export function BrainScene({
     pointCloudRef.current = pointCloudGroup;
     scene.add(pointCloudGroup);
 
+    // The spinal cord — descends from the brainstem to a body terminus, driven by
+    // `spine` bus events (see the subscription effect below). Built once with the
+    // scene; an optional higgsfield nerve texture enriches it with a procedural
+    // fallback, so the headless render check never blanks.
+    const spineColumn = new SpineColumn({
+      pixelRatio: Math.min(window.devicePixelRatio, perfPresetRef.current.dprCap),
+    });
+    spineColumnRef.current = spineColumn;
+    scene.add(spineColumn.group);
+
     let cancelled = false;
     const loader = new GLTFLoader();
     loader.load(
@@ -765,6 +816,10 @@ const renderFrame = () => {
         visibilityRef.current,
         elapsed,
       );
+
+      // Advance the spinal cord (impulse travel + resting tone). Independent of
+      // the engine — a tiny per-frame CPU pass over ≤96 impulses.
+      spineColumnRef.current?.update(delta, elapsed);
 
       // Update advanced visual effects if available
       if (visualEffects) {
@@ -931,6 +986,12 @@ const handlePointerClick = (event: PointerEvent) => {
       graphRendererRef.current?.dispose();
       scene.remove(shell);
       disposeObject(shell);
+      const spine = spineColumnRef.current;
+      if (spine) {
+        scene.remove(spine.group);
+        spine.dispose();
+        spineColumnRef.current = null;
+      }
       const pointCloud = pointCloudRef.current;
       if (pointCloud) {
         scene.remove(pointCloud);

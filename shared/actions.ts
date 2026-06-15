@@ -30,10 +30,12 @@ export type ActionId =
   | "web-search"
   | "research-web"
   // GitHub project discovery — find popular repos (>1k stars) by topic and learn
-  // their READMEs into memory. Both egress, so both are confirm-tier and gated by
-  // LOCAL_ONLY (see server/src/github).
+  // their READMEs into memory. github-learn-repo learns ONE specific repo by
+  // owner/name or URL ("add this repo to the brain"). All egress, so all are
+  // confirm-tier and gated by LOCAL_ONLY (see server/src/github).
   | "github-search"
   | "github-learn"
+  | "github-learn-repo"
   // System actions — "interact with the computer / do tasks". These run a Node
   // handler in the server process (same machine as the user). system-info is a
   // read-only metrics snapshot; the file ops are confirm-tier and path-guarded
@@ -42,6 +44,14 @@ export type ActionId =
   | "list-directory"
   | "read-file"
   | "write-file"
+  // Coding-mastery actions — the verify-until-correct loop's primitives. apply-patch
+  // makes a guarded find/replace edit to a file; run-build / run-tests run a real
+  // build/test command and return its exit code so the loop SEES failures and can
+  // self-correct. All confirm-tier; run-build/run-tests spawn processes so they
+  // ride ALLOW_SHELL exactly like run-command. See shared/coding.ts.
+  | "apply-patch"
+  | "run-build"
+  | "run-tests"
   // "Do any task on the laptop" — the universal computer-control primitives. They
   // run a real child process on the user's own machine (an arbitrary shell
   // command / launching an app), so they are confirm-tier and only present in the
@@ -76,10 +86,14 @@ export const ACTION_IDS: ActionId[] = [
   "research-web",
   "github-search",
   "github-learn",
+  "github-learn-repo",
   "system-info",
   "list-directory",
   "read-file",
   "write-file",
+  "apply-patch",
+  "run-build",
+  "run-tests",
   "run-command",
   "launch-app",
   "open-path",

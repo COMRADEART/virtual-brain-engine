@@ -27,22 +27,6 @@ pub struct ScreenCaptureResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActiveWindowInfo {
-    pub title: String,
-    pub app_name: String,
-    pub process_id: u32,
-    pub bounds: Option<WindowBounds>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowBounds {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisionConfig {
     pub enabled: bool,
     pub capture_interval_ms: u32,
@@ -203,11 +187,6 @@ pub fn list_screen_captures(app: tauri::AppHandle, limit: Option<u32>) -> Result
                     if filename.starts_with("capture_") {
                         if let Ok(metadata) = std::fs::metadata(&path) {
                             if let Ok(created) = metadata.created() {
-                                let timestamp = filename
-                                    .trim_start_matches("capture_")
-                                    .parse::<i64>()
-                                    .unwrap_or(0);
-
                                 captures.push(CaptureMetadata {
                                     id: filename.replace("capture_", ""),
                                     filename: path.file_name().unwrap_or_default().to_string_lossy().to_string(),

@@ -23,6 +23,20 @@ export interface ServerConfig {
   ollamaBaseUrl: string;
   ollamaChatModel: string;
   ollamaEmbeddingModel: string;
+  // How long Ollama keeps a model resident after a request ("30m", "24h", "-1"
+  // for forever, "0" to unload immediately). Passed as `keep_alive` on every
+  // chat/stream/embed call. Without it Ollama uses its 5-minute default, so an
+  // idle gap (or evicting the embedder to load the chat model) forces a
+  // multi-second cold reload on the next request. Keeping models warm is the
+  // single cheapest latency win for a local runtime.
+  ollamaKeepAlive: string;
+  // Context window (num_ctx) passed to Ollama on every chat/stream call. Ollama
+  // otherwise uses each model's OWN default — and some models declare a huge one
+  // (qwen3.5 defaults to 262144). Allocating a 256K-token KV cache overflows a
+  // small GPU's VRAM, spills the model to CPU/RAM, and makes inference HANG (the
+  // "no answer" failure). Capping num_ctx keeps the model GPU-resident. 0 = leave
+  // unset and let Ollama decide (only safe on big-VRAM machines).
+  ollamaNumCtx: number;
   embeddingDim: number;
   // Hard cap to keep an accidentally-pointed-at-C: scan from spiraling.
   maxFilesPerScan: number;
@@ -129,6 +143,26 @@ export interface ServerConfig {
   allowShell: boolean;
   // Hard cap (ms) on a single run-command before it is killed. Clamped 1s..600s.
   shellTimeoutMs: number;
+  // --- Coding mastery (verify-until-correct) ---------------------------------
+  // When true (default), the agent loop enforces the HONESTY gate: if a coding
+  // run mutated files but no build/test exited 0 after the last edit, the final
+  // answer is stamped verified="failed"/"unverified" and a caveat is appended —
+  // the brain never silently claims unverified code works.
+  codingVerifyRequired: boolean;
+  // Soft hint surfaced in the coding prompt for how many verify→fix cycles to aim
+  // for before giving up. The HARD termination bound stays agentMaxRounds.
+  codingMaxVerifyRounds: number;
+  // --- MCP client (external tool servers on the spine) -----------------------
+  // OFF by default (opt-in). When on, the MCP hub connects the configured servers
+  // at boot and registers their tools as confirm-tier dynamic actions reachable
+  // via the deliberate tract. Every MCP tool call still goes through executeAction
+  // (allowlist + confirm/scope gate + audit); HTTP/SSE egress is LOCAL_ONLY-gated;
+  // stdio spawning rides ALLOW_SHELL.
+  mcpEnabled: boolean;
+  // JSON array of McpServerConfig (see shared/mcp.ts), e.g.
+  //   [{"id":"fs","transport":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","C:/code"]}]
+  // Parsed once at boot. Bad JSON → no servers (logged), never a crash.
+  mcpServersRaw: string;
   // Optional prompt variant tag for A/B testing. When set, every usage log entry
   // carries this as `stepTimings.prompt_variant`, enabling per-variant quality
   // comparison. Empty = no variant tagging. Default: ""
@@ -245,6 +279,15 @@ export interface ServerConfig {
   parallelReasoning: boolean;
   // Number of parallel reasoning drafts (clamped 2..3).
   parallelReasoningDrafts: number;
+  // LATENCY — combine the reasoning + error-check steps into ONE LLM call on
+  // full routes. The error step (contradictions/missing/confidence) normally
+  // runs as a SECOND serial round-trip after reasoning, blocking the first
+  // streamed token. When on, a single chatJson returns plan + openQuestions +
+  // contradictions + missing + confidence. OFF by default — a merged call is a
+  // slightly weaker independent check than a separate adversarial pass; it falls
+  // back to the two-call path if the merged JSON lacks the error fields, so it
+  // can only be faster, never worse. Opt in with COMBINED_REASONING_ERROR=true.
+  combinedReasoningError: boolean;
   // FABLE F3 — outcome-learned adaptive compute: nudge the depth threshold from
   // observed citation outcomes, with a warm-start floor that returns the base
   // threshold EXACTLY until enough observations accrue (no-regression). OFF by
@@ -325,6 +368,8 @@ export const CONFIG: ServerConfig = {
   ollamaBaseUrl: str("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
   ollamaChatModel: str("OLLAMA_CHAT_MODEL", "llama3.2:3b"),
   ollamaEmbeddingModel: str("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
+  ollamaKeepAlive: str("OLLAMA_KEEP_ALIVE", "30m"),
+  ollamaNumCtx: num("OLLAMA_NUM_CTX", 8192),
   embeddingDim: num("EMBEDDING_DIM", 768),
   maxFilesPerScan: num("MAX_FILES_PER_SCAN", 50000),
   maxFileBytes: num("MAX_FILE_BYTES", 2 * 1024 * 1024),
@@ -349,6 +394,10 @@ export const CONFIG: ServerConfig = {
   agentTriage: bool("AGENT_TRIAGE", true),
   allowShell: bool("ALLOW_SHELL", true),
   shellTimeoutMs: Math.min(600_000, Math.max(1_000, num("SHELL_TIMEOUT_MS", 120_000))),
+  codingVerifyRequired: bool("CODING_VERIFY_REQUIRED", true),
+  codingMaxVerifyRounds: Math.min(20, Math.max(1, num("CODING_MAX_VERIFY_ROUNDS", 6))),
+  mcpEnabled: bool("MCP_ENABLED", false),
+  mcpServersRaw: str("MCP_SERVERS", ""),
   promptVariant: str("PROMPT_VARIANT", ""),
   dedupSimilarityThreshold: num("DEDUP_SIMILARITY_THRESHOLD", 0.92),
   dedupMaxPairs: num("DEDUP_MAX_PAIRS", 50),
@@ -379,6 +428,7 @@ export const CONFIG: ServerConfig = {
   fastSalvageScoreFloor: Math.min(1, Math.max(0, num("FAST_SALVAGE_SCORE_FLOOR", 0.25))),
   parallelReasoning: bool("PARALLEL_REASONING", false),
   parallelReasoningDrafts: Math.min(3, Math.max(2, num("PARALLEL_REASONING_DRAFTS", 2))),
+  combinedReasoningError: bool("COMBINED_REASONING_ERROR", false),
   adaptiveDepth: bool("ADAPTIVE_DEPTH", false),
   adaptiveDepthWarmAt: Math.max(1, num("ADAPTIVE_DEPTH_WARM_AT", 20)),
   selfNarrative: bool("SELF_NARRATIVE", true),

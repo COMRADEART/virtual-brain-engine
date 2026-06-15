@@ -159,6 +159,22 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       })
       .strict(),
   },
+  "github-learn-repo": {
+    id: "github-learn-repo",
+    title: "Learn a specific GitHub repo",
+    description:
+      "Read ONE specific GitHub repository's README into memory by owner/name or URL (e.g. 'deepbeepmeep/Wan2GP' or 'https://github.com/deepbeepmeep/Wan2GP') so the brain learns it and can cite it later. Use for 'add this repo to the brain', 'learn this github repo', 'remember <repo-url>'. Egresses, so gated by LOCAL_ONLY.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      repo: "the repository as owner/name or a github.com URL",
+    },
+    schema: z
+      .object({
+        repo: z.string().min(1).max(200),
+      })
+      .strict(),
+  },
   // --- System actions (Node handlers in the server process) ------------------
   "system-info": {
     id: "system-info",
@@ -198,6 +214,83 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       .object({
         path: z.string().min(1).max(4096),
         content: z.string().max(200_000),
+      })
+      .strict(),
+  },
+  // --- Coding mastery (verify-until-correct) ---------------------------------
+  // apply-patch makes a guarded literal find/replace edit to a file; run-build /
+  // run-tests run a real build/test command and return its exit code so the agent
+  // loop SEES failures and self-corrects until verification passes. All confirm-
+  // tier. run-build/run-tests spawn a child process, so — like run-command — they
+  // are only in the registry when ALLOW_SHELL is on; the executor re-checks the
+  // flag. apply-patch is a guarded file write (not a process), so it is NOT shell-
+  // gated — it shares write-file's path guard.
+  "apply-patch": {
+    id: "apply-patch",
+    title: "Edit a file (patch)",
+    description:
+      "Apply one or more literal find/replace edits to a text file (absolute path). Each `find` must occur exactly once unless `all` is true. Use this to fix or modify code precisely. Sensitive locations are refused.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      path: "absolute path to the file to edit",
+      edits: 'array of {find, replace, all?} — find must be present (and unique unless all:true)',
+    },
+    schema: z
+      .object({
+        path: z.string().min(1).max(4096),
+        edits: z
+          .array(
+            z
+              .object({
+                find: z.string().min(1).max(20_000),
+                replace: z.string().max(20_000),
+                all: z.boolean().optional(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(50),
+      })
+      .strict(),
+  },
+  "run-build": {
+    id: "run-build",
+    title: "Build / type-check",
+    description:
+      "Run a build or type-check command in a directory and return its exit code + output. Defaults to the project's build script. Use this to verify code compiles. A non-zero exit means it failed — read the output and fix it.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      cwd: "absolute path to the project/working directory",
+      command: "optional build command (defaults to 'npm run build')",
+      timeoutMs: "optional kill timeout in ms (1000-600000)",
+    },
+    schema: z
+      .object({
+        cwd: z.string().min(1).max(4096),
+        command: z.string().min(1).max(8000).optional(),
+        timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+      })
+      .strict(),
+  },
+  "run-tests": {
+    id: "run-tests",
+    title: "Run tests",
+    description:
+      "Run the test suite in a directory and return its exit code + output. Defaults to the project's test script. Use this to verify code works. A non-zero exit means tests failed — read the output and fix the code, then run again.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      cwd: "absolute path to the project/working directory",
+      command: "optional test command (defaults to 'npm test')",
+      timeoutMs: "optional kill timeout in ms (1000-600000)",
+    },
+    schema: z
+      .object({
+        cwd: z.string().min(1).max(4096),
+        command: z.string().min(1).max(8000).optional(),
+        timeoutMs: z.number().int().min(1000).max(600_000).optional(),
       })
       .strict(),
   },
@@ -389,7 +482,7 @@ const REGISTRY: Record<ActionId, ActionDef> = {
 // The shell ("do any task") actions are gated behind CONFIG.allowShell. When the
 // flag is off we hide them from every caller (resolver, agent loop, UI) so the
 // model can't even propose them; the executor re-checks the flag independently.
-const SHELL_ACTION_IDS: ReadonlySet<string> = new Set(["run-command", "launch-app"]);
+const SHELL_ACTION_IDS: ReadonlySet<string> = new Set(["run-command", "launch-app", "run-build", "run-tests"]);
 
 export function isShellAction(id: string): boolean {
   return SHELL_ACTION_IDS.has(id);

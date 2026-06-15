@@ -3,6 +3,7 @@ import cors from "cors";
 import { createServer } from "node:http";
 import { CONFIG } from "./config.js";
 import { openDb } from "./db/sqlite.js";
+import { applyPersistedSettings } from "./settings/runtimeSettings.js";
 import { cleanupUsageLog } from "./db/repositories/modelUsage.js";
 import { runDedupAudit, mergePair } from "./memory/dedupAudit.js";
 import {
@@ -48,10 +49,18 @@ import { perceptionRouter } from "./perception/index.js";
 import { civilizationRouter, civilization, createLocalDescriptor } from "./routes/civilization.js";
 import { phase2Router } from "./routes/phase2.js";
 import { voiceRouter } from "./routes/voice.js";
+import { settingsRouter } from "./routes/settings.js";
+import { spineRouter } from "./routes/spine.js";
+import { mcpRouter } from "./routes/mcp.js";
+import { getMcpHub } from "./mcp/hub.js";
 import selfRouter from "./routes/self.js";
 
 async function main(): Promise<void> {
   openDb();
+
+  // Overlay any user-saved runtime setting overrides onto the live CONFIG before
+  // anything reads it. Failure-isolated inside applyPersistedSettings.
+  applyPersistedSettings();
 
   const dimCheck = checkEmbeddingDimMismatch();
   if (!dimCheck.valid) {
@@ -199,7 +208,10 @@ async function main(): Promise<void> {
   // it inside reorder gymnastics.
   const globalBodyParser = express.json({ limit: "1mb" });
   app.use((req, res, next) => {
-    if (req.path.startsWith("/api/perceive/")) return next();
+    // /api/perceive/* and /api/ingest/file install their OWN larger json() parser
+    // (audio/image/file base64 payloads exceed 1mb); let them bypass the global
+    // parser, or that inner json() is a no-op (body-parser is idempotent).
+    if (req.path.startsWith("/api/perceive/") || req.path === "/api/ingest/file") return next();
     return globalBodyParser(req, res, next);
   });
   app.use("/api", healthRouter);
@@ -227,6 +239,9 @@ async function main(): Promise<void> {
   app.use("/api", visionRouter);
   app.use("/api", perceptionRouter);
   app.use("/api", voiceRouter);
+  app.use("/api", settingsRouter);
+  app.use("/api", spineRouter);
+  app.use("/api", mcpRouter);
   app.use("/api", phase2Router);
   app.use("/api", civilizationRouter);
   app.use("/api", selfRouter);
@@ -281,6 +296,14 @@ async function main(): Promise<void> {
         .start(createLocalDescriptor())
         .catch((err) => console.error("[server] civilization failed to start:", err));
     }
+    // MCP client hub: connect configured external tool servers and register their
+    // tools as confirm-tier dynamic actions. OFF by default; per-server failure-
+    // isolated so a bad server never blocks boot.
+    if (CONFIG.mcpEnabled) {
+      void getMcpHub()
+        .start()
+        .catch((err) => console.error("[server] MCP hub failed to start:", err));
+    }
   });
 
   const shutdown = (): void => {
@@ -297,6 +320,7 @@ async function main(): Promise<void> {
     if (civilization.isRunning()) {
       void civilization.stop();
     }
+    if (CONFIG.mcpEnabled) void getMcpHub().stop();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   };

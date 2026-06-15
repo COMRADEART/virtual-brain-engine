@@ -123,6 +123,11 @@ interface ActionDef {
   params: Record<string, string>;
   schema: z.ZodTypeAny;
   handlerCode?: string;
+  // When set, this dynamic action is backed by an external MCP server tool. The
+  // executor routes it to the MCP hub instead of the new Function() handler — so
+  // MCP tools reuse the dynamic allowlist + confirm gate + audit WITHOUT relaxing
+  // the eval sandbox. (See server/src/actions/executor.ts dynamic branch.)
+  mcp?: { server: string; tool: string };
 }
 
 // Register a new dynamic action.
@@ -216,14 +221,52 @@ export async function unregisterSkill(
   return { ok: true };
 }
 
+// Register an MCP-backed dynamic action. IN-MEMORY only (NOT persisted): MCP tools
+// are connection-bound and re-discovered on every hub start, so they must never
+// outlive a connection in the DB. The zod `schema` is supplied by the caller
+// (derived from the tool's JSON-Schema). Surface is always "server".
+export function registerMcpAction(input: {
+  id: string;
+  title: string;
+  description: string;
+  risk: ActionRiskTier;
+  params: Record<string, string>;
+  schema: z.ZodTypeAny;
+  mcp: { server: string; tool: string };
+}): void {
+  dynamicActions.set(input.id as ActionId, {
+    id: input.id,
+    title: input.title,
+    description: input.description,
+    risk: input.risk,
+    surface: "server",
+    params: input.params,
+    schema: input.schema,
+    mcp: input.mcp,
+  });
+}
+
+// Remove MCP-backed dynamic actions (all, or just one server's). Returns the
+// count removed. Used when the hub stops or a server disconnects.
+export function clearMcpActions(server?: string): number {
+  let removed = 0;
+  for (const [id, def] of dynamicActions) {
+    if (def.mcp && (server === undefined || def.mcp.server === server)) {
+      dynamicActions.delete(id);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 // Get a dynamic action by ID.
 export function getDynamicAction(id: string): ActionDef | null {
   return dynamicActions.get(id as ActionId) ?? null;
 }
 
-// List all dynamic actions (as ActionSpec, without the schema).
+// List all dynamic actions (as ActionSpec, without the schema/handler/mcp internals).
 export function listDynamicActions(): ActionSpec[] {
-  return Array.from(dynamicActions.values()).map(({ schema: _schema, handlerCode: _hc, ...spec }) => ({
+  return Array.from(dynamicActions.values()).map(({ schema: _schema, handlerCode: _hc, mcp: _mcp, ...spec }) => ({
     ...spec,
     id: spec.id as ActionId,
   }));

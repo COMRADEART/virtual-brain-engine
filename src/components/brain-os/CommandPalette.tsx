@@ -30,6 +30,7 @@ interface CommandPaletteProps {
   // Phase 2 panel controls
   onToggleDigitalTwin: (collapsed?: boolean) => void;
   onToggleCognitionStream: (collapsed?: boolean) => void;
+  onToggleSpine: (collapsed?: boolean) => void;
   onOpenUnifiedTab: (tab: "ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism") => void;
   onToggleUnifiedPanel: (collapsed?: boolean) => void;
   onOpenModelHub: () => void;
@@ -48,7 +49,7 @@ const CATEGORY_LABELS: Record<Command["category"], string> = {
 export function CommandPalette({
   isOpen, onClose, currentLayout, currentPerfMode,
   onLayoutChange, onCyclePreset, onFocusMode, onCompactMode, onFullMode,
-  onToggleDigitalTwin, onToggleCognitionStream, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
+  onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
   onOpenSettings, onScreenshot,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
@@ -144,6 +145,14 @@ export function CommandPalette({
       action: () => { onToggleCognitionStream(); onClose(); },
     },
     {
+      id: "toggle-spine",
+      label: "Toggle Spinal Cord",
+      description: "The brain↔body conduit: reflex / motor-program / deliberate tracts, motor-pool personas, and the live motor-command feed",
+      category: "panels",
+      icon: <GitBranch size={16} />,
+      action: () => { onToggleSpine(); onClose(); },
+    },
+    {
       id: "toggle-unified",
       label: "Toggle Unified Panel",
       description: "Show or hide the main Brain OS panel",
@@ -217,7 +226,7 @@ export function CommandPalette({
     },
   ], [
     currentLayout, currentPerfMode, onLayoutChange, onCompactMode, onFullMode, onFocusMode, onCyclePreset, onClose,
-    onToggleDigitalTwin, onToggleCognitionStream, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
+    onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
   ]);
 
   const filtered = useMemo(() => {

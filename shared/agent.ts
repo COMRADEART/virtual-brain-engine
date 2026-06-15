@@ -17,6 +17,7 @@
 
 import type { ActionRiskTier, OsDirective } from "./actions.js";
 import type { PipelineEvent } from "./pipeline.js";
+import type { VerifyOutcome } from "./coding.js";
 
 // How the loop treats a confirm-tier action it wants to run mid-task.
 //   "ask"       — pause and surface an approve/deny to the user, then resume on
@@ -96,6 +97,10 @@ export interface AgentEvent {
   confirm?: AgentConfirmRequest;
   detail?: string; // error / status reason
   metrics?: AgentRunMetrics;
+  // On the terminal "final" frame of a coding run that mutated files: whether the
+  // result was actually verified ("passed") or not ("failed"/"unverified"). Absent
+  // when the run didn't touch code. The honest core of the coding-mastery layer.
+  verified?: VerifyOutcome;
   timestamp: string;
 }
 
