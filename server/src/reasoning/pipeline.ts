@@ -60,6 +60,7 @@ import {
 import type { ControllerDecision, RetrievalContext } from "../../../shared/adaptive.js";
 import { recordRankTrainingLog } from "../db/repositories/feedback.js";
 import {
+  COMBINED_REASONING_ERROR_SYSTEM,
   ERROR_SYSTEM,
   PROJECT_RERANK_SYSTEM,
   REASONING_SYSTEM,
@@ -539,10 +540,22 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
             { variants: CONFIG.multiQueryVariants },
           );
           if (variants.length > 1) {
-            const lists: VectorSearchHit[][] = [raw];
-            for (const v of variants.slice(1)) {
-              lists.push(vectorSearch(await embedFn(v), baseK));
-            }
+            // Embed + search each variant CONCURRENTLY (not in a serial await
+            // loop) — RRF below is order-independent, so fusing the union is
+            // identical, but the N-1 embed round-trips now overlap instead of
+            // stacking. A single variant that fails to embed is dropped (its
+            // list omitted), never breaking the fusion.
+            const variantLists = await Promise.all(
+              variants.slice(1).map((v) =>
+                embedFn(v)
+                  .then((vec) => vectorSearch(vec, baseK))
+                  .catch((err) => {
+                    surfaceError("pipeline.multiQuery.variant", err);
+                    return [] as VectorSearchHit[];
+                  }),
+              ),
+            );
+            const lists: VectorSearchHit[][] = [raw, ...variantLists.filter((l) => l.length > 0)];
             raw = reciprocalRankFusion(lists, { limit: controllerDecision?.retrievalK ?? DEFAULT_RETRIEVAL_K });
             multiQueryNote = ` · mq:+${variants.length - 1}q`;
           }
@@ -735,8 +748,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       ? inferProjectName(connector, req.prompt, memoryHits).catch(() => null)
       : Promise.resolve(null);
   type ReasoningOut = { plan: string; openQuestions: string[] };
+  type ErrorOut = { contradictions: string[]; missing: string[]; confidence: number };
   let reasoning: ReasoningOut = { plan: "", openQuestions: [] };
   let reasoningDetail: string;
+  // When the combined reasoning+error pass (CONFIG.combinedReasoningError) runs,
+  // it captures the error half here so the error step reuses it instead of paying
+  // a second LLM round-trip. Stays null when the flag is off OR the merged JSON
+  // omitted the error fields — in which case the error step falls back normally.
+  let combinedErrorReport: ErrorOut | null = null;
   if (route.depth === "shallow") {
     // Adaptive compute: an easy query skips the expensive LLM reasoning plan
     // (and the swarm consensus) and answers directly from retrieved memory.
@@ -759,12 +778,44 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     let parallelNote = "";
     try {
       let parsed: ReasoningOut | null = null;
-      // FABLE F2 — on a genuinely hard route, sample N reasoning drafts in
-      // parallel and keep the most consistent (local lexical consensus, no
-      // judge, no logprobs). bestOfParallel never throws; a draft whose JSON
-      // is unparseable is treated as a failure, and if EVERY draft failed we
-      // fall back to a single call (so this can never regress the route).
-      if (CONFIG.parallelReasoning && route.difficulty >= PARALLEL_REASONING_DIFFICULTY_FLOOR) {
+      // LATENCY — combined reasoning + error in ONE call (opt-in). The error
+      // step is otherwise a SECOND serial round-trip that blocks the first
+      // streamed token; merging it here cuts that round-trip. This is an
+      // alternative reasoning strategy, so it supersedes the parallel-drafts
+      // path. The error half is captured into combinedErrorReport for the error
+      // step; if the model omits those fields, combinedErrorReport stays null and
+      // the error step falls back to its own call — so this never regresses.
+      if (CONFIG.combinedReasoningError) {
+        type CombinedOut = ReasoningOut & Partial<ErrorOut>;
+        const combinedSystem = narrativeGroundingBlock
+          ? `${narrativeGroundingBlock}\n\n${COMBINED_REASONING_ERROR_SYSTEM}`
+          : COMBINED_REASONING_ERROR_SYSTEM;
+        const c = await chatJson<CombinedOut>(connector, combinedSystem, reasoningUser, routedModelName);
+        if (c) {
+          parsed = {
+            plan: c.plan ?? "",
+            openQuestions: Array.isArray(c.openQuestions) ? c.openQuestions : [],
+          };
+          if (typeof c.confidence === "number" || Array.isArray(c.contradictions) || Array.isArray(c.missing)) {
+            combinedErrorReport = {
+              contradictions: Array.isArray(c.contradictions) ? c.contradictions : [],
+              missing: Array.isArray(c.missing) ? c.missing : [],
+              confidence: typeof c.confidence === "number" ? c.confidence : memoryHits.length > 0 ? 0.6 : 0.2,
+            };
+          }
+        }
+        if (!parsed) {
+          // Merged call failed to parse → fall back to a plain reasoning call so
+          // the route still produces a plan (the error step then runs normally).
+          parsed = await chatJson<ReasoningOut>(connector, reasoningSystem, reasoningUser, routedModelName);
+        }
+        parallelNote = combinedErrorReport ? " · combined+err" : " · combined";
+      } else if (CONFIG.parallelReasoning && route.difficulty >= PARALLEL_REASONING_DIFFICULTY_FLOOR) {
+        // FABLE F2 — on a genuinely hard route, sample N reasoning drafts in
+        // parallel and keep the most consistent (local lexical consensus, no
+        // judge, no logprobs). bestOfParallel never throws; a draft whose JSON
+        // is unparseable is treated as a failure, and if EVERY draft failed we
+        // fall back to a single call (so this can never regress the route).
         const res = await bestOfParallel<ReasoningOut>(
           CONFIG.parallelReasoningDrafts,
           (i) =>
@@ -842,32 +893,39 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // 5. ERROR
   stepStart = Date.now();
   emitAll(makeEvent(cid, runId, "error", "start"), emit);
-  type ErrorOut = { contradictions: string[]; missing: string[]; confidence: number };
   let errorReport: ErrorOut = { contradictions: [], missing: [], confidence: memoryHits.length > 0 ? 0.6 : 0.2 };
+  let errorReused = false;
   // Adaptive compute: the error step (contradiction/missing-data detection) is an
   // advisory LLM round-trip. On a shallow route (easy lookup query) we skip it —
   // exactly like the reasoning step — and keep the sensible defaults, so an easy
   // question goes embed → search → response with no extra round-trips. Hard
   // (full) queries still get the full check.
   if (route.depth === "full") {
-    try {
-      const parsed = await chatJson<ErrorOut>(
-        connector,
-        ERROR_SYSTEM,
-        `Question:\n${req.prompt}\n\nReasoning:\n${reasoning.plan}\n\nMemory:\n${memoryList || "(empty)"}`,
-      );
-      if (parsed) {
-        errorReport = {
-          contradictions: Array.isArray(parsed.contradictions) ? parsed.contradictions : [],
-          missing: Array.isArray(parsed.missing) ? parsed.missing : [],
-          confidence: typeof parsed.confidence === "number" ? parsed.confidence : errorReport.confidence,
-        };
+    if (combinedErrorReport) {
+      // The combined reasoning+error pass already produced this — reuse it
+      // instead of paying a second round-trip. This is the latency win.
+      errorReport = combinedErrorReport;
+      errorReused = true;
+    } else {
+      try {
+        const parsed = await chatJson<ErrorOut>(
+          connector,
+          ERROR_SYSTEM,
+          `Question:\n${req.prompt}\n\nReasoning:\n${reasoning.plan}\n\nMemory:\n${memoryList || "(empty)"}`,
+        );
+        if (parsed) {
+          errorReport = {
+            contradictions: Array.isArray(parsed.contradictions) ? parsed.contradictions : [],
+            missing: Array.isArray(parsed.missing) ? parsed.missing : [],
+            confidence: typeof parsed.confidence === "number" ? parsed.confidence : errorReport.confidence,
+          };
+        }
+      } catch (err) {
+        // Soft-fail: the error step is advisory, so we keep the default
+        // errorReport and let the pipeline continue — but surface it so a broken
+        // connector or malformed JSON doesn't masquerade as "no issues found".
+        surfaceError("pipeline.errorStep", err);
       }
-    } catch (err) {
-      // Soft-fail: the error step is advisory, so we keep the default
-      // errorReport and let the pipeline continue — but surface it so a broken
-      // connector or malformed JSON doesn't masquerade as "no issues found".
-      surfaceError("pipeline.errorStep", err);
     }
   }
   emitAll(
@@ -875,7 +933,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       detail:
         route.depth !== "full"
           ? `confidence ${errorReport.confidence.toFixed(2)} (skipped check — shallow route)`
-          : `confidence ${errorReport.confidence.toFixed(2)}, ${errorReport.contradictions.length} contradictions`,
+          : `confidence ${errorReport.confidence.toFixed(2)}, ${errorReport.contradictions.length} contradictions${errorReused ? " (combined)" : ""}`,
     }),
     emit,
   );

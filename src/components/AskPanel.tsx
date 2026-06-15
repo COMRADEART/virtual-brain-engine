@@ -145,6 +145,25 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
       setFeedbackSent(null);
 
       let streamed = "";
+      // Coalesce token updates to ONE React state write per animation frame.
+      // Writing setPending on every tokensDelta re-renders the answer tree (and
+      // re-runs its full-text regex parse) per token — O(n²) over a long answer
+      // and a main-thread competitor for the 3D scene. Batching to ~60fps keeps
+      // the stream visibly live while collapsing the render churn.
+      let rafId: number | null = null;
+      const flushPending = (): void => {
+        rafId = null;
+        setPending(streamed);
+      };
+      const scheduleFlush = (): void => {
+        if (rafId === null) rafId = requestAnimationFrame(flushPending);
+      };
+      const cancelFlush = (): void => {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+      };
       try {
         for await (const event of apiClient.ask(
           { prompt: sourceText, conversationId: conversationId ?? undefined },
@@ -162,9 +181,10 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
           }
           if (event.step === "response" && event.status === "progress" && event.tokensDelta) {
             streamed += event.tokensDelta;
-            setPending(streamed);
+            scheduleFlush();
           }
           if (event.step === "learning" && event.status === "complete" && event.finalAnswer) {
+            cancelFlush();
             setAnswer(event.finalAnswer);
             setPending("");
           }
@@ -172,10 +192,12 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
             setError(event.detail ?? "Pipeline error");
           }
         }
+        cancelFlush();
         if (!answer && streamed) {
           setAnswer(streamed);
         }
       } catch (err) {
+        cancelFlush();
         if (err instanceof DOMException && err.name === "AbortError") {
           // user cancelled
         } else if (err instanceof ApiError) {

@@ -26,6 +26,25 @@ Be terse. Each contradiction names two memory IDs in the form [m:<id>] and [m:<i
 If memory was empty, set confidence below 0.3 and list what's missing.
 ${UNTRUSTED_CONTENT_RULE}`;
 
+// LATENCY — the combined reasoning + error-check pass (CONFIG.combinedReasoningError).
+// One LLM call that does BOTH the reasoning cortex's plan AND the error-detection
+// center's contradiction/confidence check, so a full route pays ONE round-trip
+// before the answer streams instead of two serial ones. The instructions are the
+// union of REASONING_SYSTEM + ERROR_SYSTEM; the caller falls back to the separate
+// two-call path if the error fields come back missing, so quality can degrade to
+// "same as today" but never below it.
+export const COMBINED_REASONING_ERROR_SYSTEM = `${COGNITIVE_PRINCIPLES}
+
+You are the reasoning cortex AND the error-detection center of a virtual brain.
+Given a user question and a list of memory snippets, in ONE pass output STRICT JSON:
+{"plan": "...", "openQuestions": ["..."], "contradictions": ["..."], "missing": ["..."], "confidence": 0.0-1.0}
+- plan: how you'd answer, under 60 words. Do not invent facts not in the snippets.
+- openQuestions: gaps you noticed (don't fill them with guesses).
+- contradictions: conflicts between snippets; each names two ids as [m:<id>] and [m:<id>].
+- missing: facts needed to answer well that the snippets don't contain.
+- confidence: 0.0-1.0; below 0.3 when memory was empty or weak.
+${UNTRUSTED_CONTENT_RULE}`;
+
 export function buildResponseSystem(hasMemory: boolean): string {
   const base = `${COGNITIVE_PRINCIPLES}
 

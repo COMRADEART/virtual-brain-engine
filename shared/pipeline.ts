@@ -24,6 +24,8 @@ import type { BrainBusVisualMessage } from "./vision";
 import type { BrainStateSnapshot } from "./brainState";
 import type { SelfConsciousnessState } from "./selfConsciousness";
 import type { CognitionEvent } from "./cognition";
+import type { SpineEvent } from "./spine";
+import type { McpEvent } from "./mcp";
 
 export type LogicalRegionId =
   | "memory-core"
@@ -183,4 +185,15 @@ export type BrainBusMessage =
   // spike, reflection, dream, thought, procedure learned, stage advance).
   // BrainScene flashes event.logicalRegions; the CognitionStreamPanel renders
   // the organism's running inner life.
-  | { type: "cognition"; event: CognitionEvent; timestamp: string };
+  | { type: "cognition"; event: CognitionEvent; timestamp: string }
+  // --- Spinal cord (shared/spine.ts) ------------------------------------------
+  // One event per motor command travelling the cord: queued, fired as a reflex,
+  // run as a motor program, dispatched to the deliberate tract, or afferent
+  // feedback returning up. BrainScene drives the 3D spine column (descending
+  // efferent impulse on dispatch, ascending afferent impulse on feedback) and
+  // co-flashes event.logicalRegions; the SpinePanel renders the live activity.
+  | { type: "spine"; event: SpineEvent; timestamp: string }
+  // --- MCP client (shared/mcp.ts) ---------------------------------------------
+  // One event per MCP lifecycle moment: a server connected/disconnected, a tool
+  // registered, a tool call, or an error. Lets a tab reflect MCP activity live.
+  | { type: "mcp"; event: McpEvent; timestamp: string };

@@ -24,6 +24,14 @@ function buildOptions(opts: SendOptions): Record<string, number> | undefined {
   if (opts.maxTokens !== undefined && Number.isFinite(opts.maxTokens)) {
     options.num_predict = opts.maxTokens;
   }
+  // Cap the context window. Ollama otherwise honors each model's OWN default,
+  // which for some models is enormous (qwen3.5 → 262144). A 256K KV cache won't
+  // fit a small GPU, so Ollama spills the model to CPU and inference HANGS — the
+  // "I ask a question and get no answer" failure. Pinning num_ctx keeps the model
+  // GPU-resident and responsive. 0 disables the cap (big-VRAM machines only).
+  if (CONFIG.ollamaNumCtx > 0) {
+    options.num_ctx = CONFIG.ollamaNumCtx;
+  }
   return Object.keys(options).length > 0 ? options : undefined;
 }
 
@@ -88,6 +96,8 @@ export class OllamaConnector implements Connector {
       // under `format:"json"` and (b) adds large latency to every pipeline step.
       // Ignored by non-thinking models, so it's a safe default for a responsive brain.
       think: false,
+      // Keep the model resident so the next request skips the cold reload.
+      keep_alive: CONFIG.ollamaKeepAlive,
       options: buildOptions(opts),
     };
     if (opts.format === "json") {
@@ -132,6 +142,7 @@ export class OllamaConnector implements Connector {
           messages,
           stream: true,
           think: false, // see send(): keep reasoning models from stalling/adding latency
+          keep_alive: CONFIG.ollamaKeepAlive, // keep the model warm across requests
           options: buildOptions(opts),
         }),
         signal: opts.signal,
@@ -190,7 +201,7 @@ export class OllamaConnector implements Connector {
       response = await fetch(`${this.baseUrl}/api/embeddings`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: this.embedModel, prompt: text }),
+        body: JSON.stringify({ model: this.embedModel, prompt: text, keep_alive: CONFIG.ollamaKeepAlive }),
         signal,
       });
     } catch (err) {

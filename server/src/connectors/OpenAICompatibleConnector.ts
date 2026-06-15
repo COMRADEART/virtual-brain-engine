@@ -145,16 +145,21 @@ export class OpenAICompatibleConnector implements Connector {
     return { "content-type": "application/json" };
   }
 
-  // Order the pool for this attempt: rotate to the round-robin cursor, then put
-  // not-cooled keys first and cooled keys last (so an exhausted-pool request
-  // still tries everything rather than failing outright).
-  private candidateOrder(now: number): string[] {
+  // Split the pool for this attempt: rotate to the round-robin cursor, then
+  // separate not-cooled keys from cooled ones (cooled sorted soonest-to-recover
+  // first). The caller tries every fresh key, then gives at most ONE cooled key
+  // a chance — so a fully-throttled pool fails after a single round-trip instead
+  // of sweeping all N cooled keys serially (which multiplied latency by pool
+  // size). A still-loud ConnectorError(429) is still raised when nothing works.
+  private candidateKeys(now: number): { fresh: string[]; cooled: string[] } {
     const keys = this.apiKeys;
     const start = keys.length > 0 ? this.rrIndex % keys.length : 0;
     const rotated = [...keys.slice(start), ...keys.slice(0, start)];
     const fresh = rotated.filter((k) => (this.cooldownUntil.get(k) ?? 0) <= now);
-    const cooled = rotated.filter((k) => (this.cooldownUntil.get(k) ?? 0) > now);
-    return [...fresh, ...cooled];
+    const cooled = rotated
+      .filter((k) => (this.cooldownUntil.get(k) ?? 0) > now)
+      .sort((a, b) => (this.cooldownUntil.get(a) ?? 0) - (this.cooldownUntil.get(b) ?? 0));
+    return { fresh, cooled };
   }
 
   private onKeySuccess(key: string): void {
@@ -185,7 +190,11 @@ export class OpenAICompatibleConnector implements Connector {
     if (this.apiKeys.length === 0) {
       return this.fetchImpl(url, { ...init, headers: this.baseHeaders() });
     }
-    const order = this.candidateOrder(Date.now());
+    // Try every fresh key; then give ONLY the single soonest-to-recover cooled
+    // key one chance. This caps a fully-throttled pool at one round-trip rather
+    // than re-probing every cooled key serially.
+    const { fresh, cooled } = this.candidateKeys(Date.now());
+    const order = [...fresh, ...cooled.slice(0, 1)];
     let lastRes: Response | null = null;
     for (const key of order) {
       const res = await this.fetchImpl(url, {

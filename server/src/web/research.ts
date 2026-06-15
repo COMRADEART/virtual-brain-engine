@@ -14,7 +14,8 @@
 // returned as { ok:false, reason } so the pipeline's local answer is untouched.
 
 import { CONFIG } from "../config.js";
-import { fetchAndIngestUrl } from "../ingest/index.js";
+import { ingestFetchedPage } from "../ingest/index.js";
+import { fetchUrlText } from "../ingest/webFetch.js";
 import { webSearch, type WebSearchProvider, type WebSearchResult } from "./search.js";
 import type { VectorSearchHit } from "../db/repositories/memory.js";
 import { surfaceError } from "../util/diagnostics.js";
@@ -99,6 +100,31 @@ function rankScore(index: number): number {
 // so this keeps the most representative material.
 const MAX_FUSED_HITS = 8;
 
+// How many page bodies to download at once. The remote fetch is the dominant,
+// independent per-page cost; a small cap overlaps the waits without hammering
+// any one host.
+const WEB_FETCH_CONCURRENCY = 4;
+
+// Order-preserving bounded-concurrency map (no dependency). Used to download the
+// search results' page bodies in parallel while keeping results[i] ↔ out[i].
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return out;
+}
+
 export async function webResearch(query: string, opts: WebResearchOptions = {}): Promise<WebResearchResult> {
   const q = query.trim();
   const base: WebResearchResult = { ok: false, provider: null, query: q, results: [], hits: [], ingested: 0, deduped: 0 };
@@ -126,15 +152,27 @@ export async function webResearch(query: string, opts: WebResearchOptions = {}):
     let deduped = 0;
     let scoreIndex = 0;
 
-    // Sequential: keeps the content-hash dedup ordering correct (each page is
-    // persisted before the next is prepared) and avoids hammering the host.
-    for (const r of results) {
-      const ing = await fetchAndIngestUrl(r.url, {
+    // PHASE 1 — download every page body CONCURRENTLY (bounded). The remote
+    // fetch (with its own LOCAL_ONLY gate + per-request timeout inside
+    // fetchUrlText) is the slow, independent half; overlapping the N waits turns
+    // wall-time from sum→max. Order is preserved so search rank → fusion score
+    // stays stable.
+    const pages = await mapWithConcurrency(results, WEB_FETCH_CONCURRENCY, (r) =>
+      fetchUrlText(r.url, {
         fetchImpl: opts.fetchImpl,
         localOnly: opts.localOnly,
-        embed: opts.embed,
         maxBytes: opts.perPageMaxBytes,
-      });
+      }),
+    );
+
+    // PHASE 2 — persist SEQUENTIALLY in rank order. The governed ingest's
+    // content-hash dedup is a check-then-insert that must NOT interleave across
+    // pages (see ingestFetchedPage), so this half stays ordered even though the
+    // fetches ran in parallel.
+    for (let i = 0; i < results.length; i++) {
+      const page = pages[i];
+      if (!page.ok) continue;
+      const ing = await ingestFetchedPage(page, { embed: opts.embed });
       ingested += ing.ingested;
       deduped += ing.deduped;
       for (const point of ing.points ?? []) {
