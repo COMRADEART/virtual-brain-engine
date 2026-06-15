@@ -60,6 +60,7 @@
     "spine:selfcheck": "tsx scripts/spine-selfcheck.ts",
     "coding:selfcheck": "tsx scripts/coding-selfcheck.ts",
     "mcp:selfcheck": "tsx scripts/mcp-selfcheck.ts",
+    "airllm:selfcheck": "tsx scripts/airllm-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"
   },

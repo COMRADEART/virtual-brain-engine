@@ -204,6 +204,26 @@ export interface ServerConfig {
   // down, and rate-limited by autoStartMinIntervalMs so dev restarts don't
   // retrain in a loop. Set AUTO_START_SCRATCH_LLM=false to opt out.
   autoStartScratchLlm: boolean;
+  // --- AirLLM high-parameter teacher (improve mango's training) --------------
+  // When true, the mango own-model trainer runs a DISTILLATION pre-pass: a
+  // high-parameter model (airllmTeacherModel), run on the small GPU via AirLLM's
+  // layer-by-layer offloading, rewrites the corpus notes into clean
+  // instructional answers, and the small student trains on THOSE. OFF by default
+  // — the teacher pre-pass is slow (layer-by-layer inference) and needs airllm +
+  // a CUDA torch build; opt in with OWN_MODEL_DISTILL=true. Fully
+  // failure-isolated: when airllm is absent the trainer falls back to the raw
+  // corpus path, so enabling this can never break a normal mango run.
+  ownModelDistill: boolean;
+  // HF id of the high-parameter distillation teacher AND the model behind
+  // /api/learning/airllm/generate. A mid-size instruct model is the honest
+  // default — big enough to teach a 0.5B student, small enough that
+  // layer-by-layer inference on a 6GB GPU is merely slow. Bump to a 14B/32B/70B
+  // if you can wait. Pulled from Hugging Face on first use.
+  airllmTeacherModel: string;
+  // Quantization AirLLM applies to the high-parameter model: "4bit" (default,
+  // needs bitsandbytes) shrinks the per-layer footprint + speeds streaming;
+  // "8bit"; "off" for none. Used as the default for /airllm/generate.
+  airllmCompression: string;
   // When true (the default), both trainers (the LoRA own-model pass and the
   // from-scratch GPT) filter the exported memory corpus to mostly-English
   // documents before training. The base models are bilingual (Qwen) and a
@@ -406,6 +426,9 @@ export const CONFIG: ServerConfig = {
   githubMinStars: Math.max(1, num("GITHUB_MIN_STARS", 1000)),
   githubMaxRepos: Math.min(50, Math.max(1, num("GITHUB_MAX_REPOS", 10))),
   autoStartOwnModel: bool("AUTO_START_OWN_MODEL", false),
+  ownModelDistill: bool("OWN_MODEL_DISTILL", false),
+  airllmTeacherModel: str("AIRLLM_TEACHER_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
+  airllmCompression: str("AIRLLM_COMPRESSION", "4bit"),
   autoStartScratchLlm: bool("AUTO_START_SCRATCH_LLM", true),
   trainEnglishMostly: bool("TRAIN_ENGLISH_MOSTLY", true),
   autoStartMinCorpusChars: Math.max(0, num("AUTO_START_MIN_CORPUS_CHARS", 10_000)),

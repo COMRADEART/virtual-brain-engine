@@ -141,6 +141,12 @@ export interface StartOwnModelOptions {
   steps?: number;
   baseModel?: string;
   force?: boolean;
+  // Distill the corpus through a high-parameter AirLLM teacher before training
+  // (improves the student's training data). When omitted, defaults from
+  // CONFIG.ownModelDistill / CONFIG.airllmTeacherModel so the boot auto-train
+  // honours the env without the route having to pass them.
+  distill?: boolean;
+  teacherModel?: string;
 }
 
 /**
@@ -166,6 +172,10 @@ export async function startOwnModelTraining(
       corpusChars: corpus.chars,
     };
   }
+  // Distillation defaults from CONFIG so the boot auto-train picks up
+  // OWN_MODEL_DISTILL / AIRLLM_TEACHER_MODEL without the caller threading them.
+  const distill = opts.distill ?? CONFIG.ownModelDistill;
+  const teacherModel = opts.teacherModel ?? (distill ? CONFIG.airllmTeacherModel : undefined);
   const r = await fetchJson<Record<string, unknown>>(
     "/ownmodel/start",
     {
@@ -175,6 +185,8 @@ export async function startOwnModelTraining(
         steps: opts.steps,
         baseModel: opts.baseModel,
         force: opts.force ?? false,
+        distill,
+        teacherModel,
       }),
     },
     START_TIMEOUT_MS,
