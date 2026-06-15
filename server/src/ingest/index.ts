@@ -272,7 +272,22 @@ export async function fetchAndIngestUrl(
     logRun(result);
     return { ...result, title: null };
   }
+  return ingestFetchedPage(fetched, opts);
+}
 
+// Persist an ALREADY-FETCHED page through the SAME governed web ingest (chunk →
+// redact → dedup → importance → [embed] → persist → audit). Split out of
+// fetchAndIngestUrl so a caller that downloads many pages in PARALLEL (the
+// pipeline's web research) can still run the dedup-sensitive PERSIST step
+// SEQUENTIALLY — content-hash dedup is a check-then-insert (prepareIngestItem
+// reads the live DB, the caller must persist one item before preparing the
+// next), so interleaving concurrent persists would defeat it. The network
+// fetch is the slow, parallelizable half; this persist half is the half that
+// must stay ordered.
+export async function ingestFetchedPage(
+  fetched: { title: string | null; text: string; finalUrl: string },
+  opts: { embed?: (text: string) => Promise<number[]> } = {},
+): Promise<WebIngestResult> {
   const chunks = chunkText(fetched.text, { targetChars: 1000, maxChunks: 60 });
   const occurredAt = new Date().toISOString();
   const items: IngestItem[] = chunks.map((text, i) => ({

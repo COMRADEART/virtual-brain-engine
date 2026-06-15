@@ -14,7 +14,7 @@
 //     memory brain.
 //   - Local-only + audited: ingestion never egresses; every run is logged.
 
-export type IngestSourceId = "clipboard" | "recent-docs" | "app-usage" | "manual" | "web" | "github";
+export type IngestSourceId = "clipboard" | "recent-docs" | "app-usage" | "manual" | "web" | "github" | "file";
 
 export interface IngestSourceSpec {
   id: IngestSourceId;
@@ -50,6 +50,12 @@ export const INGEST_SOURCES: IngestSourceSpec[] = [
     description: "Discover popular repos (>1k stars) by topic and learn their READMEs. Needs LOCAL_ONLY=false (egresses).",
     osBacked: false,
     egress: true,
+  },
+  {
+    id: "file",
+    title: "Uploaded files",
+    description: "Files you drop in — text, code, PDFs, Office docs, and images. The brain extracts and remembers their contents.",
+    osBacked: false,
   },
 ];
 
@@ -102,4 +108,22 @@ export interface IngestSourceStatus extends IngestSourceSpec {
 export interface IngestStatus {
   sources: IngestSourceStatus[];
   recent: IngestLogEntry[];
+}
+
+// Result of uploading ONE file to the brain (POST /api/ingest/file). The brain
+// extracts readable content (text/code directly, HTML/PDF/Office best-effort,
+// images via the perception worker's caption), then runs it through the SAME
+// governed ingest pipeline as every other source. `kind` is how the file was
+// classified; `chars` is how much text was extracted; `ingest` is the per-run
+// governance tally (chunks ingested/deduped/redacted).
+export interface FileIngestResult {
+  ok: boolean;
+  filename: string;
+  // "text" | "html" | "pdf" | "office" | "image" | "binary"
+  kind: string;
+  chars: number;
+  // Human-readable summary of what happened (esp. when nothing was extractable,
+  // e.g. a scanned PDF or an image with the perception worker offline).
+  note: string;
+  ingest: IngestRunResult;
 }

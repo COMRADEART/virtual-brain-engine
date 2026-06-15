@@ -24,6 +24,8 @@ import {
   type ShortcutAction,
 } from "../engine/keymap";
 import { resetOnboarding } from "./OnboardingHints";
+import { BrainSettingsSection } from "./settings/BrainSettingsSection";
+import { FileIngestSection } from "./settings/FileIngestSection";
 import { toastError, toastInfo, toastSuccess } from "../engine/toastBus";
 
 interface SettingsPanelProps {
@@ -319,6 +321,10 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps): JSX.Elemen
             </div>
           </div>
         </section>
+
+        <FileIngestSection />
+
+        <BrainSettingsSection />
 
         <section className="shortcuts-section">
           <h3>
