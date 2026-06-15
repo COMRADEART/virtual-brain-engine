@@ -33,7 +33,7 @@ process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 
 const { openDb } = await import("../src/db/sqlite.js");
 const { githubSearch, fetchRepoReadme } = await import("../src/github/discovery.js");
-const { discoverAndLearn } = await import("../src/github/index.js");
+const { discoverAndLearn, learnRepoRef, parseRepoRef } = await import("../src/github/index.js");
 const { ingestStatus } = await import("../src/ingest/index.js");
 const { isConsentEnabled } = await import("../src/db/repositories/ingest.js");
 const { listRecentMemories, keywordSearch, countMemoryPoints } = await import("../src/db/repositories/memory.js");
@@ -259,6 +259,82 @@ function anyRowContains(needle: string): boolean {
   // Exactly ONE: repo #1 is learned (its README came back fine), then the low
   // remaining (2 < floor 5) it reported stops the loop before repo #2.
   check("rate-limit budget stops the loop early", r.reposLearned === 1 && /rate limit/i.test(r.reason ?? ""), `reposLearned=${r.reposLearned}, reason=${r.reason}`);
+}
+
+// --- learn-repo: ref parsing (owner/name, https, ssh, .git, garbage) --------
+{
+  const a = parseRepoRef("deepbeepmeep/Wan2GP");
+  check("parseRepoRef owner/name", a?.owner === "deepbeepmeep" && a?.name === "Wan2GP");
+  const b = parseRepoRef("https://github.com/deepbeepmeep/Wan2GP.git");
+  check("parseRepoRef https URL with .git", b?.owner === "deepbeepmeep" && b?.name === "Wan2GP");
+  const c = parseRepoRef("git@github.com:owner/repo.git");
+  check("parseRepoRef ssh URL", c?.owner === "owner" && c?.name === "repo");
+  const d = parseRepoRef("https://github.com/facebook/react/tree/main");
+  check("parseRepoRef https URL with trailing path", d?.owner === "facebook" && d?.name === "react");
+  check("parseRepoRef rejects a bare word", parseRepoRef("notarepo") === null);
+}
+
+// --- learn-repo: LOCAL_ONLY blocks the specific-repo path, zero egress ------
+{
+  const before = countMemoryPoints();
+  const spy = ghFake(() => ({ body: readmeJson("# secret\n\nshould never be fetched") }));
+  const r = await learnRepoRef("deepbeepmeep/Wan2GP", { localOnly: true, fetchImpl: spy.impl });
+  check("LOCAL_ONLY blocks learn-repo", r.ok === false && r.ingested === 0);
+  check("blocked learn-repo is NEVER issued (zero egress)", spy.calls() === 0);
+  check("blocked learn-repo persists nothing", countMemoryPoints() === before);
+}
+
+// --- learn-repo: unparseable ref is refused BEFORE any network --------------
+{
+  const spy = ghFake(() => ({ body: readmeJson("# nope") }));
+  const r = await learnRepoRef("this is not a repo", { localOnly: false, fetchImpl: spy.impl });
+  check("unparseable ref refused with a reason", r.ok === false && /parse|owner\/name/i.test(r.reason ?? ""));
+  check("unparseable ref never reaches the network", spy.calls() === 0);
+}
+
+// --- learn-repo: happy path learns exactly the requested repo's README ------
+{
+  const md = "# WanGP\n\nWan 2.x video generation for the GPU Poor — by DeepBeepMeep.";
+  const spy = ghFake((url) =>
+    url.includes("/search/repositories")
+      ? { body: searchJson([{ full: "deepbeepmeep/Wan2GP", stars: 4200 }]) }
+      : { body: readmeJson(md) },
+  );
+  const before = countMemoryPoints();
+  const r = await learnRepoRef("https://github.com/deepbeepmeep/Wan2GP", { localOnly: false, fetchImpl: spy.impl });
+  check("learn-repo succeeds (LOCAL_ONLY=false)", r.ok === true && r.ingested >= 1 && r.learned === true, `ingested=${r.ingested}`);
+  check("learn-repo resolved repo identity + stars from metadata", r.repo === "deepbeepmeep/Wan2GP" && r.stars === 4200, `repo=${r.repo}, stars=${r.stars}`);
+  check("learn-repo README stored + retrievable", keywordSearch("GPU Poor", 5).length >= 1);
+  check("learn-repo provenance recorded (repo title + ingest:github source)", anyRowContains("deepbeepmeep/Wan2GP") && anyRowContains("ingest:github"));
+  check("learn-repo persisted new memory", countMemoryPoints() > before);
+}
+
+// --- learn-repo: dedup on a re-learn of the same repo -----------------------
+{
+  const md = "# WanGP\n\nWan 2.x video generation for the GPU Poor — by DeepBeepMeep.";
+  const spy = ghFake((url) =>
+    url.includes("/search/repositories")
+      ? { body: searchJson([{ full: "deepbeepmeep/Wan2GP", stars: 4200 }]) }
+      : { body: readmeJson(md) },
+  );
+  const before = countMemoryPoints();
+  const r = await learnRepoRef("deepbeepmeep/Wan2GP", { localOnly: false, fetchImpl: spy.impl });
+  check("re-learning the same repo is deduped (nothing new)", r.ingested === 0 && r.deduped >= 1 && countMemoryPoints() === before, `deduped=${r.deduped}`);
+}
+
+// --- learn-repo: README still learned when metadata search can't resolve ----
+{
+  // Search returns OTHER repos (no exact owner/name match) → title falls back to
+  // plain "owner/name" with no ★, but the README is STILL learned.
+  const md = "# orphan\n\nUnique readme for the metadata-miss case about widgets.";
+  const spy = ghFake((url) =>
+    url.includes("/search/repositories")
+      ? { body: searchJson([{ full: "someone/else", stars: 9000 }]) }
+      : { body: readmeJson(md) },
+  );
+  const r = await learnRepoRef("lonely/orphan", { localOnly: false, fetchImpl: spy.impl });
+  check("learn-repo learns README even when metadata search misses", r.ok === true && r.ingested >= 1 && r.stars === 0, `stars=${r.stars}`);
+  check("metadata-miss README is retrievable", keywordSearch("about widgets", 5).length >= 1);
 }
 
 const result = failures === 0 ? "PASS" : "FAIL";

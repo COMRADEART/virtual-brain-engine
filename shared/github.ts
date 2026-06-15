@@ -38,5 +38,25 @@ export interface GitHubLearnView {
   reason?: string;
 }
 
+// What POST /api/github/learn-repo returns: the result of learning ONE specific
+// repository (by owner/name or URL) — the precise-repo complement to the
+// topic-discovery GitHubLearnView above. The README chunk bodies stay
+// server-side; the client gets the identity + learn counts.
+export interface GitHubLearnRepoView {
+  ok: boolean;
+  // "owner/name" — echoed even on failure so the caller knows what was attempted.
+  repo: string;
+  // The repo's canonical html_url (empty only when the ref couldn't be parsed).
+  url: string;
+  // Star count when metadata was resolvable, else 0 (the README is learned either way).
+  stars: number;
+  // Whether at least one new README chunk was persisted this call.
+  learned: boolean;
+  // New / already-known memory chunks for this repo's README.
+  ingested: number;
+  deduped: number;
+  reason?: string;
+}
+
 // Default minimum stars ("more than 1k"). The server clamps via GITHUB_MIN_STARS.
 export const GITHUB_DEFAULT_MIN_STARS = 1000;

@@ -99,6 +99,27 @@ export function getDefaultConnectorInstance(): Connector | null {
   return getConnectorInstance(descriptor.id);
 }
 
+// Resolve an embedding function with the SAME fallback the pipeline's getEmbedder
+// uses: the default connector if it can embed, else any enabled, reachable local
+// Ollama. This matters because a remote default chat model (NVIDIA/Gemini) is
+// seeded WITHOUT an embedder — so without this fallback, ingest paths keyed only
+// on the default connector would silently store memories with NO vector and drop
+// them out of semantic retrieval. Returns undefined when nothing can embed (the
+// caller then stores keyword-retrievable only — graceful, never an error).
+export function resolveEmbedFn(): ((text: string) => Promise<number[]>) | undefined {
+  const def = getDefaultConnectorInstance();
+  if (def?.embed) return def.embed.bind(def);
+  const ollama = listConnectorInstances().find(
+    (c) =>
+      c.descriptor.kind === "ollama" &&
+      c.descriptor.enabled &&
+      c.descriptor.isLocal &&
+      c.descriptor.state === "ok" &&
+      Boolean(c.embed),
+  );
+  return ollama?.embed ? ollama.embed.bind(ollama) : undefined;
+}
+
 // On first boot we want at least one connector row so the UI has something to
 // show and the pipeline has a sensible default. Idempotent: if a row exists,
 // we leave it alone.

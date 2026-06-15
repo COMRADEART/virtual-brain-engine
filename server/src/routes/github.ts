@@ -12,8 +12,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { githubSearch } from "../github/discovery.js";
-import { discoverAndLearn } from "../github/index.js";
-import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import { discoverAndLearn, learnRepoRef } from "../github/index.js";
+import { getDefaultConnectorInstance, resolveEmbedFn } from "../connectors/registry.js";
 
 export const githubRouter = Router();
 
@@ -59,4 +59,22 @@ githubRouter.post("/github/learn", async (req, res) => {
     deduped: r.deduped,
     reason: r.reason,
   });
+});
+
+// POST /api/github/learn-repo → learn ONE specific repo's README ("add this repo
+// to the brain") by owner/name or a github.com URL. Same LOCAL_ONLY gate + host
+// pin as the topic-learn path (enforced in github/discovery.js); a blocked or
+// unparseable request returns { ok:false, reason } without egress. Embeds via
+// resolveEmbedFn so the README joins the vector index even when the default chat
+// model is a remote, embedding-less one.
+const learnRepoSchema = z.object({ repo: z.string().min(1).max(200) }).strict();
+
+githubRouter.post("/github/learn-repo", async (req, res) => {
+  const parsed = learnRepoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  const r = await learnRepoRef(parsed.data.repo, { embed: resolveEmbedFn() });
+  res.json(r);
 });

@@ -18,7 +18,7 @@ import { ingestExplicitEmbedded } from "../ingest/index.js";
 import { chunkText } from "../ingest/webFetch.js";
 import { githubSearch, fetchRepoReadme, type GitHubSearchOptions } from "./discovery.js";
 import { surfaceError } from "../util/diagnostics.js";
-import type { GitHubDiscoverOutcome, GitHubRepo } from "../../../shared/github.js";
+import type { GitHubDiscoverOutcome, GitHubLearnRepoView, GitHubRepo } from "../../../shared/github.js";
 
 export interface GitHubLearnOptions extends GitHubSearchOptions {
   // When supplied, learned READMEs are embedded → vector-retrievable forever.
@@ -106,4 +106,133 @@ export async function discoverAndLearn(topic: string, opts: GitHubLearnOptions =
         : undefined;
 
   return { ok: true, query, repos: search.repos, reposLearned, ingested, deduped, reason };
+}
+
+// Parse a repo reference the user might paste: "owner/name", an https/ssh github
+// URL (with an optional .git suffix or trailing path), into { owner, name }. The
+// identifiers themselves are charset-validated downstream in fetchRepoReadme, so
+// this only has to extract the two segments. Returns null when it can't.
+export function parseRepoRef(ref: string): { owner: string; name: string } | null {
+  const s = ref.trim();
+  // github.com/<owner>/<name> from an https or git@github.com: URL (tolerate a
+  // trailing .git, a path, a query/hash, and a trailing slash).
+  const m = s.match(/github\.com[/:]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/#?].*)?$/i);
+  if (m) return { owner: m[1], name: m[2] };
+  const parts = s.replace(/\.git$/i, "").split("/").filter(Boolean);
+  if (parts.length === 2) return { owner: parts[0], name: parts[1] };
+  return null;
+}
+
+// "Add THIS repo to the brain": read ONE specific repository's README into memory
+// through the SAME governed, embedded ingest as discoverAndLearn — just scoped to
+// a single owner/name instead of a topic search. Reuses the identical egress
+// hardening (LOCAL_ONLY gate + host pin live inside fetchRepoReadme/githubSearch)
+// and governance (redact → dedup → importance → persist). NEVER throws: every
+// failure is a returned { ok, reason }.
+//
+// A best-effort metadata search enriches the title with the repo's real star
+// count + canonical URL; if it can't resolve (rate-limited, or the exact repo
+// isn't in the top star-sorted matches) the README is STILL learned with a plain
+// "owner/name" title — the knowledge is what matters, the ★ is a nicety.
+export async function learnRepo(
+  owner: string,
+  name: string,
+  opts: GitHubLearnOptions = {},
+): Promise<GitHubLearnRepoView> {
+  const fullName = `${owner}/${name}`;
+  const base: GitHubLearnRepoView = {
+    ok: false,
+    repo: fullName,
+    url: `https://github.com/${owner}/${name}`,
+    stars: 0,
+    learned: false,
+    ingested: 0,
+    deduped: 0,
+  };
+
+  // Best-effort metadata (stars / canonical URL / description) for a nicer title.
+  let repo: GitHubRepo = {
+    fullName,
+    owner,
+    name,
+    url: base.url,
+    description: "",
+    stars: 0,
+    language: null,
+    topics: [],
+  };
+  try {
+    const found = await githubSearch(name, { ...opts, minStars: 1, limit: 30 });
+    if (found.ok) {
+      const hit = found.repos.find(
+        (r) =>
+          r.owner.toLowerCase() === owner.toLowerCase() &&
+          r.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (hit) repo = hit;
+    }
+  } catch (err) {
+    surfaceError("github:learn-repo:meta", err);
+  }
+
+  let readme: Awaited<ReturnType<typeof fetchRepoReadme>>;
+  try {
+    readme = await fetchRepoReadme(owner, name, opts);
+  } catch (err) {
+    surfaceError("github:learn-repo", err);
+    return { ...base, url: repo.url, stars: repo.stars, reason: "failed to reach GitHub" };
+  }
+  if (!readme.ok) return { ...base, url: repo.url, stars: repo.stars, reason: readme.reason };
+  if (!readme.markdown) {
+    return { ...base, ok: true, url: repo.url, stars: repo.stars, reason: "repository has no README" };
+  }
+
+  const occurredAt = new Date().toISOString();
+  const chunks = chunkText(readme.markdown, README_CHUNK_OPTS);
+  const items = chunks.map((text, i) => ({
+    text,
+    title:
+      `${repo.fullName}${repo.stars ? ` (★${repo.stars})` : ""}` +
+      (chunks.length > 1 ? ` (${i + 1}/${chunks.length})` : ""),
+    sourcePath: repo.url, // → metadata.sourcePath; "ingest:github" source auto-applied
+    occurredAt,
+  }));
+
+  let res: Awaited<ReturnType<typeof ingestExplicitEmbedded>>;
+  try {
+    res = await ingestExplicitEmbedded("github", items, opts.embed);
+  } catch (err) {
+    surfaceError("github:learn-repo", err);
+    return { ...base, url: repo.url, stars: repo.stars, reason: "failed to store README" };
+  }
+
+  return {
+    ok: true,
+    repo: repo.fullName,
+    url: repo.url,
+    stars: repo.stars,
+    learned: res.ingested > 0,
+    ingested: res.ingested,
+    deduped: res.deduped,
+    reason: res.ingested === 0 ? "README already known or empty" : undefined,
+  };
+}
+
+// Parse-then-learn convenience: the single entry point both the route and the
+// permissioned action call, so ref parsing lives in exactly one place.
+export async function learnRepoRef(ref: string, opts: GitHubLearnOptions = {}): Promise<GitHubLearnRepoView> {
+  const parsed = parseRepoRef(ref);
+  if (!parsed) {
+    return {
+      ok: false,
+      repo: ref.trim(),
+      url: "",
+      stars: 0,
+      learned: false,
+      ingested: 0,
+      deduped: 0,
+      reason: "couldn't parse a repo from that — use owner/name or a github.com URL",
+    };
+  }
+  return learnRepo(parsed.owner, parsed.name, opts);
 }
