@@ -111,8 +111,18 @@ def run_finetune(
     status: dict[str, Any],
     steps: int | None = None,
     base_model: str | None = None,
+    teacher_model: str | None = None,
+    distill: bool = False,
 ) -> None:
     """LoRA-continued-pretrain `base_model` on `corpus`, updating `status` in place.
+
+    When `distill` is set, a high-parameter airllm TEACHER (`teacher_model`) runs
+    a slow layer-by-layer pre-pass that rewrites the corpus notes into clean
+    instructional answers; the student then trains on THOSE instead of the raw
+    chunks. The teacher is freed before the student model loads, so the big
+    teacher and small student never contend for the GPU at once. Distillation is
+    failure-isolated — if airllm is missing or the teacher fails, training falls
+    back to the raw-corpus path with a status note (no regression).
 
     Never raises — any failure is recorded as state="error" so the background
     thread dies quietly and the status reflects it.
@@ -162,20 +172,88 @@ def run_finetune(
             "Share what you remember.",
             "Explain this from your memory.",
         ]
+
+        # --- Optional distillation pre-pass --------------------------------------
+        # A high-parameter airllm teacher rewrites the corpus notes into clean
+        # instructional answers; the student trains on (instruction, teacher
+        # answer) pairs instead of (generic prompt, raw chunk). The teacher is
+        # loaded + freed HERE, before the student model loads below, so the big
+        # teacher and small student never share the GPU. Fully failure-isolated:
+        # any problem -> teacher_pairs stays empty -> the raw path runs unchanged.
+        teacher_pairs: list[tuple[str, str]] = []
+        # Too few usable episodes (most teacher answers empty/short) would train
+        # the student on a tiny, skewed set — fall back to the raw corpus instead.
+        min_distilled_episodes = 5
+        if distill:
+            tname = teacher_model or os.environ.get(
+                "AIRLLM_TEACHER_MODEL", "Qwen/Qwen2.5-7B-Instruct"
+            )
+            status.update(
+                message=(
+                    f"distillation pre-pass: high-parameter teacher {tname} "
+                    "(slow — layer-by-layer)…"
+                ),
+                updatedAt=_now(),
+            )
+            try:
+                from airllm_engine.engine import generate as airllm_generate, free_model
+                from airllm_engine.distill import build_distilled_episodes
+
+                def _teacher_gen(prompt: str, max_new_tokens: int) -> dict[str, Any]:
+                    return airllm_generate(
+                        prompt=prompt, max_new_tokens=max_new_tokens, model_id=tname
+                    )
+
+                try:
+                    teacher_pairs = build_distilled_episodes(
+                        corpus, _teacher_gen, status=status, now_fn=_now
+                    )
+                finally:
+                    # ALWAYS release the teacher before the student loads — even if
+                    # the pre-pass raised — so the big teacher and the small student
+                    # never co-reside on the GPU (the whole point of the staging).
+                    free_model()
+            except Exception as dex:  # noqa: BLE001 — distillation is best-effort
+                teacher_pairs = []
+                status.update(
+                    message=(
+                        f"distillation unavailable ({type(dex).__name__}: {dex}); "
+                        "training on the raw corpus instead"
+                    ),
+                    updatedAt=_now(),
+                )
+            if 0 < len(teacher_pairs) < min_distilled_episodes:
+                status.update(
+                    message=(
+                        f"distillation produced only {len(teacher_pairs)} usable episode(s) "
+                        f"(< {min_distilled_episodes}); training on the raw corpus instead"
+                    ),
+                    updatedAt=_now(),
+                )
+                teacher_pairs = []
+
         # apply_chat_template's tokenize= return type varies across transformers
         # major versions (5.x hands back a string) — format to text, tokenize
         # explicitly. add_special_tokens=False: the template already carries the
         # im_start/im_end specials.
+        if teacher_pairs:
+            status.update(
+                message=f"training on {len(teacher_pairs)} teacher-distilled episodes",
+                updatedAt=_now(),
+            )
+            episode_pairs = teacher_pairs
+        else:
+            episode_pairs = [(prompts[i % len(prompts)], doc) for i, doc in enumerate(docs)]
         episode_texts = [
             tokenizer.apply_chat_template(
                 [
-                    {"role": "user", "content": prompts[i % len(prompts)]},
-                    {"role": "assistant", "content": doc},
+                    {"role": "user", "content": instruction},
+                    {"role": "assistant", "content": answer},
                 ],
                 tokenize=False,
                 add_generation_prompt=False,
             )
-            for i, doc in enumerate(docs)
+            for instruction, answer in episode_pairs
         ]
         pieces: list[int] = []
         for episode in tokenizer(episode_texts, add_special_tokens=False).input_ids:

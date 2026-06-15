@@ -106,6 +106,43 @@ export interface OwnModelStatus {
   updatedAt: string | null;
 }
 
+// AirLLM — high-parameter inference on a small GPU (layer-by-layer offloading).
+// Inference-only. Two roles: query a large model directly (/airllm/generate) and
+// act as the distillation TEACHER for the mango own-model trainer (the big model
+// authors clean answers from the corpus; the small student trains on them).
+export type AirllmState =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "generating"
+  | "error"
+  | "unavailable";
+
+export interface AirllmStatus {
+  state: AirllmState;
+  /** Loaded HF model id (e.g. "Qwen/Qwen2.5-7B-Instruct"), null before first load. */
+  model: string | null;
+  /** Quantization in effect: "4bit" | "8bit" | null (none). */
+  compression: string | null;
+  /** "cuda" | "cpu". */
+  device: string | null;
+  message: string | null;
+  updatedAt: string | null;
+}
+
+export interface AirllmGenerateResult {
+  ok: boolean;
+  /** The generated text. "" is a valid (degenerate) success — distinct from a
+   * failure (ok:false). null only when there was no generation at all. */
+  text: string | null;
+  model: string | null;
+  device: string | null;
+  latencyMs: number | null;
+  /** True when the prompt exceeded the engine's input token cap and was clipped. */
+  truncated: boolean;
+  error: string | null;
+}
+
 export interface FeedbackStats {
   up: number;
   down: number;

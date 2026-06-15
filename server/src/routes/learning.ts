@@ -25,6 +25,7 @@ import {
   serveOwnModel,
   startOwnModelTraining,
 } from "../learning/ownModelClient.js";
+import { generateWithAirllm, getAirllmStatus } from "../learning/airllmClient.js";
 import { getUsageSummary } from "../learning/usage.js";
 import { countSftPairs, exportSftJsonl } from "../db/repositories/sft.js";
 
@@ -115,6 +116,10 @@ learningRouter.get("/learning/ownmodel/status", async (_req, res) => {
 const startOwnModelSchema = z.object({
   steps: z.number().int().min(1).max(100_000).optional(),
   baseModel: z.string().min(1).max(200).optional(),
+  // Distill the corpus through a high-parameter AirLLM teacher first (slow,
+  // opt-in). teacherModel overrides CONFIG.airllmTeacherModel for this run.
+  distill: z.boolean().optional(),
+  teacherModel: z.string().min(1).max(200).optional(),
   force: z.boolean().optional(),
 });
 
@@ -129,4 +134,31 @@ learningRouter.post("/learning/ownmodel/start", async (req, res) => {
 
 learningRouter.post("/learning/ownmodel/serve", async (_req, res) => {
   res.json(await serveOwnModel());
+});
+
+// --- AirLLM: high-parameter inference on a small GPU (layer-by-layer) --------
+//   GET  /api/learning/airllm/status    engine state (model / compression / device)
+//   POST /api/learning/airllm/generate  run the high-parameter model (slow)
+// Inference-only; the same model doubles as the mango distillation teacher via
+// the ownmodel/start { distill } path above.
+learningRouter.get("/learning/airllm/status", async (_req, res) => {
+  res.json(await getAirllmStatus());
+});
+
+const airllmGenerateSchema = z
+  .object({
+    prompt: z.string().min(1).max(8000),
+    model: z.string().min(1).max(200).optional(),
+    maxNewTokens: z.number().int().min(1).max(2048).optional(),
+    compression: z.enum(["4bit", "8bit", "off"]).optional(),
+  })
+  .strict();
+
+learningRouter.post("/learning/airllm/generate", async (req, res) => {
+  const parsed = airllmGenerateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  res.json(await generateWithAirllm(parsed.data));
 });

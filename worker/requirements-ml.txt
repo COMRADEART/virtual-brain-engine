@@ -43,3 +43,14 @@ peft>=0.11.0
 # ourselves and import that. sentencepiece is pulled in by some tokenizers.
 gguf>=0.10.0
 sentencepiece>=0.2.0
+
+# AirLLM (airllm_engine/) — run HIGH-parameter models (7B…70B, even 405B) on a
+# small GPU by loading the transformer one layer at a time. Powers /airllm/generate
+# and the distillation teacher for the mango trainer (OWN_MODEL_DISTILL=true).
+# INFERENCE ONLY and SLOW (layer-by-layer streaming) — for occasional high-quality
+# generation, not the hot path. Needs a CUDA torch build to be practical. bitsandbytes
+# provides the 4bit/8bit `compression` path (AIRLLM_COMPRESSION); on Windows it may
+# need the prebuilt wheel `bitsandbytes-windows`. accelerate is airllm's offload dep.
+airllm>=2.11.0
+accelerate>=0.30.0
+bitsandbytes>=0.43.0 ; platform_system != "Windows"

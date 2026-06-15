@@ -66,6 +66,22 @@ def _model_state(
     return "available"
 
 
+def _airllm_health() -> str:
+    """airllm capability for /healthz: the live engine state once a run has
+    happened, else availability by dep presence. Safe on a bare worker — the
+    engine module top level imports stdlib only."""
+    try:
+        from airllm_engine.engine import status_snapshot
+
+        snap = status_snapshot()
+        state = snap.get("state")
+        if state not in (None, "idle"):
+            return str(state)
+    except Exception:  # noqa: BLE001 — fall through to dep probe
+        pass
+    return "unavailable" if importlib.util.find_spec("airllm") is None else "available"
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     return {
@@ -78,6 +94,7 @@ def healthz() -> dict[str, Any]:
             "caption": _model_state("caption"),
             "omniparser": _model_state("omniparser"),
             "tts": _model_state("tts"),
+            "airllm": _airllm_health(),
         },
     }
 
@@ -601,6 +618,13 @@ class OwnModelIn(BaseModel):
     steps: int | None = Field(default=None, ge=1, le=100_000)
     baseModel: str | None = Field(default=None, description="HF base model id to adapt.")
     force: bool = Field(default=False, description="Restart even if a run is in progress.")
+    distill: bool = Field(
+        default=False,
+        description="Distill the corpus through a high-parameter airllm teacher before training.",
+    )
+    teacherModel: str | None = Field(
+        default=None, description="HF id of the airllm distillation teacher (e.g. Qwen/Qwen2.5-7B-Instruct)."
+    )
 
 
 def _ownmodel_deps_ok() -> bool:
@@ -672,13 +696,73 @@ def ownmodel_start(body: OwnModelIn) -> dict[str, Any]:
         )
         thread = threading.Thread(
             target=run_finetune,
-            args=(body.corpus, _ownmodel_status, body.steps, body.baseModel),
+            args=(
+                body.corpus,
+                _ownmodel_status,
+                body.steps,
+                body.baseModel,
+                body.teacherModel,
+                body.distill,
+            ),
             daemon=True,
         )
         _ownmodel_thread = thread
         thread.start()
 
     return dict(_ownmodel_status)
+
+
+# ---------------------------------------------------------------------------
+# /airllm/* — high-parameter inference via AirLLM (layer-by-layer offloading).
+#
+# Runs a LARGE model (7B…70B) on a small GPU by streaming one transformer layer
+# at a time. Inference-only + SLOW; used for occasional high-quality generation
+# and as the distillation teacher for the mango own-model trainer. airllm/torch
+# are imported lazily inside the engine, so the worker still boots without them
+# (/airllm/status -> "unavailable").
+# ---------------------------------------------------------------------------
+
+
+class AirllmGenerateIn(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=8000)
+    model: str | None = Field(default=None, description="HF model id (default AIRLLM_TEACHER_MODEL).")
+    maxNewTokens: int = Field(default=256, ge=1, le=2048)
+    compression: str | None = Field(default=None, description="'4bit' | '8bit' | 'off'.")
+
+
+@app.get("/airllm/status")
+def airllm_status() -> dict[str, Any]:
+    from airllm_engine.engine import status_snapshot
+
+    out = status_snapshot()
+    if out.get("state") == "idle" and importlib.util.find_spec("airllm") is None:
+        out["state"] = "unavailable"
+        out["message"] = "airllm not installed — pip install -r requirements-ml.txt"
+    return out
+
+
+@app.post("/airllm/generate")
+def airllm_generate(body: AirllmGenerateIn) -> dict[str, Any]:
+    from airllm_engine.engine import AirllmUnavailable, generate
+
+    try:
+        result = generate(
+            prompt=body.prompt,
+            max_new_tokens=body.maxNewTokens,
+            model_id=body.model,
+            compression=body.compression,
+        )
+        return {"ok": True, **result}
+    except AirllmUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"airllm not installed ({exc}). Install worker/requirements-ml.txt "
+                "to run high-parameter inference."
+            ),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — surface a clean 500, never crash
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
 
 if __name__ == "__main__":  # pragma: no cover

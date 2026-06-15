@@ -86,6 +86,7 @@ const steps = [
   { label: "spine selfcheck", args: ["--prefix", "server", "run", "spine:selfcheck"] },
   { label: "coding selfcheck", args: ["--prefix", "server", "run", "coding:selfcheck"] },
   { label: "mcp selfcheck", args: ["--prefix", "server", "run", "mcp:selfcheck"] },
+  { label: "airllm selfcheck", args: ["--prefix", "server", "run", "airllm:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline
