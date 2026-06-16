@@ -76,6 +76,7 @@ const steps = [
   { label: "goals selfcheck", args: ["--prefix", "server", "run", "goals:selfcheck"] },
   { label: "procedural selfcheck", args: ["--prefix", "server", "run", "procedural:selfcheck"] },
   { label: "stages selfcheck", args: ["--prefix", "server", "run", "stages:selfcheck"] },
+  { label: "mind selfcheck", args: ["--prefix", "server", "run", "mind:selfcheck"] },
   { label: "fastpath selfcheck", args: ["--prefix", "server", "run", "fastpath:selfcheck"] },
   { label: "parallelreason selfcheck", args: ["--prefix", "server", "run", "parallelreason:selfcheck"] },
   { label: "adaptivedepth selfcheck", args: ["--prefix", "server", "run", "adaptivedepth:selfcheck"] },

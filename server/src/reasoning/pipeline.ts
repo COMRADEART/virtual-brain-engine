@@ -93,6 +93,15 @@ import {
   shouldBroadenFromArousal,
   wantsFreshData,
 } from "../core/neuromodulators.js";
+import {
+  getCognitiveDna,
+  NEUTRAL_TRAITS,
+  wantsBroaderRetrieval,
+  responseTemperature,
+  signalsFromCycle,
+  type CognitiveTraits,
+} from "../core/cognitiveDna.js";
+import { getSelfRepresentation, selfPreamble } from "../core/selfRepresentation.js";
 import { associativeNeighbors, recordCoCitations } from "../memory/hebbian.js";
 import type { GraphContext } from "./ranker.js";
 import {
@@ -494,6 +503,18 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       }
       if (weakDomainBroaden) feedForwardNote += " · weak-domain:broaden";
 
+      // COGNITIVE DNA — a memory-focused character leans harder on its own
+      // memory, so it broadens recall to gather more. Strict no-op at the
+      // neutral 0.5 trait (the high-water gate stays closed); failure-isolated.
+      let dnaTraits: CognitiveTraits = NEUTRAL_TRAITS;
+      try {
+        dnaTraits = getCognitiveDna().traits();
+      } catch (err) {
+        surfaceError("pipeline.dnaTraits", err);
+      }
+      const broadenForMemoryFocus = CONFIG.multiQueryRag && wantsBroaderRetrieval(dnaTraits);
+      if (broadenForMemoryFocus) feedForwardNote += " · dna:broaden";
+
       // The heuristic baselines (what the pipeline would do without the
       // controller). These are ALSO the warm-start the controller falls back to.
       // Acetylcholine (uncertainty tone) votes for fresh data over memory; the
@@ -509,7 +530,8 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
           (raw[0]?.score ?? 0) < 0.45 ||
           broadenForUncertainty ||
           broadenForArousal ||
-          weakDomainBroaden);
+          weakDomainBroaden ||
+          broadenForMemoryFocus);
 
       // RL CONTROLLER (opt-in). Decides augment / retrieval-k / multi-query /
       // model-profile from the bandit (warm-started at the heuristics, so a cold
@@ -699,15 +721,29 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   const routedModelName = modelForProfile(chosenProfile) ?? undefined;
 
   // MYTHOS M3 — narrative-grounded reasoning. Prepend a compact first-person
-  // identity preamble (from the M1 self-narrative) to the reasoning + response
-  // system prompts so the answer stays consistent with who the brain is. OFF by
-  // default; failure-isolated; empty when no narrative exists yet (a no-op).
+  // identity preamble to the reasoning + response system prompts so the answer
+  // stays consistent with who the brain is. Two sources, both riding this flag:
+  //   - the M1 self-narrative ("how I've grown")
+  //   - the UNIFIED self-representation ("who I am / what I'm doing / how I feel")
+  //     which carries the cognitive-DNA character + the live dominant emotion —
+  //     the channel through which the soft traits (logic, sociality) and emotion
+  //     reach the answer's voice.
+  // OFF by default (CONFIG.narrativeGrounding); failure-isolated. BOTH preambles
+  // are empty until the brain has actually developed (neutral character + no
+  // goals + no narrative), so a FRESH brain's prompts are byte-for-byte
+  // unchanged. As the brain develops a character/goals, its voice begins to
+  // appear here — which is the intended effect, not a regression.
   let narrativeGroundingBlock = "";
   if (CONFIG.narrativeGrounding) {
     try {
-      const pre = narrativePreamble(getNarrative());
-      if (pre) {
-        narrativeGroundingBlock = `Your identity (keep your answer consistent with who you are; this is your voice, NOT factual memory to cite):\n${pre}`;
+      const lines: string[] = [];
+      const narrativePre = narrativePreamble(getNarrative());
+      if (narrativePre) lines.push(narrativePre);
+      const { self, parts } = getSelfRepresentation();
+      const selfPre = selfPreamble(self, parts);
+      if (selfPre) lines.push(selfPre);
+      if (lines.length > 0) {
+        narrativeGroundingBlock = `Your identity (keep your answer consistent with who you are; this is your voice, NOT factual memory to cite):\n${lines.join(" ")}`;
       }
     } catch (err) {
       surfaceError("pipeline.narrativeGrounding", err);
@@ -974,6 +1010,17 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       ? connector.currentKeyIndex
       : null;
 
+  // COGNITIVE DNA — a creative character answers with a higher temperature, a
+  // literal one stays tight. responseTemperature() returns the existing 0.3 at
+  // the neutral creativity trait, so a fresh brain's answers are byte-identical.
+  // Failure-isolated.
+  let responseTemp = 0.3;
+  try {
+    responseTemp = responseTemperature(getCognitiveDna().traits());
+  } catch (err) {
+    surfaceError("pipeline.responseTemp", err);
+  }
+
   try {
     // Retry loop for remote providers: retry with exponential backoff before fallback.
     const maxAttempts = isRemote ? CONFIG.remoteRetryAttempts + 1 : 1;
@@ -984,7 +1031,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
         assembled = "";
         for await (const token of connector.stream(responsePrompt, {
           system: responseSystem,
-          temperature: 0.3,
+          temperature: responseTemp,
           model: routedModelName,
           // Fast mode: cap the answer so it stays tight instead of rambling to
           // the context limit (honored by both connectors as num_predict /
@@ -1037,7 +1084,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
           emitAll(makeEvent(cid, runId, "response", "progress", { tokensDelta: "[fallback → local] " }), emit);
           for await (const token of localConnector.stream(responsePrompt, {
             system: responseSystem,
-            temperature: 0.3,
+            temperature: responseTemp,
             maxTokens: CONFIG.fastMode ? CONFIG.fastModeMaxTokens : undefined,
           })) {
             assembled += token;
@@ -1222,6 +1269,22 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     });
   } catch (err) {
     surfaceError("pipeline.neuromodCycle", err);
+  }
+  // COGNITIVE DNA — the slow personality EMAs toward what this cycle showed:
+  // grounded high-confidence deduction nurtures logic, using/ignoring memory
+  // moves memoryFocus, confident-but-ungrounded answers feed creativity, and
+  // surfaced gaps feed curiosity. One cycle barely moves the character (4% EMA);
+  // a lifetime of consistent cycles shapes it. Failure-isolated.
+  try {
+    getCognitiveDna().evolve(
+      signalsFromCycle({
+        confidence: calibratedConfidence,
+        citedCount: citedIds.size,
+        openQuestionCount: errorReport.missing.length,
+      }),
+    );
+  } catch (err) {
+    surfaceError("pipeline.dnaEvolve", err);
   }
   // PREDICTIVE PROCESSING — compare expectation against reality. Surprise
   // pulses norepinephrine; "expected to KNOW this and didn't" holds an open

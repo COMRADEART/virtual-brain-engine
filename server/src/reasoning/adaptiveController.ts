@@ -21,12 +21,14 @@ import {
 } from "../../../shared/adaptive.js";
 import { MODEL_PROFILES, type ModelProfile } from "../../../shared/models.js";
 import {
+  DEFAULT_EPSILON,
   emptyBanditState,
   selectArm,
   updateArm,
   type BanditState,
 } from "./banditPolicy.js";
 import { loadBanditState, saveBanditState } from "../db/repositories/adaptive.js";
+import { getCognitiveDna, explorationEpsilonScale } from "../core/cognitiveDna.js";
 import { surfaceError } from "../util/diagnostics.js";
 
 // The heuristic decision the pipeline would make without the controller — the
@@ -71,6 +73,17 @@ export function decide(ctx: RetrievalContext, heur: HeuristicBaseline): Controll
   try {
     const state: BanditState = loadBanditState() ?? emptyBanditState();
     const warmAt = CONFIG.banditWarmAt;
+    // COGNITIVE DNA — a bold character explores more arms, a cautious one fewer.
+    // Scales the ε ONLY; the warm-start floor in selectArm still returns the
+    // heuristic with NO exploration below warmAt, so risk can never make a cold
+    // slot gamble. Exactly DEFAULT_EPSILON at the neutral trait. Failure-isolated.
+    let epsilon = DEFAULT_EPSILON;
+    try {
+      epsilon = DEFAULT_EPSILON * explorationEpsilonScale(getCognitiveDna().traits());
+    } catch (err) {
+      surfaceError("adaptiveController.dnaEpsilon", err);
+    }
+    const armOpts = { warmAt, epsilon };
     const source: Record<ControllerSlot, "heuristic" | "policy"> = {
       augment: "heuristic",
       retrievalK: "heuristic",
@@ -83,21 +96,21 @@ export function decide(ctx: RetrievalContext, heur: HeuristicBaseline): Controll
     // safety and because there's nothing to learn.
     let augmentWeb = false;
     if (ctx.hybridAvailable) {
-      const r = selectArm(state, "augment", AUGMENT_ARMS, ctx, String(heur.augment), { warmAt });
+      const r = selectArm(state, "augment", AUGMENT_ARMS, ctx, String(heur.augment), armOpts);
       augmentWeb = r.arm === "true";
       source.augment = r.source;
     }
 
-    const kr = selectArm(state, "retrievalK", K_ARMS, ctx, String(heur.retrievalK), { warmAt });
+    const kr = selectArm(state, "retrievalK", K_ARMS, ctx, String(heur.retrievalK), armOpts);
     const kNum = Number(kr.arm);
     const retrievalK = (RETRIEVAL_K_ARMS as readonly number[]).includes(kNum) ? kNum : heur.retrievalK;
     source.retrievalK = kr.source;
 
-    const mqr = selectArm(state, "multiQuery", MQ_ARMS, ctx, String(heur.multiQuery), { warmAt });
+    const mqr = selectArm(state, "multiQuery", MQ_ARMS, ctx, String(heur.multiQuery), armOpts);
     const multiQuery = mqr.arm === "true";
     source.multiQuery = mqr.source;
 
-    const pr = selectArm(state, "modelProfile", PROFILE_ARMS, ctx, heur.modelProfile, { warmAt });
+    const pr = selectArm(state, "modelProfile", PROFILE_ARMS, ctx, heur.modelProfile, armOpts);
     const modelProfile = (MODEL_PROFILES as string[]).includes(pr.arm) ? (pr.arm as ModelProfile) : heur.modelProfile;
     source.modelProfile = pr.source;
 

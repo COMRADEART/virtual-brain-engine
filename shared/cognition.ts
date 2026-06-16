@@ -99,7 +99,7 @@ export interface KernelModuleInfo {
 }
 
 export interface DevelopmentalStageInfo {
-  /** 1-7, monotonic. */
+  /** 1-9, monotonic. */
   stage: number;
   name: string;
   reachedAt: string;

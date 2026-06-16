@@ -33,6 +33,7 @@
 import type { CausalLink } from "./causalMap.js";
 import { getAllCausalLinks } from "./causalMap.js";
 import { getPersistentOrganism } from "./organism.js";
+import { getCognitiveDna, curiosityGain } from "./cognitiveDna.js";
 
 export interface CuriosityInput {
   causalLinks: CausalLink[];
@@ -42,6 +43,8 @@ export interface CuriosityInput {
   rankerSpread?: number;
   /** [0,1], optional — organism health. A stressed organism explores LESS. */
   organismHealth?: number;
+  /** Additive cognitive-DNA curiosity bias in ~[-0.15,0.15]; 0/absent = no-op. */
+  dnaGain?: number;
 }
 
 export interface CuriosityResult {
@@ -117,7 +120,14 @@ export function computeCuriosity(input: CuriosityInput): CuriosityResult {
   const healthFactor =
     input.organismHealth === undefined ? 1 : 0.5 + 0.5 * clamp01(input.organismHealth);
 
-  const curiosity = clamp01((frontier + 0.15 * modulation) * healthFactor);
+  // Cognitive-DNA bias: a curious character explores at a lower frontier, an
+  // incurious one needs a stronger signal. Additive + centred so a neutral
+  // trait (gain 0) leaves the score exactly as it was. computeCuriosity stays
+  // dependency-free — the caller computes the gain.
+  const dnaGain =
+    typeof input.dnaGain === "number" && Number.isFinite(input.dnaGain) ? input.dnaGain : 0;
+
+  const curiosity = clamp01((frontier + 0.15 * modulation) * healthFactor + dnaGain);
 
   return { curiosity, frontier, topTarget };
 }
@@ -143,7 +153,15 @@ export function gatherCuriosity(): CuriosityResult {
     organismHealth = undefined;
   }
 
+  // Cognitive-DNA curiosity bias (failure-isolated → stays 0, a no-op).
+  let dnaGain = 0;
+  try {
+    dnaGain = curiosityGain(getCognitiveDna().traits());
+  } catch {
+    /* keep dnaGain = 0 (neutral) */
+  }
+
   // saliencyUncertainty / rankerSpread are optional modulators. We do not block
   // on them — passing undefined is spec-compliant and avoids new coupling.
-  return computeCuriosity({ causalLinks, organismHealth });
+  return computeCuriosity({ causalLinks, organismHealth, dnaGain });
 }
