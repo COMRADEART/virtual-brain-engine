@@ -17,6 +17,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { getMcpHub } from "../mcp/hub.js";
+import { searchMarket } from "../mcp/market.js";
 import { executeAction } from "../actions/executor.js";
 import { getDynamicAction } from "../actions/dynamicRegistry.js";
 import { mintConfirmToken } from "../actions/confirmTokens.js";
@@ -39,6 +40,43 @@ const resolveSchema = z.object({
 
 mcpRouter.get("/mcp/state", (_req, res) => {
   res.json({ ...getMcpHub().snapshot(), presets: MCP_PRESETS });
+});
+
+// ── Marketplace (registry discovery) ─────────────────────────────────────────
+// GET search is read-only discovery (egress gated inside searchMarket); POST add
+// CONNECTS a discovered server, so it routes through executeAction (gated +
+// audited) — the local user's explicit POST is the plan approval.
+
+mcpRouter.get("/mcp/market/search", (req, res) => {
+  const query = typeof req.query.q === "string" ? req.query.q : "";
+  const rawLimit = Number(req.query.limit);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
+  void searchMarket(query, { limit })
+    .then((r) => res.json(r))
+    .catch((err) => res.status(500).json({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+});
+
+const marketAddSchema = z.object({
+  id: z.string().min(1).max(60),
+  transport: z.enum(["stdio", "http", "sse"]),
+  package: z.string().max(214).optional(),
+  registry: z.enum(["npm", "pypi"]).optional(),
+  url: z.string().url().max(2048).optional(),
+});
+
+mcpRouter.post("/mcp/market/add", async (req, res) => {
+  const parsed = marketAddSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  const args = parsed.data as Record<string, unknown>;
+  // The local user's explicit POST is the approval for THIS plan — mint the
+  // plan-bound confirm token and run through executeAction so the connect is
+  // re-validated, gated, and audited exactly like the agent-loop path.
+  const confirmToken = mintConfirmToken("mcp-market-add", args);
+  const result = await executeAction({ actionId: "mcp-market-add", args, confirmToken });
+  res.status(result.status).json(result);
 });
 
 mcpRouter.post("/mcp/resolve", (req, res) => {

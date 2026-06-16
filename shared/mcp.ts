@@ -115,6 +115,75 @@ function slug(s: string): string {
 // starting points — the user supplies the concrete <DIR>/<REPO> and ensures the
 // runtime (npx for the Node servers, uvx for the Python ones) is installed. The
 // hub merges these (disabled) with whatever MCP_SERVERS provides.
+// ── Marketplace (registry discovery) ─────────────────────────────────────────
+// "Wire the MCP market to the brain": search a public MCP registry to FIND
+// servers (and the tools/skills they bring), then add one at runtime. Discovery
+// is an egress READ gated by LOCAL_ONLY exactly like web/GitHub discovery;
+// ADDING a server is a confirm-tier action and the spawn command is built from
+// the FIXED template below (never a caller-supplied raw command), so the market
+// can never become an arbitrary-command side door.
+
+/** The official MCP registry. Overridable via MCP_REGISTRY_URL (must be one host). */
+export const MCP_REGISTRY_DEFAULT_URL = "https://registry.modelcontextprotocol.io";
+
+export type McpPackageRegistry = "npm" | "pypi";
+
+export interface McpMarketEntry {
+  /** Slug id derived from the registry name — used as the server id when added. */
+  id: string;
+  /** Full registry name, e.g. "io.github.owner/server-name". */
+  name: string;
+  description: string;
+  /** The transport the brain would use to connect this server. */
+  transport: McpTransportKind;
+  /** stdio: the package to run; the spawn command is built from a fixed template. */
+  package?: string;
+  packageRegistry?: McpPackageRegistry;
+  /** http/sse: the remote JSON-RPC endpoint. */
+  url?: string;
+  /** Source repository / homepage, if the registry provided one. */
+  homepage?: string;
+  /** Which registry this entry came from (the configured registry host). */
+  source: string;
+}
+
+// npm/pypi package-name charsets — validated BEFORE a name reaches a spawn arg so
+// a poisoned entry can't inject flags or extra args (e.g. "x --evil").
+export const NPM_PKG_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
+export const PYPI_PKG_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,213}[A-Za-z0-9])?$/;
+
+export function isValidPackageName(name: string, registry: McpPackageRegistry): boolean {
+  const n = String(name).trim();
+  if (!n || n.length > 214) return false;
+  return registry === "pypi" ? PYPI_PKG_RE.test(n) : NPM_PKG_RE.test(n);
+}
+
+/**
+ * Build the connectable server config for a market entry. PURE + the SINGLE
+ * source of the spawn template: stdio servers always run `npx -y <pkg>` (npm) or
+ * `uvx <pkg>` (pypi) — the caller never supplies a raw command/args. Always
+ * `enabled:false` + `risk:"confirm"` (the add path connects it explicitly and
+ * every tool stays confirm-tier).
+ */
+export function marketEntryToConfig(entry: McpMarketEntry): McpServerConfig | null {
+  const id = slug(entry.id || entry.name);
+  if (entry.transport === "http" || entry.transport === "sse") {
+    // Defense in depth: a remote endpoint must be an http(s) URL. The egress
+    // (isLocalUrl/LOCAL_ONLY) gate and the runtime fetch already reject a
+    // non-http(s) scheme, but rejecting it here means a poisoned registry entry
+    // (file:/ftp:/javascript:) never even becomes a connectable config — the
+    // same `https?` posture as learn-url / open-url.
+    if (!entry.url || !/^https?:\/\//i.test(entry.url)) return null;
+    return { id, transport: entry.transport, url: entry.url, enabled: false, risk: "confirm" };
+  }
+  // stdio
+  const registry: McpPackageRegistry = entry.packageRegistry === "pypi" ? "pypi" : "npm";
+  if (!entry.package || !isValidPackageName(entry.package, registry)) return null;
+  const command = registry === "pypi" ? "uvx" : "npx";
+  const args = registry === "pypi" ? [entry.package] : ["-y", entry.package];
+  return { id, transport: "stdio", command, args, enabled: false, risk: "confirm" };
+}
+
 export const MCP_PRESETS: McpServerConfig[] = [
   {
     id: "filesystem",
