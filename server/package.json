@@ -11,6 +11,7 @@
     "router:selfcheck": "tsx scripts/router-selfcheck.ts",
     "ranker:selfcheck": "tsx scripts/ranker-selfcheck.ts",
     "agents:selfcheck": "tsx scripts/agents-selfcheck.ts",
+    "safety:selfcheck": "tsx scripts/safety-selfcheck.ts",
     "twin:selfcheck": "tsx scripts/twin-selfcheck.ts",
     "memory:selfcheck": "tsx scripts/memory-selfcheck.ts",
     "perception:selfcheck": "tsx scripts/perception-selfcheck.ts",

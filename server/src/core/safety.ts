@@ -1,11 +1,25 @@
-// Thin Phase-1 safety layer for the agentic runtime.
+// Autonomous-agent safety gate — the seam the AgentRuntime consults before
+// every agent's act() (runtime.ts: `if (safety.permitAndAudit(agent.name(),
+// "act"))`). Two call sites pass labels through it: the runtime's generic
+// "act", and evolutionOptimizer's "promote-ranker-weights".
 //
-// report.txt asks for a full permission system + command allowlist + dangerous
-// command confirmation + API vault. Per the approved plan those are DEFERRED;
-// Phase 1 ships only an audit trail + an allow-all gate so the seam exists and
-// every agent action is recorded. The runtime calls `permitAndAudit` before
-// each agent's act() — flipping a future allowlist to deny lives entirely
-// behind this interface, no agent code changes.
+// TRUST MODEL — this gates the AUTONOMOUS agents (IdleAgent, systemSensor,
+// observer, summary, scheduler), whose act() emits thoughts / collects metrics
+// / maintains internal state. They NEVER reach a dangerous effector: a grep of
+// agents/ and core/ shows zero executeAction calls. The dangerous effector path
+// (shell / files / web) is the separate, USER-driven actions/executor.ts layer
+// — a real allowlist (registry + zod + confirm token + action_log audit),
+// verified by actions:selfcheck. So this gate's `allowed` column is the hook
+// for a FUTURE deny policy IF autonomous agents ever gain effector capability;
+// today it records every autonomous act as an append-only audit trail. Building
+// a permission policy over the labels "act" / "promote-ranker-weights" would
+// gate non-dangerous internal cognitive acts — that is deferred until there is
+// something dangerous to gate, not built speculatively.
+//
+// VERIFIED by `npm run safety:selfcheck`: the production gate audits allowed=1,
+// a deny gate makes the runtime SKIP act() (the seam is real), and a deny
+// audits allowed=0 (the path a future allowlist takes). Flipping the policy to
+// deny lives entirely behind permitAndAudit — no agent code changes.
 
 import { ulid } from "ulid";
 import { openDb } from "../db/sqlite.js";

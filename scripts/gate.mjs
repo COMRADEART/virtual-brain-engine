@@ -2,10 +2,10 @@
 // Phase 0 — green-build composite gate.
 //
 // Runs frontend typecheck, server typecheck, the selfchecks
-// (router, ranker, agents, twin, memory, perception, attention, graph,
+// (router, ranker, agents, safety, twin, memory, perception, attention, graph,
 // worldmodel, learning, civilization, evolution, actions, ingest,
-// learningloop, models), the frontend unit tests, and a server
-// smoke that BOOTS the real server and
+// learningloop, models), the server unit tests, the frontend unit tests, and a
+// server smoke that BOOTS the real server and
 // sweeps every GET endpoint (the runtime check the gate used to lack — it is
 // how a dead-on-boot server shipped green). All run as ISOLATED
 // subprocesses so a Windows libuv shutdown abort in one selfcheck cannot
@@ -37,6 +37,7 @@ const steps = [
   { label: "router selfcheck",   args: ["--prefix", "server", "run", "router:selfcheck"] },
   { label: "ranker selfcheck",   args: ["--prefix", "server", "run", "ranker:selfcheck"] },
   { label: "agents selfcheck",   args: ["--prefix", "server", "run", "agents:selfcheck"] },
+  { label: "safety selfcheck",   args: ["--prefix", "server", "run", "safety:selfcheck"] },
   { label: "twin selfcheck",     args: ["--prefix", "server", "run", "twin:selfcheck"] },
   { label: "memory selfcheck",   args: ["--prefix", "server", "run", "memory:selfcheck"] },
   { label: "perception selfcheck", args: ["--prefix", "server", "run", "perception:selfcheck"] },
@@ -94,6 +95,12 @@ const steps = [
   { label: "mcpmarket selfcheck", args: ["--prefix", "server", "run", "mcpmarket:selfcheck"] },
   { label: "airllm selfcheck", args: ["--prefix", "server", "run", "airllm:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
+  // Server unit tests (tsx --test "src/**/*.test.ts" — memory + route tests).
+  // Hermetic: each test points openDb() at its own temp BRAIN_DB_PATH; no LLM,
+  // no network. Exits 0 cleanly on Windows (unlike the selfcheck scripts, the
+  // node:test runner tears down without the libuv abort), so it's clean-exit
+  // gated, not PASS-marker gated.
+  { label: "server unit tests",   args: ["--prefix", "server", "run", "test"] },
   // Boots the real server and sweeps every GET endpoint. Heaviest step → last,
   // so the fast static checks fail first. No LLM required (the /api/ask pipeline
   // is covered by the opt-in ask:smoke tail below).
@@ -123,8 +130,13 @@ if (!existsSync(resolve(repoRoot, "package.json"))) {
 // A "PASS" marker in stdout overrides a non-zero exit code, but ONLY for
 // the selfcheck steps — typechecks must exit 0. This is the Windows libuv
 // teardown workaround: the checks succeed, then better-sqlite3 + tsx race
-// during process exit. Don't paper over real failures: a "FAIL" line in the
-// output forces a failure regardless of exit code.
+// during process exit. As of 2026-06 four selfchecks reproducibly land here —
+// perception, learning, ownmodel, airllm — so the tolerance is load-bearing:
+// removing it turns those four green-on-content selfchecks red on Windows
+// (they PASS, then abort during teardown). Audit the live `npm run gate`
+// output before tightening; only fold this branch out if zero selfchecks
+// print "PASS (shutdown abort tolerated)". Don't paper over real failures:
+// a "FAIL" line in the output forces a failure regardless of exit code.
 const SUCCESS_RX = /(ALL CHECKS PASSED|"result"\s*:\s*"PASS"|"failures"\s*:\s*0)/;
 const FAILURE_RX = /(\bFAIL\b|"result"\s*:\s*"FAIL"|"failures"\s*:\s*[1-9])/;
 
