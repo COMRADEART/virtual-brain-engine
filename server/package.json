@@ -62,6 +62,10 @@
     "mcp:selfcheck": "tsx scripts/mcp-selfcheck.ts",
     "airllm:selfcheck": "tsx scripts/airllm-selfcheck.ts",
     "mind:selfcheck": "tsx scripts/mind-selfcheck.ts",
+    "usermodel:selfcheck": "tsx scripts/usermodel-selfcheck.ts",
+    "memorydna:selfcheck": "tsx scripts/memorydna-selfcheck.ts",
+    "creativity:selfcheck": "tsx scripts/creativity-selfcheck.ts",
+    "hypotheses:selfcheck": "tsx scripts/hypotheses-selfcheck.ts",
     "mcpmarket:selfcheck": "tsx scripts/mcpmarket-selfcheck.ts",
     "cluster:probe": "tsx scripts/cluster-probe.mjs",
     "perception:probe": "tsx scripts/perception-probe.mjs"

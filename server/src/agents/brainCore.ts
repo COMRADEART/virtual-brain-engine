@@ -23,6 +23,8 @@ import { listProcedures } from "../memory/procedural.js";
 import { getSpine } from "../spine/cord.js";
 import { getMcpHub } from "../mcp/hub.js";
 import { runWorkspaceCycle } from "../core/workspace.js";
+import { runCreativeCycle, creativityStats } from "../core/creativity.js";
+import { getHypothesisEngine } from "../core/hypotheses.js";
 import { emitMonologue } from "../core/monologue.js";
 import { getNarrative } from "../core/narrative.js";
 import { getCognitiveDna } from "../core/cognitiveDna.js";
@@ -353,11 +355,18 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   // LLM micro-thought, written back as memory + broadcast as an idle-thought.
   // Skips quietly when no connector / no bids; failures never crash the core.
   let workspaceTick: NodeJS.Timeout | null = null;
-  if (CONFIG.workspaceEnabled || CONFIG.innerMonologue) {
+  if (CONFIG.workspaceEnabled || CONFIG.innerMonologue || CONFIG.creativityEnabled) {
     workspaceTick = setInterval(() => {
       if (CONFIG.workspaceEnabled) {
         void runWorkspaceCycle().catch((err) =>
           console.warn("[brain-core] workspace cycle failed:", err),
+        );
+      }
+      // Creativity — bridge two distant memories into a novel idea on the same
+      // cadence (reuses this timer, no new schedule). Failure-isolated.
+      if (CONFIG.creativityEnabled) {
+        void runCreativeCycle().catch((err) =>
+          console.warn("[brain-core] creative cycle failed:", err),
         );
       }
       // MYTHOS M2 — author one first-person monologue line into the cognition
@@ -508,6 +517,14 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
     detail: `${listProcedures(200).length} procedure(s)`,
   }));
   kernel.registerModule("stages", () => ({ ok: true, detail: `stage ${currentStage()}` }));
+  kernel.registerModule("creativity", () => {
+    const s = creativityStats();
+    return { ok: true, detail: CONFIG.creativityEnabled ? `${s.total} idea(s), ${s.pending} pending` : "disabled" };
+  });
+  kernel.registerModule("hypotheses", () => {
+    const s = getHypothesisEngine().hypothesisStats();
+    return { ok: true, detail: CONFIG.hypotheses ? `${s.total} hypothesis(es), ${s.supported} supported` : "disabled" };
+  });
   kernel.registerModule("cognitive-dna", () => {
     const d = getCognitiveDna().status();
     return { ok: true, detail: `${d.character} (${d.evolutionCount} step(s))` };

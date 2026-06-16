@@ -345,6 +345,59 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Creativity engine (core/creativity.ts) — creative_ideas table for DBs that
+    // predate it. Fresh DBs get it from schema.sql; create-on-legacy (same
+    // pattern as 0010-beliefs).
+    id: 12,
+    name: "0012-creative-ideas",
+    run: (db) => {
+      if (!tableExists(db, "creative_ideas")) {
+        db.exec(`
+          CREATE TABLE creative_ideas (
+            id           TEXT PRIMARY KEY,
+            seed_a       TEXT NOT NULL,
+            seed_b       TEXT NOT NULL,
+            idea         TEXT NOT NULL,
+            novelty      REAL NOT NULL DEFAULT 0,
+            status       TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'surfaced', 'kept')),
+            memory_id    TEXT,
+            created_at   TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_creative_ideas_status ON creative_ideas(status, created_at DESC)");
+      }
+    },
+  },
+  {
+    // Scientific-reasoning hypothesis lifecycle (core/hypotheses.ts) — hypotheses
+    // table for DBs that predate it. Create-on-legacy.
+    id: 13,
+    name: "0013-hypotheses",
+    run: (db) => {
+      if (!tableExists(db, "hypotheses")) {
+        db.exec(`
+          CREATE TABLE hypotheses (
+            id                TEXT PRIMARY KEY,
+            statement         TEXT NOT NULL,
+            statement_hash    TEXT NOT NULL UNIQUE,
+            status            TEXT NOT NULL DEFAULT 'open'
+                                CHECK (status IN ('open', 'testing', 'supported', 'refuted', 'retired')),
+            support_obs       INTEGER NOT NULL DEFAULT 0,
+            refute_obs        INTEGER NOT NULL DEFAULT 0,
+            confidence        REAL NOT NULL DEFAULT 0.5,
+            source_belief_id  TEXT,
+            cause_class       TEXT,
+            effect_class      TEXT,
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status, updated_at DESC)");
+      }
+    },
+  },
 ];
 
 // Exported for the perception/memory selfchecks: they need to apply the

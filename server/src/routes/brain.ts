@@ -47,6 +47,11 @@ import { getCognitiveDna } from "../core/cognitiveDna.js";
 import { emotionStatus } from "../core/emotions.js";
 import { gatherSkills, skillSummary } from "../core/skills.js";
 import { getSelfRepresentation } from "../core/selfRepresentation.js";
+import { getUserModel } from "../core/userModel.js";
+import { memoryDnaStats } from "../memory/memoryDna.js";
+import { runCreativeCycle, listIdeas, creativityStats } from "../core/creativity.js";
+import { getHypothesisEngine } from "../core/hypotheses.js";
+import type { HypothesisStatus } from "../../../shared/hypotheses.js";
 
 export const brainRouter = Router();
 
@@ -158,6 +163,69 @@ brainRouter.get("/brain/skills", (req, res) => {
 // SELF — the unified self-representation (who / what / why / what to become).
 brainRouter.get("/brain/self", (_req, res) => {
   res.json(getSelfRepresentation().self);
+});
+
+// USER — Theory of Mind: the brain's model of the PERSON it talks with
+// (recurring interests, sustained domains, preferred style, current goals) plus
+// the grounding preamble (empty until the model has formed).
+brainRouter.get("/brain/user", (_req, res) => {
+  res.json(getUserModel().status());
+});
+
+// MEMORY DNA — affect/trust/verification tally over a recent memory sample
+// (the "living memory" surface).
+brainRouter.get("/brain/memory-dna/stats", (req, res) => {
+  const limit = Math.min(5000, Math.max(1, Number(req.query.limit) || 500));
+  res.json(memoryDnaStats(limit));
+});
+
+// CREATIVITY — distant-concept recombinations (the ideas the brain invented).
+brainRouter.get("/brain/creativity", (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  res.json({ stats: creativityStats(), ideas: listIdeas(limit) });
+});
+
+// Run one creative cycle now (bridge two distant memories) — the runtime check.
+brainRouter.post("/brain/creative", (_req, res) => {
+  void runCreativeCycle()
+    .then((report) => res.json(report))
+    .catch((err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) }));
+});
+
+// HYPOTHESES — the scientific-reasoning ledger (open → tested → supported/refuted).
+brainRouter.get("/brain/hypotheses", (req, res) => {
+  const raw = typeof req.query.status === "string" ? req.query.status : undefined;
+  const status: HypothesisStatus | undefined =
+    raw === "open" || raw === "testing" || raw === "supported" || raw === "refuted" || raw === "retired"
+      ? raw
+      : undefined;
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  const engine = getHypothesisEngine();
+  res.json({ stats: engine.hypothesisStats(), hypotheses: engine.listHypotheses({ status, limit }) });
+});
+
+// Form (optional) + test a hypothesis now — the runtime check. Body:
+// { statement?, causeClass?, effectClass? } forms then tests; else runs a sleep tick.
+brainRouter.post("/brain/hypotheses/test", (req, res) => {
+  try {
+    const engine = getHypothesisEngine();
+    const statement = typeof req.body?.statement === "string" ? req.body.statement : "";
+    if (statement) {
+      const formed = engine.formHypothesisFromObservation(statement, {
+        causeClass: typeof req.body?.causeClass === "string" ? req.body.causeClass : null,
+        effectClass: typeof req.body?.effectClass === "string" ? req.body.effectClass : null,
+      });
+      if (!formed) {
+        res.status(400).json({ error: "could not form hypothesis (statement too short?)" });
+        return;
+      }
+      res.json(engine.test(formed.id));
+      return;
+    }
+    res.json(engine.sleepTick());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // MYTHOS — the brain's self-narrative ("who I am / how I've grown").

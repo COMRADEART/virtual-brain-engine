@@ -271,6 +271,16 @@ export interface ServerConfig {
   // ON by default; skipped quietly when no connector is configured.
   workspaceEnabled: boolean;
   workspaceIntervalMin: number;
+  // Creativity engine: on the workspace cadence, bridge two semantically distant
+  // memories into one novel idea (core/creativity.ts), stored as a retrievable
+  // memory + a creative_ideas row + a cognition event; the Creativity cortex bids
+  // from the pending ideas. OFF by default — it spends one LLM call per cycle.
+  creativityEnabled: boolean;
+  // Scientific reasoning: on the sleep cadence, form hypotheses from the most-
+  // uncertain causal links, test them cheaply against the ledger/beliefs, and
+  // promote the supported ones into beliefs (core/hypotheses.ts). OFF by default
+  // — it's a reflective offline activity; opt in with HYPOTHESES=true.
+  hypotheses: boolean;
   // --- Fast mode ("be like Fable: fast + efficient") --------------------------
   // Biases the pipeline's adaptive compute toward the cheap path: more queries
   // answer directly from retrieved memory (embed → search → stream) instead of
@@ -337,6 +347,19 @@ export interface ServerConfig {
   // stay consistent with who the brain is. OFF by default — it changes hot-path
   // prompt content; opt in with NARRATIVE_GROUNDING=true.
   narrativeGrounding: boolean;
+  // Theory of Mind — model the PERSON (their recurring interests, sustained
+  // domains, preferred answer style, current goals), learned passively from
+  // /api/ask, and inject a compact third-person note into the reasoning +
+  // response prompts so answers adapt to who they're for. OFF by default — it
+  // changes hot-path prompt content and the model needs a few turns to form
+  // (the preamble is empty until then either way); opt in with THEORY_OF_MIND=true.
+  theoryOfMind: boolean;
+  // Memory DNA — stamp each learned memory with an affective valence + a
+  // credibility/trust + a source-verification label (metadata.dna), and gently
+  // down-rank low-trust memories (raw web text) at retrieval so answers lean on
+  // credible memory. OFF by default — it nudges hot-path retrieval ordering;
+  // strict no-op for normal/high-trust memories even when on. Opt in with MEMORY_DNA=true.
+  memoryDna: boolean;
   // --- Scheduled SQLite backup ------------------------------------------------
   // The whole brain lives in one SQLite file; snapshot it with VACUUM INTO on
   // boot + an interval so a disk fault / bad migration is recoverable. ON by
@@ -452,6 +475,8 @@ export const CONFIG: ServerConfig = {
   sleepIntervalHours: Math.max(1, num("SLEEP_INTERVAL_HOURS", 24)),
   workspaceEnabled: bool("WORKSPACE", true),
   workspaceIntervalMin: Math.max(1, num("WORKSPACE_INTERVAL_MIN", 10)),
+  creativityEnabled: bool("CREATIVITY", false),
+  hypotheses: bool("HYPOTHESES", false),
   fastMode: bool("BRAIN_FAST_MODE", true),
   fastModeDepthThreshold: Math.min(1, Math.max(0, num("BRAIN_FAST_MODE_DEPTH_THRESHOLD", 0.65))),
   fastModeMaxTokens: Math.max(128, num("BRAIN_FAST_MODE_MAX_TOKENS", 768)),
@@ -466,6 +491,8 @@ export const CONFIG: ServerConfig = {
   selfNarrative: bool("SELF_NARRATIVE", true),
   innerMonologue: bool("INNER_MONOLOGUE", true),
   narrativeGrounding: bool("NARRATIVE_GROUNDING", false),
+  theoryOfMind: bool("THEORY_OF_MIND", false),
+  memoryDna: bool("MEMORY_DNA", false),
   backupEnabled: bool("BACKUP_ENABLED", true),
   backupIntervalHours: Math.max(1, num("BACKUP_INTERVAL_HOURS", 24)),
   backupKeep: Math.max(1, num("BACKUP_KEEP", 7)),

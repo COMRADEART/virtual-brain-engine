@@ -34,12 +34,16 @@ const {
   HALF_LIFE_MS,
   NE_BROADEN_FLOOR,
   ACH_AUGMENT_FLOOR,
+  CORTISOL_STRESS_FLOOR,
   decayLevel,
   decayLevels,
   applyPulse,
   learningRateScale,
   shouldBroadenFromArousal,
   wantsFreshData,
+  moodExploreBias,
+  underStress,
+  socialTrustScale,
   pulsesForCycle,
   __createNeuromodulatorsForTests,
 } = await import("../src/core/neuromodulators.js");
@@ -97,6 +101,26 @@ check("ACh gate opens at the floor", wantsFreshData({ ...BASELINE, acetylcholine
   const contradicted = pulsesForCycle({ confidence: 0.5, citedCount: 1, contradictions: 2 });
   check("contradictions pulse norepinephrine", contradicted.norepinephrine > 0);
   check("no contradictions → no NE pulse", cited.norepinephrine === 0);
+
+  // --- The three affective hormones (serotonin / cortisol / oxytocin) --------
+  check("grounded cycle lifts serotonin (mood)", cited.serotonin > 0);
+  check("drought cycle dips serotonin", uncited.serotonin < 0);
+  check("grounded clean cycle relieves cortisol", cited.cortisol < 0);
+  check("contradictions raise cortisol (stress)", contradicted.cortisol > 0);
+  check("a normal cycle does not move oxytocin", cited.oxytocin === 0 && uncited.oxytocin === 0);
+}
+
+// Affective consumer gates — each EXACTLY its neutral value at BASELINE.
+{
+  check("half-life table sanity (mood slowest, cortisol faster than reward)",
+    HALF_LIFE_MS.serotonin > HALF_LIFE_MS.dopamine && HALF_LIFE_MS.cortisol < HALF_LIFE_MS.dopamine);
+  check("moodExploreBias is 0 at baseline serotonin", moodExploreBias({ ...BASELINE }) === 0);
+  check("low mood biases toward exploration", moodExploreBias({ ...BASELINE, serotonin: 0.1 }) > 0);
+  check("high mood biases away from exploration", moodExploreBias({ ...BASELINE, serotonin: 0.9 }) < 0);
+  check("underStress closed at baseline cortisol", underStress({ ...BASELINE }) === false);
+  check("underStress opens at the floor", underStress({ ...BASELINE, cortisol: CORTISOL_STRESS_FLOOR }) === true);
+  check("socialTrustScale is exactly 1.0 at baseline oxytocin", socialTrustScale({ ...BASELINE }) === 1.0);
+  check("socialTrustScale rises with oxytocin", socialTrustScale({ ...BASELINE, oxytocin: 1 }) > 1);
 }
 
 // -----------------------------------------------------------------------------
@@ -116,8 +140,10 @@ check("onCycle moves dopamine above baseline", lv.dopamine > BASELINE.dopamine, 
 bus.onFeedback(1);
 const afterUp = bus.levels().dopamine;
 check("👍 pulses dopamine further", afterUp > lv.dopamine);
+check("👍 bonds — oxytocin above baseline", bus.levels().oxytocin > BASELINE.oxytocin);
 bus.onFeedback(-1);
 check("👎 pulls dopamine back down", bus.levels().dopamine < afterUp);
+check("👎 raises cortisol (stress)", bus.levels().cortisol > BASELINE.cortisol);
 
 bus.onSurprise(1);
 lv = bus.levels();
@@ -144,6 +170,24 @@ check("lazy decay returns levels to ~baseline after a day", Math.abs(lv.norepine
     typeof status.wantsFreshData === "boolean" &&
     status.pulses > 0);
   check("status is JSON-serializable", JSON.parse(JSON.stringify(status)).pulses === status.pulses);
+  check("status carries the affective consumers",
+    typeof status.moodExploreBias === "number" &&
+    typeof status.underStress === "boolean" &&
+    typeof status.socialTrustScale === "number");
+}
+
+// Legacy migration-free upgrade: a stored row with ONLY the original 3 keys
+// hydrates the three new hormones to baseline (no schema change).
+{
+  openDb()
+    .prepare("INSERT INTO brain_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run("neuromodulators-v1", JSON.stringify({ levels: { dopamine: 0.7, norepinephrine: 0.3, acetylcholine: 0.3 }, updatedAt: clk, pulses: 9 }));
+  const reborn = __createNeuromodulatorsForTests(() => clk);
+  const lv2 = reborn.levels();
+  check("legacy 3-key row keeps its stored values", Math.abs(lv2.dopamine - 0.7) < 1e-9);
+  check("legacy row hydrates serotonin to baseline", Math.abs(lv2.serotonin - BASELINE.serotonin) < 1e-9);
+  check("legacy row hydrates cortisol to baseline", Math.abs(lv2.cortisol - BASELINE.cortisol) < 1e-9);
+  check("legacy row hydrates oxytocin to baseline", Math.abs(lv2.oxytocin - BASELINE.oxytocin) < 1e-9);
 }
 
 // -----------------------------------------------------------------------------

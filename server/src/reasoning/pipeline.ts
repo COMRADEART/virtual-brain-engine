@@ -102,6 +102,8 @@ import {
   type CognitiveTraits,
 } from "../core/cognitiveDna.js";
 import { getSelfRepresentation, selfPreamble } from "../core/selfRepresentation.js";
+import { getUserModel, userPreamble } from "../core/userModel.js";
+import { deriveDna, mergeDna, readDna, trustDemotion } from "../memory/memoryDna.js";
 import { associativeNeighbors, recordCoCitations } from "../memory/hebbian.js";
 import type { GraphContext } from "./ranker.js";
 import {
@@ -734,17 +736,34 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // unchanged. As the brain develops a character/goals, its voice begins to
   // appear here — which is the intended effect, not a regression.
   let narrativeGroundingBlock = "";
-  if (CONFIG.narrativeGrounding) {
+  if (CONFIG.narrativeGrounding || CONFIG.theoryOfMind) {
     try {
-      const lines: string[] = [];
-      const narrativePre = narrativePreamble(getNarrative());
-      if (narrativePre) lines.push(narrativePre);
-      const { self, parts } = getSelfRepresentation();
-      const selfPre = selfPreamble(self, parts);
-      if (selfPre) lines.push(selfPre);
-      if (lines.length > 0) {
-        narrativeGroundingBlock = `Your identity (keep your answer consistent with who you are; this is your voice, NOT factual memory to cite):\n${lines.join(" ")}`;
+      const sections: string[] = [];
+      // M3 — the brain's own identity voice (narrative + unified self).
+      if (CONFIG.narrativeGrounding) {
+        const lines: string[] = [];
+        const narrativePre = narrativePreamble(getNarrative());
+        if (narrativePre) lines.push(narrativePre);
+        const { self, parts } = getSelfRepresentation();
+        const selfPre = selfPreamble(self, parts);
+        if (selfPre) lines.push(selfPre);
+        if (lines.length > 0) {
+          sections.push(
+            `Your identity (keep your answer consistent with who you are; this is your voice, NOT factual memory to cite):\n${lines.join(" ")}`,
+          );
+        }
       }
+      // Theory of Mind — who the brain is talking to. Empty (no section) until
+      // the user model has formed over a few turns, so a cold brain is unchanged.
+      if (CONFIG.theoryOfMind) {
+        const userPre = userPreamble(getUserModel().model());
+        if (userPre) {
+          sections.push(
+            `Who you're assisting (adapt depth and register to them; this is context, NOT factual memory to cite):\n${userPre}`,
+          );
+        }
+      }
+      if (sections.length > 0) narrativeGroundingBlock = sections.join("\n\n");
     } catch (err) {
       surfaceError("pipeline.narrativeGrounding", err);
     }
@@ -762,6 +781,16 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // local inference. The full ranked set is still kept for training + the UI.
   // Kept OUTSIDE the depth branch — the error and response steps consume
   // memoryList even when reasoning is shallow.
+  // MEMORY DNA — gently down-rank low-trust memories (raw web text) before
+  // selecting what the LLM reads, so the answer leans on credible memory. Same
+  // multiplicative re-score pattern as the project rerank below; strict no-op
+  // when CONFIG.memoryDna is off OR a memory's trust is normal/high (factor 1.0).
+  if (CONFIG.memoryDna) {
+    memoryHits = memoryHits.map((hit) => {
+      const factor = trustDemotion(readDna(hit.memory));
+      return factor === 1 ? hit : { ...hit, score: hit.score * factor };
+    });
+  }
   const promptHits = maybeExplore(
     selectPromptHits(memoryHits, rankFeatures, rankWarm),
     runId,
@@ -1286,6 +1315,20 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   } catch (err) {
     surfaceError("pipeline.dnaEvolve", err);
   }
+  // THEORY OF MIND — fold this turn into the model of the PERSON (recurring
+  // interests, sustained domains, preferred style, stated goals). Passive: it
+  // updates whether or not the preamble is injected (the inject is separately
+  // gated by CONFIG.theoryOfMind), so the model is always warming. Failure-isolated.
+  try {
+    getUserModel().observe({
+      prompt: req.prompt,
+      answer: finalAnswer,
+      citedCount: citedIds.size,
+      confidence: calibratedConfidence,
+    });
+  } catch (err) {
+    surfaceError("pipeline.userModel", err);
+  }
   // PREDICTIVE PROCESSING — compare expectation against reality. Surprise
   // pulses norepinephrine; "expected to KNOW this and didn't" holds an open
   // question in working memory; the EMA model trains on every cycle.
@@ -1346,7 +1389,18 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       contentHash: sha1(`${req.prompt}|${finalAnswer}`),
       importance: errorReport.confidence,
       embedding: learnedEmbedding,
-      metadata: { conversationId: cid, runId },
+      // MEMORY DNA — stamp the learned memory with affect + trust + verification
+      // (under metadata.dna). Always written (cheap metadata); the retrieval
+      // demotion that reads it is separately gated by CONFIG.memoryDna.
+      metadata: mergeDna(
+        { conversationId: cid, runId },
+        deriveDna({
+          source: "conversation",
+          confidence: calibratedConfidence,
+          citedCount: citedIds.size,
+          emotion: citedIds.size > 0 ? Math.min(1, 0.5 + 0.2 * calibratedConfidence) : 0.45,
+        }),
+      ),
     });
     const memoryContext = processNewMemory(
       learned.content,
