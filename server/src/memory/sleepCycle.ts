@@ -37,6 +37,8 @@ import { CONFIG } from "../config.js";
 import { getBeliefEngine } from "../core/beliefs.js";
 import { extractProcedures } from "./procedural.js";
 import { synthesizeNarrative } from "../core/narrative.js";
+import { getCognitiveDna, signalsFromConsolidation } from "../core/cognitiveDna.js";
+import { snapshotSkillTrends } from "../core/skills.js";
 
 export interface EpisodeForSleep {
   id: string;
@@ -183,6 +185,45 @@ export interface SleepOptions {
 /**
  * One full sleep cycle. Never throws — every failure surfaces in the report.
  */
+/**
+ * Evolve the slow cognitive-DNA traits from the last day's behaviour. Reads the
+ * action audit's success rate (riskTolerance) and the conversation volume
+ * (sociality), then EMAs the traits toward those signals. Never throws — any DB
+ * fault leaves the character untouched.
+ */
+function consolidateCognitiveDna(): void {
+  try {
+    const db = openDb();
+    let actionSuccessRate: number | undefined;
+    let actionCount = 0;
+    try {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS total, SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS ok
+           FROM action_log WHERE datetime(created_at) >= datetime('now', '-1 day')`,
+        )
+        .get() as { total: number; ok: number | null };
+      actionCount = row.total ?? 0;
+      if (actionCount > 0) actionSuccessRate = (row.ok ?? 0) / actionCount;
+    } catch (err) {
+      surfaceError("sleep.dnaActions", err);
+    }
+    let recentMessages = 0;
+    try {
+      recentMessages = (
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM messages WHERE datetime(created_at) >= datetime('now', '-1 day')`)
+          .get() as { n: number }
+      ).n;
+    } catch (err) {
+      surfaceError("sleep.dnaMessages", err);
+    }
+    getCognitiveDna().evolve(signalsFromConsolidation({ actionSuccessRate, actionCount, recentMessages }));
+  } catch (err) {
+    surfaceError("sleep.dnaConsolidate", err);
+  }
+}
+
 export async function runSleepCycle(opts: SleepOptions = {}): Promise<SleepReport> {
   const hebbian = decayAssociations();
   // Beliefs decay "during sleep" too — same use-it-or-lose-it cadence as the
@@ -191,6 +232,16 @@ export async function runSleepCycle(opts: SleepOptions = {}): Promise<SleepRepor
   // Procedural consolidation: mine the action audit for recurring successful
   // sequences (memory/procedural.ts). Failure-isolated inside the module.
   const proceduresLearned = extractProcedures();
+  // COGNITIVE DNA — the slow traits a single cycle can't see evolve here, at
+  // consolidation: riskTolerance toward how well bold action paid off recently,
+  // sociality toward how engaged the brain has been. Then snapshot each skill's
+  // mastery so the next read shows a growth trend. Both failure-isolated.
+  consolidateCognitiveDna();
+  try {
+    snapshotSkillTrends();
+  } catch (err) {
+    surfaceError("sleep.skillTrends", err);
+  }
   const episodes = gatherEpisodes();
   const report: SleepReport = {
     scanned: episodes.length,

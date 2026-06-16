@@ -33,7 +33,7 @@ export interface BanditState {
 export const BANDIT_VERSION = 1;
 const CTX_DIM = 6;
 const DEFAULT_LR = 0.1;
-const DEFAULT_EPSILON = 0.1;
+export const DEFAULT_EPSILON = 0.1;
 
 export function emptyBanditState(): BanditState {
   return { version: BANDIT_VERSION, slots: {} };

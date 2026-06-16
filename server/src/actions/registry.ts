@@ -175,6 +175,54 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       })
       .strict(),
   },
+  // --- MCP marketplace ("find skills + MCP servers the brain can use") --------
+  "mcp-market-search": {
+    id: "mcp-market-search",
+    title: "Find MCP servers/tools",
+    description:
+      "Search the MCP marketplace (registry) for external tool servers the brain could use — returns each server's id, name, transport, package/url and description. Use for 'find an MCP server for X', 'what tools can I add', 'search the MCP market'. Discovery only (does NOT connect anything). Egresses, so gated by LOCAL_ONLY.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      query: "what capability/tool to look for (e.g. 'github', 'postgres', 'browser')",
+      limit: "max results, 1-50 (default from MCP_MARKET_MAX)",
+    },
+    schema: z
+      .object({
+        query: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      })
+      .strict(),
+  },
+  "mcp-market-add": {
+    id: "mcp-market-add",
+    title: "Add an MCP server",
+    description:
+      "Connect a discovered MCP server so its tools become usable by the brain (they register as confirm-tier actions). Pass the fields from an mcp-market-search result. The launch command is built from a fixed npx/uvx template — you cannot supply a raw command. Requires MCP_ENABLED; stdio servers ride ALLOW_SHELL, remote ones ride LOCAL_ONLY.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      id: "short id for the server (from search results)",
+      transport: "stdio | http | sse",
+      package: "stdio: the npm/pypi package to run (from search results)",
+      registry: "stdio: 'npm' or 'pypi'",
+      url: "http/sse: the server endpoint URL",
+    },
+    schema: z
+      .object({
+        id: z.string().min(1).max(60),
+        transport: z.enum(["stdio", "http", "sse"]),
+        package: z.string().max(214).optional(),
+        registry: z.enum(["npm", "pypi"]).optional(),
+        url: z
+          .string()
+          .url()
+          .max(2048)
+          .refine((u) => /^https?:\/\//i.test(u), "must be an http(s) URL")
+          .optional(),
+      })
+      .strict(),
+  },
   // --- System actions (Node handlers in the server process) ------------------
   "system-info": {
     id: "system-info",

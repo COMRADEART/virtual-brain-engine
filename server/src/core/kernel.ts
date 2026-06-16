@@ -20,7 +20,7 @@
 
 import { surfaceError } from "../util/diagnostics.js";
 import { getEventBus, type BrainBus } from "./eventBus.js";
-import { recomputeStage, type StageReport } from "./stages.js";
+import { recomputeStage, emptyStageMetrics, type StageReport } from "./stages.js";
 
 export interface ModuleStatus {
   ok: boolean;
@@ -130,15 +130,7 @@ export class BrainKernel {
           stage: 1,
           name: "Memory",
           satisfied: [],
-          metrics: {
-            memoryCount: 0,
-            beliefCount: 0,
-            reflectionCount: 0,
-            goalTreeDepth: 0,
-            explorationEvents: 0,
-            selfModelObservations: 0,
-            autonomousThoughtsPerDay: 0,
-          },
+          metrics: emptyStageMetrics(),
         },
         advanced: false,
       };

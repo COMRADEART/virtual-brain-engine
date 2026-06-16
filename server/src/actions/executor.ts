@@ -49,7 +49,9 @@ import {
   getDynamicHandler,
   executeDynamicHandler,
 } from "./dynamicRegistry.js";
-import { callMcpTool } from "../mcp/hub.js";
+import { callMcpTool, getMcpHub } from "../mcp/hub.js";
+import { searchMarket } from "../mcp/market.js";
+import { marketEntryToConfig, type McpMarketEntry, type McpTransportKind } from "../../../shared/mcp.js";
 import { probeState, recordActionOutcome } from "./consequences.js";
 
 // Filesystem actions touch the REAL machine (same box as the user), so they are
@@ -402,6 +404,65 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
     return {
       summary: `Learned ${r.repo}${r.stars ? ` (★${r.stars})` : ""} — ${r.ingested} new memor${r.ingested === 1 ? "y" : "ies"}${dup}`,
       data: { repo: r.repo, url: r.url, stars: r.stars, ingested: r.ingested, deduped: r.deduped },
+    };
+  },
+  // --- MCP marketplace -------------------------------------------------------
+  // "Find MCP servers/tools the brain can use" — discover only, no connect, no
+  // persistence. Egress gated inside searchMarket (LOCAL_ONLY + host pin); a
+  // blocked search returns a clear reason rather than throwing.
+  "mcp-market-search": async (args) => {
+    const query = String(args.query ?? "");
+    const limit = typeof args.limit === "number" ? args.limit : undefined;
+    const r = await searchMarket(query, { limit });
+    if (!r.ok) return { summary: `Couldn't search the MCP marketplace — ${r.reason}`, data: r };
+    return {
+      summary: `Found ${r.entries.length} MCP server${r.entries.length === 1 ? "" : "s"} on ${r.registry}${query ? ` for "${query}"` : ""}. Add one with mcp-market-add to use its tools.`,
+      data: r.entries.map((e) => ({
+        id: e.id,
+        name: e.name,
+        transport: e.transport,
+        package: e.package,
+        registry: e.packageRegistry,
+        url: e.url,
+        description: e.description.slice(0, 200),
+        homepage: e.homepage,
+      })),
+    };
+  },
+  // "Wire in an MCP server" — connect a discovered server so its tools become
+  // usable. The spawn command is built from a FIXED npx/uvx template
+  // (marketEntryToConfig), NEVER a caller-supplied raw command — so this can't be
+  // a run-command bypass. Connecting still rides the transport gates
+  // (stdio→ALLOW_SHELL, http→LOCAL_ONLY) and every tool registers confirm-tier.
+  "mcp-market-add": async (args) => {
+    if (!CONFIG.mcpEnabled) {
+      return { summary: "MCP is disabled — set MCP_ENABLED=true before adding servers.", data: { ok: false } };
+    }
+    const transport = String(args.transport) as McpTransportKind;
+    const entry: McpMarketEntry = {
+      id: String(args.id),
+      name: String(args.id),
+      description: "",
+      source: "market",
+      transport,
+      package: typeof args.package === "string" ? args.package : undefined,
+      packageRegistry: args.registry === "pypi" ? "pypi" : args.registry === "npm" ? "npm" : undefined,
+      url: typeof args.url === "string" ? args.url : undefined,
+    };
+    const config = marketEntryToConfig(entry);
+    if (!config) {
+      return {
+        summary: `Couldn't build a valid MCP server config for "${entry.id}" — need a valid npm/pypi package (stdio) or an http(s) url.`,
+        data: { ok: false },
+      };
+    }
+    const r = await getMcpHub().addServer(config);
+    if (!r.ok) {
+      return { summary: `Couldn't connect MCP server "${r.server}" — ${r.error ?? "unknown error"}`, data: r };
+    }
+    return {
+      summary: `Added MCP server "${r.server}" — ${r.toolCount} tool${r.toolCount === 1 ? "" : "s"} now available (confirm-tier).`,
+      data: r,
     };
   },
   // --- System actions --------------------------------------------------------

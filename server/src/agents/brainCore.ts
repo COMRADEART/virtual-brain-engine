@@ -25,6 +25,9 @@ import { getMcpHub } from "../mcp/hub.js";
 import { runWorkspaceCycle } from "../core/workspace.js";
 import { emitMonologue } from "../core/monologue.js";
 import { getNarrative } from "../core/narrative.js";
+import { getCognitiveDna } from "../core/cognitiveDna.js";
+import { emotionStatus } from "../core/emotions.js";
+import { getSelfRepresentation } from "../core/selfRepresentation.js";
 import { CONFIG } from "../config.js";
 import { createSafetyGate } from "../core/safety.js";
 import { createCognitiveSwarm } from "../core/swarm.js";
@@ -505,6 +508,18 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
     detail: `${listProcedures(200).length} procedure(s)`,
   }));
   kernel.registerModule("stages", () => ({ ok: true, detail: `stage ${currentStage()}` }));
+  kernel.registerModule("cognitive-dna", () => {
+    const d = getCognitiveDna().status();
+    return { ok: true, detail: `${d.character} (${d.evolutionCount} step(s))` };
+  });
+  kernel.registerModule("emotions", () => {
+    const e = emotionStatus();
+    return { ok: true, detail: `${e.dominant.name} ${e.dominant.value.toFixed(2)}` };
+  });
+  kernel.registerModule("self-representation", () => {
+    const { self } = getSelfRepresentation();
+    return { ok: true, detail: `${self.character} · stage ${self.stage.stage} · ${self.goals.length} goal(s)` };
+  });
   kernel.registerModule("spinal-cord", () => getSpine().health());
   kernel.registerModule("mcp-hub", () => getMcpHub().health());
   const stopStageCycle = kernel.startStageCycle();

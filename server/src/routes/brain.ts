@@ -43,6 +43,10 @@ import { buildEpisodes, listEpisodes } from "../memory/episodes.js";
 import { runWorkspaceCycle } from "../core/workspace.js";
 import { loadPredictiveState } from "../reasoning/predictiveProcessing.js";
 import { getNarrative, synthesizeNarrative } from "../core/narrative.js";
+import { getCognitiveDna } from "../core/cognitiveDna.js";
+import { emotionStatus } from "../core/emotions.js";
+import { gatherSkills, skillSummary } from "../core/skills.js";
+import { getSelfRepresentation } from "../core/selfRepresentation.js";
 
 export const brainRouter = Router();
 
@@ -131,6 +135,29 @@ brainRouter.post("/brain/workspace", (_req, res) => {
   void runWorkspaceCycle()
     .then((report) => res.json(report))
     .catch((err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) }));
+});
+
+// COGNITIVE DNA — the slow, evolving personality (curiosity/creativity/logic/
+// riskTolerance/sociality/memoryFocus) + its derived character line.
+brainRouter.get("/brain/dna", (_req, res) => {
+  res.json(getCognitiveDna().status());
+});
+
+// EMOTIONS — the eight named emotions, derived from the affective substrates.
+brainRouter.get("/brain/emotions", (_req, res) => {
+  res.json(emotionStatus());
+});
+
+// SKILLS — "what am I good at, and am I getting better?" (procedural-backed).
+brainRouter.get("/brain/skills", (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  const skills = gatherSkills(limit);
+  res.json({ skills, summary: skillSummary(skills) });
+});
+
+// SELF — the unified self-representation (who / what / why / what to become).
+brainRouter.get("/brain/self", (_req, res) => {
+  res.json(getSelfRepresentation().self);
 });
 
 // MYTHOS — the brain's self-narrative ("who I am / how I've grown").

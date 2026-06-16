@@ -74,7 +74,13 @@ export type ActionId =
   | "git-status"
   | "git-commit"
   | "git-branches"
-  | "git-checkout";
+  | "git-checkout"
+  // MCP marketplace — discover external MCP servers/tools from a registry and add
+  // one at runtime. mcp-market-search is an egress READ (LOCAL_ONLY-gated);
+  // mcp-market-add connects a discovered server (the spawn command is built from
+  // a FIXED npx/uvx template, never caller-supplied). Both confirm-tier.
+  | "mcp-market-search"
+  | "mcp-market-add";
 
 export const ACTION_IDS: ActionId[] = [
   "search-memory",
@@ -106,6 +112,8 @@ export const ACTION_IDS: ActionId[] = [
   "git-commit",
   "git-branches",
   "git-checkout",
+  "mcp-market-search",
+  "mcp-market-add",
 ];
 
 // Where an action actually executes. "server" actions run a handler in the Node

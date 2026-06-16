@@ -1,4 +1,4 @@
-// Developmental stages — the brain grows up through 7 stages, computed from
+// Developmental stages — the brain grows up through 9 stages, computed from
 // REAL metrics of its own cognition (never a config flag):
 //
 //   1 Memory               — it remembers (any memory at all)
@@ -8,6 +8,17 @@
 //   5 Goals + Curiosity    — curiosity initiates exploration (≥3 events)
 //   6 Curiosity + SelfModel— the self-model is measured (≥20 observations)
 //   7 Autonomous Growth    — it thinks on its own daily (≥6 thoughts/24h)
+//   8 Meta-Cognition       — it has measured its own reliability ACROSS
+//                            confidence levels (≥3 calibration bins matured),
+//                            i.e. it knows not just "what" but "how well it knows"
+//   9 Self-Improvement     — it has measurably improved its own retrieval
+//                            through online learning (≥10 ranker updates)
+//
+// Stages 8-9 are deliberately HARDER and DISTINCT from stage 6's raw
+// observation count: maturing 3 calibration bins needs observations SPREAD
+// across confidence ranges (genuine metacognitive access), and the
+// self-improvement gate reads the ranker's own learning-update history — the
+// recursive-self-improvement loop having actually run, not just been wired.
 //
 // The stage is MONOTONIC — growth is a ratchet. A demoted memory or a quiet
 // week never regresses the organism (that would flap the UI and the gates);
@@ -27,7 +38,7 @@ import { openDb } from "../db/sqlite.js";
 import { surfaceError } from "../util/diagnostics.js";
 import { getEventBus, nowIso } from "./eventBus.js";
 import { regionsFor } from "../../../shared/cognition.js";
-import { loadSelfModelState } from "./selfModel.js";
+import { loadSelfModelState, MIN_BIN_OBS } from "./selfModel.js";
 import { getGoalManager, EXPLORATION_EVENTS_KEY } from "./goalManager.js";
 import { getBeliefEngine } from "./beliefs.js";
 
@@ -39,10 +50,14 @@ export interface StageMetrics {
   explorationEvents: number;
   selfModelObservations: number;
   autonomousThoughtsPerDay: number;
+  /** Calibration bins with ≥ MIN_BIN_OBS real outcomes — metacognitive access. */
+  matureCalibrationBins: number;
+  /** Online ranker learning updates the brain has applied to itself. */
+  selfImprovementUpdates: number;
 }
 
 export interface StageResult {
-  /** Instantaneous stage from the metrics (1-7). */
+  /** Instantaneous stage from the metrics (1-9). */
   stage: number;
   name: string;
   /** Per-stage gate satisfaction, index 0 = stage 1. */
@@ -64,7 +79,11 @@ export const STAGE_NAMES = [
   "Goals + Curiosity",
   "Curiosity + Self-Model",
   "Autonomous Growth",
+  "Meta-Cognition",
+  "Self-Improvement",
 ] as const;
+
+export const TOP_STAGE = STAGE_NAMES.length;
 
 // Gate thresholds (stage N requires gates 1..N).
 export const BELIEFS_FOR_STAGE_2 = 5;
@@ -73,6 +92,8 @@ export const GOAL_DEPTH_FOR_STAGE_4 = 2;
 export const EXPLORATIONS_FOR_STAGE_5 = 3;
 export const SELF_OBS_FOR_STAGE_6 = 20;
 export const DAILY_THOUGHTS_FOR_STAGE_7 = 6;
+export const MATURE_BINS_FOR_STAGE_8 = 3;
+export const SELF_IMPROVEMENT_UPDATES_FOR_STAGE_9 = 10;
 
 export type GatedFeature =
   | "belief-bids"
@@ -106,6 +127,8 @@ export function emptyStageMetrics(): StageMetrics {
     explorationEvents: 0,
     selfModelObservations: 0,
     autonomousThoughtsPerDay: 0,
+    matureCalibrationBins: 0,
+    selfImprovementUpdates: 0,
   };
 }
 
@@ -122,6 +145,8 @@ export function computeStage(m: StageMetrics): StageResult {
     m.explorationEvents >= EXPLORATIONS_FOR_STAGE_5,
     m.selfModelObservations >= SELF_OBS_FOR_STAGE_6,
     m.autonomousThoughtsPerDay >= DAILY_THOUGHTS_FOR_STAGE_7,
+    m.matureCalibrationBins >= MATURE_BINS_FOR_STAGE_8,
+    m.selfImprovementUpdates >= SELF_IMPROVEMENT_UPDATES_FOR_STAGE_9,
   ];
   let stage = 0;
   for (const ok of satisfied) {
@@ -204,6 +229,25 @@ export function gatherStageMetrics(): StageMetrics {
   } catch (err) {
     surfaceError("stages.dailyThoughts", err);
   }
+  try {
+    // Metacognition (stage 8): how many calibration bins have matured. A bin
+    // matures only once it holds ≥ MIN_BIN_OBS real outcomes, so reaching 3
+    // requires feedback SPREAD across confidence levels — knowing how well one
+    // knows, not just having many observations in one band.
+    m.matureCalibrationBins = loadSelfModelState().bins.filter((b) => b.n >= MIN_BIN_OBS).length;
+  } catch (err) {
+    surfaceError("stages.matureBins", err);
+  }
+  try {
+    // Self-improvement (stage 9): the ranker's own online-learning history. Each
+    // row is one update the brain applied to itself from real feedback/citation
+    // signal — the recursive-self-improvement loop having actually run.
+    m.selfImprovementUpdates = (
+      db.prepare("SELECT COUNT(*) AS n FROM ranker_loss_history").get() as { n: number }
+    ).n;
+  } catch (err) {
+    surfaceError("stages.selfImprovement", err);
+  }
   return m;
 }
 
@@ -226,7 +270,7 @@ export function loadPersistedStageOrNull(): PersistedStage | null {
       const parsed = JSON.parse(row.value) as Partial<PersistedStage>;
       if (typeof parsed.stage === "number" && parsed.stage >= 1) {
         return {
-          stage: Math.min(7, Math.round(parsed.stage)),
+          stage: Math.min(TOP_STAGE, Math.round(parsed.stage)),
           reachedAt: parsed.reachedAt ?? nowIso(),
           history: Array.isArray(parsed.history) ? parsed.history : [],
         };

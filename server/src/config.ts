@@ -163,6 +163,13 @@ export interface ServerConfig {
   //   [{"id":"fs","transport":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","C:/code"]}]
   // Parsed once at boot. Bad JSON → no servers (logged), never a crash.
   mcpServersRaw: string;
+  // MCP marketplace — the registry the brain SEARCHES to discover servers/tools.
+  // A single host; egress is LOCAL_ONLY-gated + host-pinned (see mcp/market.ts).
+  // Discovery requires LOCAL_ONLY=false (the registry is remote); adding a server
+  // is a confirm-tier action.
+  mcpRegistryUrl: string;
+  // Max market results returned per search (bounds the registry page we read).
+  mcpMarketMax: number;
   // Optional prompt variant tag for A/B testing. When set, every usage log entry
   // carries this as `stepTimings.prompt_variant`, enabling per-variant quality
   // comparison. Empty = no variant tagging. Default: ""
@@ -418,6 +425,8 @@ export const CONFIG: ServerConfig = {
   codingMaxVerifyRounds: Math.min(20, Math.max(1, num("CODING_MAX_VERIFY_ROUNDS", 6))),
   mcpEnabled: bool("MCP_ENABLED", false),
   mcpServersRaw: str("MCP_SERVERS", ""),
+  mcpRegistryUrl: str("MCP_REGISTRY_URL", "https://registry.modelcontextprotocol.io"),
+  mcpMarketMax: Math.min(50, Math.max(1, num("MCP_MARKET_MAX", 20))),
   promptVariant: str("PROMPT_VARIANT", ""),
   dedupSimilarityThreshold: num("DEDUP_SIMILARITY_THRESHOLD", 0.92),
   dedupMaxPairs: num("DEDUP_MAX_PAIRS", 50),

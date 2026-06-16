@@ -4,7 +4,7 @@
 // Run: npm --prefix server run stages:selfcheck
 //
 // Asserts:
-//   (A) PURE computeStage: fresh metrics ⇒ stage 1; full metrics ⇒ 7; every
+//   (A) PURE computeStage: fresh metrics ⇒ stage 1; full metrics ⇒ 9; every
 //       boundary; gates are CONSECUTIVE (a hole stops the ladder).
 //   (B) Persistence is MONOTONIC: an advance persists + emits a
 //       `cognition stage-advance` event; lowering the metrics afterwards
@@ -49,6 +49,8 @@ const {
   EXPLORATIONS_FOR_STAGE_5,
   SELF_OBS_FOR_STAGE_6,
   DAILY_THOUGHTS_FOR_STAGE_7,
+  MATURE_BINS_FOR_STAGE_8,
+  SELF_IMPROVEMENT_UPDATES_FOR_STAGE_9,
 } = await import("../src/core/stages.js");
 const { BrainKernel, getKernel, __resetKernelForTests } = await import("../src/core/kernel.js");
 const { BrainBus } = await import("../src/core/eventBus.js");
@@ -71,13 +73,15 @@ const full: StageMetrics = {
   explorationEvents: EXPLORATIONS_FOR_STAGE_5,
   selfModelObservations: SELF_OBS_FOR_STAGE_6,
   autonomousThoughtsPerDay: DAILY_THOUGHTS_FOR_STAGE_7,
+  matureCalibrationBins: MATURE_BINS_FOR_STAGE_8,
+  selfImprovementUpdates: SELF_IMPROVEMENT_UPDATES_FOR_STAGE_9,
 };
 
 check("(A) fresh metrics ⇒ stage 1", computeStage(emptyStageMetrics()).stage === 1);
 check("(A) stage 1 is named Memory", computeStage(emptyStageMetrics()).name === "Memory");
-check("(A) full metrics ⇒ stage 7 (Autonomous Growth)",
-  computeStage(full).stage === 7 && computeStage(full).name === "Autonomous Growth");
-check("(A) STAGE_NAMES covers all 7", STAGE_NAMES.length === 7);
+check("(A) full metrics ⇒ stage 9 (Self-Improvement)",
+  computeStage(full).stage === 9 && computeStage(full).name === "Self-Improvement");
+check("(A) STAGE_NAMES covers all 9", STAGE_NAMES.length === 9);
 
 // Each boundary: satisfying gates 1..n yields exactly stage n.
 {
@@ -89,6 +93,8 @@ check("(A) STAGE_NAMES covers all 7", STAGE_NAMES.length === 7);
     ["explorationEvents", EXPLORATIONS_FOR_STAGE_5],
     ["selfModelObservations", SELF_OBS_FOR_STAGE_6],
     ["autonomousThoughtsPerDay", DAILY_THOUGHTS_FOR_STAGE_7],
+    ["matureCalibrationBins", MATURE_BINS_FOR_STAGE_8],
+    ["selfImprovementUpdates", SELF_IMPROVEMENT_UPDATES_FOR_STAGE_9],
   ];
   let allBoundariesHold = true;
   const m = emptyStageMetrics();
