@@ -93,7 +93,7 @@ The simulation state — `regionIntensity`, `pathwayIntensity`, and the `pulses`
 
 ### Frontend data flow
 
-1. `App.tsx` holds all user-facing config in `useState` and passes it to `BrainScene`, `RegionControls`, `InfoPanel`, plus the auxiliary overlays (`PipelineOverlay`, `LogicalRegionIndicator`, `BrainOSPanel`, `AiCompanion`).
+1. `App.tsx` holds all user-facing config in `useState` and passes it to `BrainScene`, `RegionControls`, `InfoPanel`, plus the auxiliary overlays (`PipelineOverlay`, `LogicalRegionIndicator`). The Phase 2 panels and brain-os shells are enumerated in point 6 below.
 2. `BrainScene` (`src/components/BrainScene.tsx`) is the single Three.js host. One `useEffect` builds the scene/renderer/camera/controls/shell on mount. A separate effect, keyed on `neuronDensity`, rebuilds the `NeuralGraph` and swaps in a fresh `NeuralGraphRenderer` + `SignalSimulation`. Other props feed `simulation.setAction / setSpeed / setRunning`, `setBrainShellOpacity`, and `graphRenderer.applyRegionVisibility` through small effects — those don't tear down the scene.
 3. The render loop reads refs (`visibilityRef`, `selectedRegionRef`) rather than closing over props so the single long-lived `renderFrame` keeps seeing the latest values without re-subscribing.
 4. Region clicks come from raycasting against the invisible region volume meshes exposed as `graphRenderer.regionMeshes`; the hit's `userData.regionId` is sent back up via `onRegionSelect`.
@@ -109,7 +109,7 @@ The simulation state — `regionIntensity`, `pathwayIntensity`, and the `pulses`
 - `signalSimulation.ts` — `SignalSimulation` owns the mutable intensity buffers and pulse list. `step()` decays intensities, spawns weighted pulses biased toward the active action's regions (`rebuildEligiblePathways` precomputes the eligible set on action change), advances each pulse along its pathway, and reflects pulse progress back into region/pathway intensity. `MAX_PULSES = 260` caps the active pool. Random number generation is seeded (mulberry32) so replays are deterministic.
 - `apiClient.ts` — typed wrapper around the local `/api` surface. Default base URL `http://127.0.0.1:8787`, overridable with `VITE_BRAIN_API_URL`. Includes `ask()` which is an `async *` generator that parses the SSE stream from `POST /api/ask` and yields each `PipelineEvent`.
 - `brainBus.ts` — singleton WebSocket client for `/ws/brain`. Backoff is 1s → 30s (doubling) with quiet logging — the first failure is logged, subsequent reminders are throttled to ~60s, and on a successful reconnect the backoff resets. The bus does **not** require the server to be up; it just keeps retrying. A `window.__brainBus.emit(...)` helper is exposed in dev for testing pipeline events without a backend.
-- `ollamaClient.ts` / `aiCompanion.ts` / `audioBus.ts` / `speechInput.ts` / `speechOutput.ts` — the AI Companion path (separate from the server pipeline; talks directly to Ollama from the browser, lazy-loaded).
+- `audioBus.ts` — the ambient audio bus (`createAmbientBus`) consumed by `BrainScene`. (The former browser→Ollama "AI Companion path" — `ollamaClient`/`aiCompanion`/`speechInput`/`speechOutput` — has been removed; the companion surface is now the desktop pet, which talks to the server via `/api/agent`.)
 
 ### Renderer details (`src/components/NeuralGraph.tsx`)
 
