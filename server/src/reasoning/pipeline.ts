@@ -397,18 +397,34 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   }
   let route: RouteDecision = routeQuery(req.prompt, { depthThreshold });
   const swarm = getCognitiveSwarm();
-  swarm.routeCognitiveWorkflow(
-    `Answer user request: ${req.prompt.slice(0, 180)}`,
-    { conversationId: cid, runId, prompt: req.prompt },
-    { includeExecution: false, priority: 68, privacyMode: "local-first" },
-  );
-  getImaginationEngine().imagine({
-    goal: `Mentally rehearse answer path for: ${req.prompt.slice(0, 180)}`,
-    action: req.prompt,
-    mode: "future-prediction",
-    branchCount: 3,
-    context: { conversationId: cid, runId },
-  });
+  // Per-request swarm/imagination rehearsal — OFF by default (experimental
+  // subsystems stay behind routers, not in the pipeline hot path; CLAUDE.md).
+  // Wrapped in try/catch FIRST: a throw here used to kill /api/ask outright.
+  // (`swarm` is also used downstream at the full-route consensus call.)
+  if (CONFIG.enablePerRequestSwarm) {
+    try {
+      swarm.routeCognitiveWorkflow(
+        `Answer user request: ${req.prompt.slice(0, 180)}`,
+        { conversationId: cid, runId, prompt: req.prompt },
+        { includeExecution: false, priority: 68, privacyMode: "local-first" },
+      );
+    } catch (err) {
+      surfaceError("pipeline.swarm", err);
+    }
+  }
+  if (CONFIG.enablePerRequestImagination) {
+    try {
+      getImaginationEngine().imagine({
+        goal: `Mentally rehearse answer path for: ${req.prompt.slice(0, 180)}`,
+        action: req.prompt,
+        mode: "future-prediction",
+        branchCount: 3,
+        context: { conversationId: cid, runId },
+      });
+    } catch (err) {
+      surfaceError("pipeline.imagination", err);
+    }
+  }
 
   // 2. MEMORY
   stepStart = Date.now();

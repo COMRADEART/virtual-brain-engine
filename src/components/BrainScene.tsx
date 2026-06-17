@@ -48,7 +48,12 @@ function resolveEngineChoice(): { spiking: boolean; hybrid: boolean } {
   if (search.includes("useSpiking=false")) {
     return { spiking: false, hybrid: false }; // hard escape hatch — fallback engine
   }
-  const hybrid = search.includes("useHybrid=true");
+  // VITE_FEATURE_HYBRID is a BUILD flag (Vite inlines import.meta.env at build
+  // time). Default OFF: the experimental hybrid-cognition engine is unreachable
+  // from the default build (?useHybrid=true is a no-op). Build with
+  // VITE_FEATURE_HYBRID=true to re-enable it. Runtime gate on a build flag, not a
+  // bundle exclusion — the static import + SimulationLike union stay intact.
+  const hybrid = import.meta.env.VITE_FEATURE_HYBRID === "true" && search.includes("useHybrid=true");
   const spiking = hybrid || search.includes("useSpiking=true") || detectSpikingCapability();
   return { spiking, hybrid };
 }

@@ -321,9 +321,17 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   bus.emit({ kind: "imagination-snapshot", snapshot: imagination.snapshot(), at: new Date().toISOString() });
   const evolution = createCognitiveEvolutionEngine(bus);
   const unevolution = bus.onAny((event) => evolution.observeBrainEvent(event));
-  const stopEvolutionLoop = evolution.startEvolutionLoop();
-  evolution.evaluate();
-  evolution.benchmarkStrategies({ goal: "local-first predictive cognitive architecture" });
+  // The background evolution loop + an eager boot evaluate/benchmark are gated
+  // behind CONFIG.enableEvolutionLoop (default OFF). The engine + its event
+  // subscription + the snapshot stay unconditional so the /api/evolution/*
+  // on-demand routes, the kernel status probe, and shutdown (unevolution) keep
+  // working; only stopEvolutionLoop needs the ?. guard in shutdown below.
+  let stopEvolutionLoop: (() => void) | undefined;
+  if (CONFIG.enableEvolutionLoop) {
+    stopEvolutionLoop = evolution.startEvolutionLoop();
+    evolution.evaluate();
+    evolution.benchmarkStrategies({ goal: "local-first predictive cognitive architecture" });
+  }
   bus.emit({ kind: "evolution-snapshot", snapshot: evolution.snapshot(), at: new Date().toISOString() });
   const organism = createPersistentOrganism(bus);
   const unorganism = bus.onAny((event) => organism.observeBrainEvent(event));
@@ -558,7 +566,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       unselfHealth();
       stopSwarmHeartbeat();
       stopDreaming();
-      stopEvolutionLoop();
+      stopEvolutionLoop?.();
       stopOrganismAutonomy();
       goalManager.stop();
       stopStageCycle();

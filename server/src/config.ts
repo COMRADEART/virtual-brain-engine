@@ -60,6 +60,25 @@ export interface ServerConfig {
   // Enable the P2P Civilization subsystem. Binds port 8788; start/stop is
   // tracked in the shutdown handler.
   civilizationEnabled: boolean;
+  // --- Experimental hot-path / boot-loop gates (default OFF) ----------------
+  // Background evolution loop at boot (createCognitiveEvolutionEngine +
+  // startEvolutionLoop + an eager evaluate/benchmarkStrategies pass). The 7
+  // /api/evolution/* routes + organism.ts on-demand calls stay live either way
+  // (the engine is always created); this gates only the always-running loop +
+  // the boot evaluation. OFF by default — it spends real compute evolving the
+  // ranker on a schedule; opt in with ENABLE_EVOLUTION_LOOP=true. Per CLAUDE.md,
+  // experimental subsystems stay behind routers, not always-on in the hot path.
+  enableEvolutionLoop: boolean;
+  // Per-request swarm rehearsal inside the /api/ask pipeline (the
+  // routeCognitiveWorkflow call at the top of runPipeline). OFF by default — an
+  // experimental organism subsystem that belongs behind its router, not on
+  // every pipeline run. Wrapped in try/catch so a throw can never kill /api/ask.
+  // Opt in with ENABLE_PER_REQUEST_SWARM=true.
+  enablePerRequestSwarm: boolean;
+  // Per-request imagination rehearsal inside /api/ask (the imagine() call at the
+  // top of runPipeline). Same posture as enablePerRequestSwarm: OFF by default,
+  // try/catch-guarded, opt in with ENABLE_PER_REQUEST_IMAGINATION=true.
+  enablePerRequestImagination: boolean;
   // --- Hybrid local+internet ("FRIDAY goes online") -------------------------
   // Which web-search backend to use. "auto" picks: local SearXNG (if SEARXNG_URL
   // set) → a keyed API (Brave/Tavily/Exa, if a key is in the env) → the no-key
@@ -428,6 +447,9 @@ export const CONFIG: ServerConfig = {
   nvidiaChatModel: str("NVIDIA_CHAT_MODEL", "meta/llama-3.3-70b-instruct"),
   geminiChatModel: str("GEMINI_CHAT_MODEL", "gemini-2.0-flash"),
   civilizationEnabled: bool("CIVILIZATION_ENABLED", false),
+  enableEvolutionLoop: bool("ENABLE_EVOLUTION_LOOP", false),
+  enablePerRequestSwarm: bool("ENABLE_PER_REQUEST_SWARM", false),
+  enablePerRequestImagination: bool("ENABLE_PER_REQUEST_IMAGINATION", false),
   webSearchProvider: str("WEB_SEARCH_PROVIDER", "auto").toLowerCase(),
   webSearchMode: oneOf("WEB_SEARCH_MODE", ["smart", "always", "ondemand", "off"] as const, "smart"),
   searxngUrl: str("SEARXNG_URL", "").replace(/\/$/, ""),
