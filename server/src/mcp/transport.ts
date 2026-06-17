@@ -14,7 +14,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { CONFIG } from "../config.js";
-import { isLocalUrl } from "../util/network.js";
+import { assertEgressAllowed } from "../util/network.js";
 import type { McpServerConfig } from "../../../shared/mcp.js";
 
 export class McpError extends Error {
@@ -153,12 +153,17 @@ function createHttpTransport(config: McpServerConfig, fetchImpl: FetchImpl): Mcp
   let sessionId: string | null = null;
   const url = config.url ?? "";
 
-  function assertEgressAllowed(): void {
+  // Asserts the endpoint has a URL AND is egress-allowed. Renamed from
+  // assertEgressAllowed to avoid shadowing the shared helper of the same name
+  // in util/network.ts — the LOCAL_ONLY decision is delegated there so the gate
+  // lives in one place. This wrapper adds the no-url check the helper doesn't.
+  function assertEndpointReady(): void {
     if (!url) throw new McpError(`MCP server "${config.id}" has no url for ${config.transport} transport`);
     // SAME gate as every other outbound path: under LOCAL_ONLY only loopback/
     // RFC1918 MCP endpoints are reachable. MCP is NOT a curated remote provider,
     // so there is no allowlist bypass — remote MCP needs LOCAL_ONLY=false.
-    if (CONFIG.localOnly && !isLocalUrl(url)) {
+    const egress = assertEgressAllowed(url, CONFIG.localOnly);
+    if (!egress.ok) {
       throw new McpError(
         `MCP server "${config.id}" (${url}) is blocked: LOCAL_ONLY=true allows only local endpoints. Set LOCAL_ONLY=false for remote MCP.`,
       );
@@ -185,7 +190,7 @@ function createHttpTransport(config: McpServerConfig, fetchImpl: FetchImpl): Mcp
   }
 
   async function post(body: unknown, expectReply: boolean): Promise<JsonRpcResponse | null> {
-    assertEgressAllowed();
+    assertEndpointReady();
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
@@ -208,7 +213,7 @@ function createHttpTransport(config: McpServerConfig, fetchImpl: FetchImpl): Mcp
 
   return {
     async start(): Promise<void> {
-      assertEgressAllowed();
+      assertEndpointReady();
     },
     async request(method: string, params?: unknown): Promise<unknown> {
       const id = nextId++;
