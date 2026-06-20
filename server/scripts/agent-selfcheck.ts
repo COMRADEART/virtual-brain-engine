@@ -32,12 +32,21 @@ const tmp = mkdtempSync(join(tmpdir(), "brain-agentcheck-"));
 process.env.BRAIN_DATA_DIR = tmp;
 process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 process.env.LOCAL_ONLY = "true"; // egress stays gated regardless of what the loop picks
+process.env.PERCEPTION_WORKER_URL = "http://127.0.0.1:1"; // unreachable → vision worker-down path
 
 const { openDb } = await import("../src/db/sqlite.js");
+const { CONFIG } = await import("../src/config.js");
 const { triage } = await import("../src/reasoning/triage.js");
-const { startAgentRun, runAgentLoop, resumeAgentRun, getAgentRun, __setAgentConnector } = await import(
-  "../src/reasoning/agentLoop.js"
-);
+const {
+  startAgentRun,
+  runAgentLoop,
+  resumeAgentRun,
+  getAgentRun,
+  __setAgentConnector,
+  captionReferenceImages,
+  describeResultImages,
+  extractResultImages,
+} = await import("../src/reasoning/agentLoop.js");
 const { listActionLog } = await import("../src/db/repositories/actions.js");
 type Connector = import("../src/connectors/Connector.js").Connector;
 type AgentEvent = import("../../shared/agent.js").AgentEvent;
@@ -333,6 +342,46 @@ check("triage: 'research X' → loop", triage("research quantum computing for me
   check("retry: a transient connector failure is retried, not fatal", metricsStatus(c.frames) === "done");
   check("retry: the recovered answer is produced", (finalText(c.frames) ?? "").includes("Recovered"));
   check("retry: run cleared after completion", getAgentRun(run.runId) === undefined);
+}
+
+// ── Creative capstone (E1/E2/E3): image input, visual feedback, round budget ──
+// Hermetic: the perception worker is unreachable (set above), so every vision
+// call takes its worker-down path — proving the feature degrades honestly, never
+// throws, and never silently drops an image.
+{
+  const env = {
+    content: [
+      { type: "text", text: "rendered the scene" },
+      { type: "image", data: "QUJD", mimeType: "image/png" },
+    ],
+  };
+  const imgs = extractResultImages(env);
+  check("creative: extractResultImages pulls the image block", imgs.length === 1 && imgs[0].base64 === "QUJD");
+  check(
+    "creative: extractResultImages ignores text-only / null results",
+    extractResultImages({ content: [{ type: "text", text: "x" }] }).length === 0 && extractResultImages(null).length === 0,
+  );
+
+  CONFIG.creativeAgent = false;
+  check("creative: visual feedback is a no-op when CREATIVE_AGENT off", (await describeResultImages(env)) === "");
+
+  CONFIG.creativeAgent = true;
+  const note = await describeResultImages(env);
+  check("creative: visual feedback notes a captured image (worker down)", /captured an image/.test(note), note);
+  check("creative: the intermediate artifact was pinned to disk", /artifacts[\\/]/.test(note), note);
+
+  const refCtx = await captionReferenceImages([{ base64: "QUJD" }]);
+  check(
+    "creative: a reference image becomes captioned task context (worker-down note)",
+    /Reference image 1:/.test(refCtx) && /unavailable|could not/.test(refCtx),
+    refCtx,
+  );
+
+  const r1 = startAgentRun({ prompt: "model a character", mode: "safe-only", scope: [], maxRounds: 25 });
+  check("creative: a per-run maxRounds override is respected", r1.maxRounds === 25);
+  const r2 = startAgentRun({ prompt: "model a character", mode: "safe-only", scope: [] });
+  check("creative: the creative default round ceiling is applied", r2.maxRounds === CONFIG.agentCreativeMaxRounds);
+  CONFIG.creativeAgent = false;
 }
 
 __setAgentConnector(null);

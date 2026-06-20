@@ -37,6 +37,10 @@ import { formatSnippetForPrompt } from "./untrusted.js";
 import { runPipeline } from "./pipeline.js";
 import { broadcast } from "../ws/brainBus.js";
 import { surfaceError } from "../util/diagnostics.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { caption } from "../perception/workerClient.js";
+import { currentEnergyBudget } from "../core/energyBudget.js";
 import type { ActionRiskTier, ActionSpec } from "../../../shared/actions.js";
 import {
   assertVerified,
@@ -109,6 +113,12 @@ interface AgentRun {
   codingTrail: CodingTrailEntry[];
   /** "Known procedures" hint block computed once at run start ("" = none). */
   proceduresHint: string;
+  /** Reference images for a creative objective; captioned into imageContext. */
+  referenceImages?: { base64: string; mime?: string }[];
+  /** Captioned reference-image descriptions, injected each round ("" = none). */
+  imageContext: string;
+  /** Per-run round ceiling (resolved at start: request override / creative / default). */
+  maxRounds: number;
   pending?: { action: string; args: Record<string, unknown>; risk: ActionRiskTier; rationale: string };
 }
 
@@ -229,6 +239,7 @@ function buildSystemPrompt(): string {
     "- If you are genuinely blocked (a capability is missing or permission was denied), say so plainly in \"final\" and stop.",
     "- For factual/knowledge questions, prefer deep-reason so the answer is grounded in memory.",
     codingProtocolBlock(),
+    creativeProtocolBlock(),
   ]
     .filter((l) => l.length > 0)
     .join("\n");
@@ -250,6 +261,105 @@ function codingProtocolBlock(): string {
     `5. Aim to converge within ~${CONFIG.codingMaxVerifyRounds} verify→fix cycles. Only declare "final" once a build/test has exited 0 AFTER your last edit.`,
     "6. NEVER write a final answer claiming the code works unless a verification actually passed after your last edit. If you cannot make it pass, say so honestly in \"final\" and include the last failing output.",
   ].join("\n");
+}
+
+// ── Creative-task protocol (E3) ──────────────────────────────────────────────
+// The visual/creative analogue of codingProtocolBlock: turns the ReAct rounds
+// into a see → act → inspect → refine loop against a real tool (e.g. Blender via
+// MCP). Injected only when CREATIVE_AGENT is on (off → no prompt change).
+function creativeProtocolBlock(): string {
+  if (!CONFIG.creativeAgent) return "";
+  return [
+    "",
+    "CREATIVE PROTOCOL — when the task is to make or edit something visual (a 3D model, scene, image, design):",
+    "1. Work like a professional: break the objective into passes — block out the major forms → refine shapes/proportions → materials & detail → lighting & camera → final export — and spend a few steps per pass.",
+    "2. If reference image(s) were provided, their descriptions are in the context above. Match your work to them and keep re-checking against them.",
+    "3. After each meaningful change, CAPTURE your work (e.g. a viewport-screenshot tool) and READ the description that comes back — that is how you SEE what you actually made.",
+    "4. Compare what you see to the objective. If it's off, ADJUST with another tool call and capture again. Iterate until it genuinely matches — do not stop at the first attempt.",
+    "5. Only declare \"final\" once the result matches the objective; save/export the artifact and report where it is.",
+    "6. NEVER claim you produced something you have not actually viewed. Termination is not success — a verified result is.",
+  ].join("\n");
+}
+
+// ── Reference images (E1) → text the model can reason over ───────────────────
+// The connector has no native multimodal channel, so we caption each provided
+// image via the perception worker and inject the descriptions as task context.
+// Failure-isolated: a down worker yields an honest "couldn't describe" note
+// rather than dropping the image silently or throwing.
+export async function captionReferenceImages(images: { base64: string; mime?: string }[]): Promise<string> {
+  const capped = images.slice(0, 3);
+  const lines: string[] = [];
+  for (let i = 0; i < capped.length; i++) {
+    try {
+      const r = await caption({ imageBase64: capped[i].base64 });
+      lines.push(
+        r.ok
+          ? `- Reference image ${i + 1}: ${r.data.caption}`
+          : `- Reference image ${i + 1}: (provided, but the vision worker is unavailable — rely on the request text to describe it)`,
+      );
+    } catch (err) {
+      surfaceError("agentLoop.captionRef", err);
+      lines.push(`- Reference image ${i + 1}: (provided, but could not be described)`);
+    }
+  }
+  if (lines.length === 0) return "";
+  return ["Reference image(s) the user provided — match your work to these:", ...lines].join("\n");
+}
+
+// ── Visual feedback (E2) — let the loop SEE a tool's image result ────────────
+// MCP image results ride in result.data as content blocks {type:"image", data:
+// <base64>, mimeType}; the client flattens text but keeps the raw envelope here.
+interface ResultImage {
+  base64: string;
+  mime: string;
+}
+export function extractResultImages(data: unknown): ResultImage[] {
+  const out: ResultImage[] = [];
+  const content = (data as { content?: unknown } | null)?.content;
+  if (!Array.isArray(content)) return out;
+  for (const block of content) {
+    if (block && typeof block === "object") {
+      const b = block as { type?: unknown; data?: unknown; mimeType?: unknown };
+      if (b.type === "image" && typeof b.data === "string" && b.data.length > 0) {
+        out.push({ base64: b.data, mime: typeof b.mimeType === "string" ? b.mimeType : "image/png" });
+      }
+    }
+  }
+  return out;
+}
+
+// Pin an intermediate artifact (a render / screenshot) so it survives the ~600-char
+// transcript truncation and can be referenced across rounds. Returns its path.
+function saveArtifact(base64: string, mime: string): string | null {
+  try {
+    const ext = /jpe?g/.test(mime) ? "jpg" : mime.includes("webp") ? "webp" : "png";
+    const dir = join(CONFIG.dataDir, "artifacts");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `agent-${ulid()}.${ext}`);
+    writeFileSync(path, Buffer.from(base64, "base64"));
+    return path;
+  } catch (err) {
+    surfaceError("agentLoop.saveArtifact", err);
+    return null;
+  }
+}
+
+// A transcript note describing any image a tool produced ("" when off / no image).
+// This is the keystone of "do it like a pro": the model sees → refines. Captions
+// the first image via the worker; worker-down still pins the artifact (honest note).
+export async function describeResultImages(data: unknown): Promise<string> {
+  if (!CONFIG.creativeAgent) return "";
+  const images = extractResultImages(data);
+  if (images.length === 0) return "";
+  const first = images[0];
+  const path = saveArtifact(first.base64, first.mime);
+  try {
+    const r = await caption({ imageBase64: first.base64 });
+    if (r.ok) return ` 👁 You SEE: ${r.data.caption}${path ? ` (artifact: ${path})` : ""}`;
+  } catch (err) {
+    surfaceError("agentLoop.describeImages", err);
+  }
+  return ` 👁 (captured an image${path ? ` → ${path}` : ""}, but the vision worker is down so I cannot describe it)`;
 }
 
 function memoryContext(prompt: string): string {
@@ -280,6 +390,8 @@ function buildUserPrompt(run: AgentRun): string {
   }
   const ctx = memoryContext(run.prompt);
   return [
+    run.imageContext || null,
+    run.imageContext ? "" : null,
     ctx,
     ctx ? "" : null,
     run.proceduresHint || null,
@@ -443,11 +555,20 @@ export interface StartAgentInput {
   conversationId?: string;
   mode: AgentConfirmMode;
   scope: ActionRiskTier[];
+  /** Reference images for a creative objective (captioned into task context). */
+  referenceImages?: { base64: string; mime?: string }[];
+  /** Per-run round-ceiling override (clamped 1..50). */
+  maxRounds?: number;
 }
 
 export function startAgentRun(input: StartAgentInput): AgentRun {
   const now = Date.now();
   sweepRuns(now);
+  // Resolve the round ceiling: explicit request override → creative default →
+  // normal default; clamped, and paced down when the energy budget says rest (H1).
+  const baseMax = input.maxRounds ?? (CONFIG.creativeAgent ? CONFIG.agentCreativeMaxRounds : CONFIG.agentMaxRounds);
+  const energyOk = currentEnergyBudget().mayRunOptional;
+  const maxRounds = Math.min(50, Math.max(1, Math.round(baseMax * (energyOk ? 1 : 0.5))));
   const run: AgentRun = {
     runId: `agent-${ulid()}`,
     conversationId: input.conversationId && input.conversationId.length > 0 ? input.conversationId : ulid(),
@@ -476,6 +597,9 @@ export function startAgentRun(input: StartAgentInput): AgentRun {
         return "";
       }
     })(),
+    referenceImages: input.referenceImages,
+    imageContext: "",
+    maxRounds,
   };
   RUNS.set(run.runId, run);
   return run;
@@ -499,9 +623,13 @@ export async function runAgentLoop(run: AgentRun, emit: AgentEmit): Promise<void
   }
 
   emit(agentEvent(run, "agent-start", { text: run.prompt, round: run.round }));
+  // E1: caption any reference images into task context (once — survives a resume).
+  if (run.referenceImages && run.referenceImages.length > 0 && !run.imageContext) {
+    run.imageContext = await captionReferenceImages(run.referenceImages);
+  }
   const system = buildSystemPrompt();
 
-  while (run.round < CONFIG.agentMaxRounds) {
+  while (run.round < run.maxRounds) {
     run.round += 1;
     emit(agentEvent(run, "round", { round: run.round }));
     emitPipe(run, emit, "reasoning", "start", ["reasoning-cortex"], { detail: `round ${run.round}` });
@@ -722,11 +850,14 @@ async function executeAndReport(
     verify,
     verifyPassed: verify && ok && verifyResultPassed(resultData),
   });
+  // E2 — visual feedback: if the tool returned an image (e.g. a Blender viewport
+  // screenshot), caption it so the NEXT round can SEE the work. "" when off/none.
+  const visualNote = ok ? await describeResultImages(resultData) : "";
   const authorizedVia = risk === "safe" ? "safe" : execInput.confirmToken ? "confirm-token" : execInput.sessionScope ? "session-scope" : "none";
   const tEvt: AgentToolEvent = { actionId: action, args, risk, ok, summary, error, authorizedVia, osDirective };
   emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
   emitPipe(run, emit, "project", ok ? "complete" : "error", [region], { detail: ok ? summary : error ?? "failed" });
-  pushResult(run, action, args, ok, ok ? `${summary}${dataPreview ? ` | ${dataPreview}` : ""}` : error ?? "failed");
+  pushResult(run, action, args, ok, ok ? `${summary}${dataPreview ? ` | ${dataPreview}` : ""}${visualNote}` : error ?? "failed");
   return "continued";
 }
 

@@ -177,7 +177,7 @@ phase2Router.post("/phase2/semantic/search", async (req, res) => {
   const { query, limit = 10, minScore = 0, projectName } = parsed.data;
   const embedding = await tryEmbed(query);
   const raw: VectorSearchHit[] = embedding
-    ? vectorSearch(embedding, limit, projectName ? { projectName } : undefined)
+    ? await vectorSearch(embedding, limit, projectName ? { projectName } : undefined)
     : keywordSearch(query, limit);
   const hits = raw.filter((h) => h.score >= minScore).map(hitToSemantic);
   const out: SemanticSearchOutput = {
@@ -225,7 +225,7 @@ phase2Router.post("/phase2/context", async (req, res) => {
   let related: ContextSnapshot["related_memories"] = [];
   if (prompt) {
     const embedding = await tryEmbed(prompt);
-    const raw = embedding ? vectorSearch(embedding, 5) : keywordSearch(prompt, 5);
+    const raw = embedding ? await vectorSearch(embedding, 5) : keywordSearch(prompt, 5);
     related = raw.map((h) => ({ id: h.memory.id, score: h.score, reason: "semantic match" }));
   }
   const snapshot: ContextSnapshot = {

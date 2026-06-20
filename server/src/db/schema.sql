@@ -878,6 +878,31 @@ CREATE TABLE IF NOT EXISTS hypotheses (
 );
 CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status, updated_at DESC);
 
+-- Observability spine (C1) — the brain's own vitals time-series + a durable
+-- error taxonomy. brain_vitals is a narrow (metric, value) EAV sampled on the
+-- brainCore tick; diagnostics_log persists what surfaceError used to keep only
+-- in an in-memory counter (lost on restart). Both retention-pruned. See
+-- server/src/observability/. (Existing DBs get these via migration 0014.)
+CREATE TABLE IF NOT EXISTS brain_vitals (
+  id          TEXT PRIMARY KEY,
+  metric      TEXT NOT NULL,
+  value       REAL NOT NULL,
+  captured_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brain_vitals_metric ON brain_vitals(metric, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_brain_vitals_time   ON brain_vitals(captured_at DESC);
+
+CREATE TABLE IF NOT EXISTS diagnostics_log (
+  id          TEXT PRIMARY KEY,
+  source      TEXT NOT NULL,
+  level       TEXT NOT NULL,
+  message     TEXT NOT NULL,
+  count       INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_log_time   ON diagnostics_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_log_source ON diagnostics_log(source, created_at DESC);
+
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INTEGER PRIMARY KEY,

@@ -12,6 +12,7 @@ const __dirname = dirname(__filename);
 
 let dbSingleton: SqliteDatabase | null = null;
 let vectorOk = false;
+let ftsOk = false;
 
 function loadVectorExtension(db: SqliteDatabase): boolean {
   try {
@@ -26,6 +27,53 @@ function loadVectorExtension(db: SqliteDatabase): boolean {
   } catch (err) {
     console.warn(
       "[db] sqlite-vec extension unavailable -- vector search disabled until installed:",
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+}
+
+// Optional FTS5 lexical index over memory_points.content. Mirrors the
+// loadVectorExtension posture: best-effort + graceful — if FTS5 isn't compiled
+// into this better-sqlite3 build (or MEMORY_FTS=false), keywordSearch() falls
+// back to the LIKE substring scan and the brain keeps booting.
+//
+// Deliberately a STANDALONE fts5 table keyed by the stable TEXT memory id (NOT
+// an external-content table keyed by rowid): an in-place VACUUM can renumber the
+// non-aliased rowid of memory_points, which would silently desync a rowid-linked
+// FTS index. Keying on `id` is VACUUM-proof.
+//
+// ponytail: the delete / update-of-content triggers run an O(n) `WHERE id = ?`
+// scan of the FTS table (id is UNINDEXED). Both are rare — content is effectively
+// immutable post-ingest, and importance/metadata updates use `UPDATE ... SET
+// importance`, which does NOT fire `AFTER UPDATE OF content`. So the hot
+// insert+query path stays index-fast. Upgrade path past ~100k memories with
+// frequent forgetting: link the fts rowid to memory_points.rowid for O(1) deletes.
+function loadFtsTable(db: SqliteDatabase): boolean {
+  if (!CONFIG.ftsEnabled) return false;
+  try {
+    const existed = tableExists(db, "memory_fts");
+    db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(id UNINDEXED, content);");
+    db.exec(`CREATE TRIGGER IF NOT EXISTS memory_fts_ai AFTER INSERT ON memory_points BEGIN
+      INSERT INTO memory_fts(id, content) VALUES (new.id, new.content);
+    END;`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_points BEGIN
+      DELETE FROM memory_fts WHERE id = old.id;
+    END;`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS memory_fts_au AFTER UPDATE OF content ON memory_points BEGIN
+      DELETE FROM memory_fts WHERE id = old.id;
+      INSERT INTO memory_fts(id, content) VALUES (new.id, new.content);
+    END;`);
+    // One-time backfill: when the index is first created on a DB that already
+    // holds memories, seed it from the existing rows. On later boots the table
+    // exists and the triggers have kept it current, so this is skipped.
+    if (!existed) {
+      db.exec("INSERT INTO memory_fts(id, content) SELECT id, content FROM memory_points;");
+    }
+    return true;
+  } catch (err) {
+    console.warn(
+      "[db] FTS5 unavailable -- keyword search falls back to LIKE:",
       err instanceof Error ? err.message : err,
     );
     return false;
@@ -49,6 +97,10 @@ export function openDb(): SqliteDatabase {
   db.exec(schema);
 
   runMigrations(db);
+
+  // FTS lives after schema+migrations so memory_points exists for the triggers +
+  // backfill. Failure-isolated: a throw here can never stop the server booting.
+  ftsOk = loadFtsTable(db);
 
   dbSingleton = db;
   return db;
@@ -398,6 +450,41 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Observability spine (C1) — vitals time-series + durable error taxonomy for
+    // DBs that predate them. Fresh DBs get both from schema.sql's CREATE TABLE
+    // IF NOT EXISTS; this is the create-on-legacy path (same as 0013-hypotheses).
+    id: 14,
+    name: "0014-observability",
+    run: (db) => {
+      if (!tableExists(db, "brain_vitals")) {
+        db.exec(`
+          CREATE TABLE brain_vitals (
+            id          TEXT PRIMARY KEY,
+            metric      TEXT NOT NULL,
+            value       REAL NOT NULL,
+            captured_at TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_brain_vitals_metric ON brain_vitals(metric, captured_at DESC)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_brain_vitals_time   ON brain_vitals(captured_at DESC)");
+      }
+      if (!tableExists(db, "diagnostics_log")) {
+        db.exec(`
+          CREATE TABLE diagnostics_log (
+            id          TEXT PRIMARY KEY,
+            source      TEXT NOT NULL,
+            level       TEXT NOT NULL,
+            message     TEXT NOT NULL,
+            count       INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL
+          );
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_diagnostics_log_time   ON diagnostics_log(created_at DESC)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_diagnostics_log_source ON diagnostics_log(source, created_at DESC)");
+      }
+    },
+  },
 ];
 
 // Exported for the perception/memory selfchecks: they need to apply the
@@ -437,6 +524,13 @@ function runMigrations(db: SqliteDatabase): void {
 
 export function isVectorAvailable(): boolean {
   return vectorOk;
+}
+
+// True when the FTS5 keyword index is live (MEMORY_FTS on AND fts5 compiled in).
+// keywordSearch() also re-checks CONFIG.ftsEnabled at call time so the flag can
+// be flipped live without a reboot.
+export function isFtsAvailable(): boolean {
+  return ftsOk;
 }
 
 export function closeDb(): void {

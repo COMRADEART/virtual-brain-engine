@@ -22,7 +22,7 @@ import { getBeliefEngine } from "../core/beliefs.js";
 import { listProcedures } from "../memory/procedural.js";
 import { getSpine } from "../spine/cord.js";
 import { getMcpHub } from "../mcp/hub.js";
-import { runWorkspaceCycle } from "../core/workspace.js";
+import { runWorkspaceCycle, requestWorkspaceCycle } from "../core/workspace.js";
 import { runCreativeCycle, creativityStats } from "../core/creativity.js";
 import { getHypothesisEngine } from "../core/hypotheses.js";
 import { emitMonologue } from "../core/monologue.js";
@@ -36,6 +36,11 @@ import { createCognitiveSwarm } from "../core/swarm.js";
 import { initSelfConsciousness } from "../core/selfConsciousness.js";
 import { broadcast } from "../ws/brainBus.js";
 import { getMemoryCount } from "../db/repositories/memory.js";
+import { getNeuromodulators } from "../core/neuromodulators.js";
+import { getDiagnosticCounts } from "../util/diagnostics.js";
+import { recordVitals, pruneOldTelemetry } from "../observability/vitals.js";
+import { snapshot as metricsSnapshot } from "../observability/metrics.js";
+import { isFeatureActive } from "../core/maturation.js";
 import { AgentRuntime } from "./runtime.js";
 import { ObserverAgent } from "./observerAgent.js";
 import { SummaryAgent } from "./summaryAgent.js";
@@ -327,7 +332,11 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   // on-demand routes, the kernel status probe, and shutdown (unevolution) keep
   // working; only stopEvolutionLoop needs the ?. guard in shutdown below.
   let stopEvolutionLoop: (() => void) | undefined;
-  if (CONFIG.enableEvolutionLoop) {
+  // Unified resolver: the autonomous evolution loop runs when its static flag is
+  // set OR the brain has grown into self-improvement (H2, stage ≥ 9), and isn't
+  // resting (H1). With MATURATION + ENERGY_BUDGET off this is exactly
+  // `CONFIG.enableEvolutionLoop` — no behavior change on the default brain.
+  if (isFeatureActive("evolution-loop")) {
     stopEvolutionLoop = evolution.startEvolutionLoop();
     evolution.evaluate();
     evolution.benchmarkStrategies({ goal: "local-first predictive cognitive architecture" });
@@ -371,8 +380,12 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
         );
       }
       // Creativity — bridge two distant memories into a novel idea on the same
-      // cadence (reuses this timer, no new schedule). Failure-isolated.
-      if (CONFIG.creativityEnabled) {
+      // cadence (reuses this timer, no new schedule). Failure-isolated. The
+      // gate is the unified resolver: ON when the static flag is set OR the brain
+      // has GROWN into it (H2, stage ≥ 5), AND it isn't resting an expensive
+      // cycle while energy-depleted (H1). With both MATURATION and ENERGY_BUDGET
+      // off this is exactly `CONFIG.creativityEnabled`.
+      if (isFeatureActive("creativity")) {
         void runCreativeCycle().catch((err) =>
           console.warn("[brain-core] creative cycle failed:", err),
         );
@@ -428,6 +441,22 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
     bus.emit({ kind: "self-snapshot", state: selfConsciousness.snapshot(), at: nowIso() });
   });
 
+  // H4 — event-driven workspace: a high-salience signal (an immune/safety event,
+  // a high-uncertainty cycle) can GRAB the conscious slot off the tonic timer
+  // rather than waiting up to a full interval. Bounded by the refractory + energy
+  // gate inside requestWorkspaceCycle; OFF by default (CONFIG.workspaceEventDriven),
+  // so these handlers are a strict no-op unless opted in. Failure-isolated.
+  const unWorkspaceImmune = bus.on("organism-immune-event", (e) => {
+    if (e.event.severity === "high" || e.event.severity === "critical") {
+      void requestWorkspaceCycle(`immune:${e.event.severity}`).catch(() => {});
+    }
+  });
+  const unWorkspaceUncertain = bus.on("brain-state", (e) => {
+    if (e.snapshot.priorUncertainty >= 0.6) {
+      void requestWorkspaceCycle("high-uncertainty").catch(() => {});
+    }
+  });
+
   // Spinal cord — works the descending task queue (Hermes) on a tick so queued
   // motor commands get dispatched even with no client attached. An empty queue
   // ticks to a no-op; every dispatch is failure-isolated so a tick error can
@@ -439,6 +468,57 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       .catch((err) => console.warn("[brain-core] spine tick failed:", err));
   }, SPINE_TICK_MS);
   if (typeof spineTick.unref === "function") spineTick.unref();
+
+  // Observability spine (C1) — sample the brain's own vitals into the
+  // brain_vitals time-series every minute (metrics registry snapshot + a few
+  // subsystem gauges), and prune old telemetry. Every read is failure-isolated
+  // so a sampling fault can never crash the core; gated on CONFIG.observability.
+  let vitalsTick: NodeJS.Timeout | null = null;
+  if (CONFIG.observability) {
+    const VITALS_TICK_MS = 60_000;
+    const sampleVitals = (): void => {
+      try {
+        const samples: Record<string, number> = {};
+        const snap = metricsSnapshot();
+        for (const [k, v] of Object.entries(snap.counters)) samples[`counter.${k}`] = v;
+        for (const [k, v] of Object.entries(snap.gauges)) samples[`gauge.${k}`] = v;
+        for (const [k, h] of Object.entries(snap.histograms)) {
+          samples[`${k}.p50`] = h.p50;
+          samples[`${k}.p95`] = h.p95;
+        }
+        try { samples["memory.count"] = getMemoryCount(); } catch { /* skip */ }
+        try { samples["organism.health"] = organism.getHealthScore(); } catch { /* skip */ }
+        try { samples["organism.activeGoals"] = organism.getActiveGoalTitles(99).length; } catch { /* skip */ }
+        try { samples["stage"] = currentStage(); } catch { /* skip */ }
+        try {
+          // Generic numeric flatten (one level) so the exact neuromodulator
+          // status shape doesn't need to be hard-coded here.
+          const mods = getNeuromodulators().status() as Record<string, unknown>;
+          for (const [k, v] of Object.entries(mods)) {
+            if (typeof v === "number" && Number.isFinite(v)) {
+              samples[`neuromod.${k}`] = v;
+            } else if (v && typeof v === "object") {
+              for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
+                if (typeof v2 === "number" && Number.isFinite(v2)) samples[`neuromod.${k}.${k2}`] = v2;
+              }
+            }
+          }
+        } catch { /* skip */ }
+        try {
+          samples["errors.total"] = Object.values(getDiagnosticCounts()).reduce((a, b) => a + b, 0);
+        } catch { /* skip */ }
+        recordVitals(samples);
+        pruneOldTelemetry();
+      } catch (err) {
+        console.warn("[brain-core] vitals sample failed:", err);
+      }
+    };
+    vitalsTick = setInterval(sampleVitals, VITALS_TICK_MS);
+    if (typeof vitalsTick.unref === "function") vitalsTick.unref();
+    // One sample shortly after boot so /api/brain/vitals isn't empty on a fresh start.
+    const warmVitals = setTimeout(sampleVitals, 5_000);
+    if (typeof warmVitals.unref === "function") warmVitals.unref();
+  }
 
   const runtime = new AgentRuntime({ bus, safety: createSafetyGate() });
   runtime.register(new ObserverAgent());
@@ -564,6 +644,8 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       unselfIdle();
       unselfDream();
       unselfHealth();
+      unWorkspaceImmune();
+      unWorkspaceUncertain();
       stopSwarmHeartbeat();
       stopDreaming();
       stopEvolutionLoop?.();
@@ -574,6 +656,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       clearInterval(brainStateTick);
       clearInterval(spineTick);
       if (workspaceTick) clearInterval(workspaceTick);
+      if (vitalsTick) clearInterval(vitalsTick);
       await runtime.stop();
     },
   };

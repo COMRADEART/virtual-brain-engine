@@ -115,6 +115,16 @@ import {
   type RetrievalPrediction,
 } from "./predictiveProcessing.js";
 import {
+  buildActiveInferenceContext,
+  decideActiveInference,
+  learnActiveInference,
+  loadActiveInferenceState,
+  saveActiveInferenceState,
+} from "./activeInference.js";
+import type { ActiveInferenceContext, ActiveInferencePolicy } from "../../../shared/activeInference.js";
+import { currentEnergyBudget } from "../core/energyBudget.js";
+import { isFeatureActive } from "../core/maturation.js";
+import {
   calibrateConfidence,
   isWeakDomain,
   loadSelfModelState,
@@ -395,6 +405,17 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       surfaceError("pipeline.adaptiveDepth", err);
     }
   }
+  // HOMEOSTATIC ENERGY (H1) — a tired brain thinks less hard: low energy nudges
+  // the depth gate UP so more queries take the cheap embed→search→stream path.
+  // Captured once for the whole run and reused below for retrieval breadth + the
+  // active-inference energy deficit. No-regression: at/above FULL_FLOOR energy
+  // depthPenalty is 0 (and the whole budget is a strict no-op when ENERGY_BUDGET
+  // is off, or on any organism read fault).
+  const energyBudget = currentEnergyBudget();
+  if (energyBudget.depthPenalty > 0) {
+    const base = depthThreshold ?? DEPTH_DIFFICULTY_THRESHOLD;
+    depthThreshold = Math.min(1, base + energyBudget.depthPenalty);
+  }
   let route: RouteDecision = routeQuery(req.prompt, { depthThreshold });
   const swarm = getCognitiveSwarm();
   // Per-request swarm/imagination rehearsal — OFF by default (experimental
@@ -447,6 +468,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // step → reward in the learning step). null whenever the controller is off.
   let controllerDecision: ControllerDecision | null = null;
   let controllerCtx: RetrievalContext | null = null;
+  // ACTIVE INFERENCE (C3) state for this run — context + policy captured in the
+  // memory step, the realised surprise folded back in the learning step. null
+  // whenever active inference is off or its context build failed.
+  let aiCtx: ActiveInferenceContext | null = null;
+  let aiPolicy: ActiveInferencePolicy | null = null;
+  // Active inference is gated once per request (maturation reads the persisted
+  // stage from SQLite; computing it once avoids a redundant read at the learn site).
+  const aiActive = isFeatureActive("active-inference");
   const webHitIds = new Set<string>(); // ids of FUSED WEB hits, for the augment reward
   const embedder = getEmbedder(connector);
   if (embedder?.embed) {
@@ -469,8 +498,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // pull the widest arm so the retrievalK slot can SLICE down to its choice
       // from a single fetch (no re-query); otherwise the historical default.
       const controllerOn = CONFIG.adaptiveController;
-      const baseK = controllerOn ? Math.max(...RETRIEVAL_K_ARMS) : DEFAULT_RETRIEVAL_K;
-      let raw = vectorSearch(embedding, baseK);
+      let baseK = controllerOn ? Math.max(...RETRIEVAL_K_ARMS) : DEFAULT_RETRIEVAL_K;
+      // Energy (H1): a tired brain retrieves a slightly narrower pool. Applied
+      // only on the non-controller path (the controller manages its own k by
+      // slicing down from the widest arm); strict no-op at full energy.
+      if (!controllerOn && energyBudget.retrievalScale < 1) {
+        baseK = Math.max(5, Math.round(baseK * energyBudget.retrievalScale));
+      }
+      let raw = await vectorSearch(embedding, baseK);
 
       // PREDICTIVE PROCESSING — record what the brain expected of LOCAL memory
       // here (top raw vec score, before augmentation), so the learning step can
@@ -533,14 +568,49 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       const broadenForMemoryFocus = CONFIG.multiQueryRag && wantsBroaderRetrieval(dnaTraits);
       if (broadenForMemoryFocus) feedForwardNote += " · dna:broaden";
 
+      // ACTIVE INFERENCE (C3) — close the predictive loop: ACT to reduce
+      // EXPECTED free energy. From the retrieval prediction + prior uncertainty +
+      // arousal/ACh, decide whether to FORAGE for more evidence (broaden /
+      // augment) BEFORE answering, so the brain reduces predicted surprise
+      // instead of merely measuring it after the fact. Warm-start floor → zero
+      // perturbation on a cold brain; the augment vote is still gated by hybridOn
+      // below (egress-safe). The realised surprise trains the policy in the
+      // learning step.
+      let aiBroaden = false;
+      let aiAugment = false;
+      // Active inference (C3) — a loop-closer routed through maturation (H2): a
+      // matured brain (stage ≥ 8) earns it even with the static flag off, while
+      // its own warm-start floor keeps a cold brain identical to the heuristics.
+      if (aiActive) {
+        try {
+          aiPolicy = loadActiveInferenceState();
+          aiCtx = buildActiveInferenceContext({
+            prediction,
+            uncertainty: priorUncertainty,
+            norepinephrine: modulatorLevels.norepinephrine,
+            acetylcholine: (modulatorLevels as Record<string, number>).acetylcholine ?? 0.2,
+            // H1: a depleted brain forages less (holding is metabolically cheaper).
+            energyDeficit: energyBudget.energyDeficit,
+          });
+          const aiDecision = decideActiveInference(aiCtx, aiPolicy);
+          aiBroaden = aiDecision.broaden;
+          aiAugment = aiDecision.augment;
+          if (aiDecision.acted) feedForwardNote += ` · ai:${aiDecision.action}(efe ${aiDecision.efe.toFixed(2)})`;
+        } catch (err) {
+          surfaceError("pipeline.activeInference", err);
+        }
+      }
+
       // The heuristic baselines (what the pipeline would do without the
       // controller). These are ALSO the warm-start the controller falls back to.
       // Acetylcholine (uncertainty tone) votes for fresh data over memory; the
       // vote only matters when the brain is already online (hybridOn carries
-      // the LOCAL_ONLY egress gate — ACh can never bypass it).
+      // the LOCAL_ONLY egress gate — ACh can never bypass it). Active inference's
+      // augment vote rides the SAME hybridOn gate; its broaden vote rides
+      // CONFIG.multiQueryRag, exactly like the other broaden signals.
       const hybridOn = hybridEnabled();
       const heuristicAugment =
-        hybridOn && (shouldAugment(req.prompt, raw).augment || wantsFreshData(modulatorLevels));
+        hybridOn && (shouldAugment(req.prompt, raw).augment || wantsFreshData(modulatorLevels) || aiAugment);
       const heuristicMultiQuery =
         CONFIG.multiQueryRag &&
         raw.length > 0 &&
@@ -549,7 +619,8 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
           broadenForUncertainty ||
           broadenForArousal ||
           weakDomainBroaden ||
-          broadenForMemoryFocus);
+          broadenForMemoryFocus ||
+          aiBroaden);
 
       // RL CONTROLLER (opt-in). Decides augment / retrieval-k / multi-query /
       // model-profile from the bandit (warm-started at the heuristics, so a cold
@@ -1359,6 +1430,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
         // (reality diverged from expectation). Lives inside this EXISTING
         // failure-isolated predictive block — not a new pipeline call site.
         if (sr.surprise >= 0.3) getBeliefEngine().noteSurprise(req.prompt, sr.surprise);
+        // ACTIVE INFERENCE (C3) — fold the REALISED surprise back into the
+        // foraging policy so it learns which contexts warranted acting. Rides
+        // this existing predictive block (it needs the same prediction); a brain
+        // with predictiveProcessing off keeps active inference permanently in its
+        // warm-start floor — safe, no perturbation.
+        if (aiActive && aiCtx && aiPolicy) {
+          saveActiveInferenceState(learnActiveInference(aiPolicy, aiCtx, sr.surprise));
+        }
       }
       savePredictiveState(observeRetrieval(loadPredictiveState(), req.prompt, actual));
     } catch (err) {

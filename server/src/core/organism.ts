@@ -846,6 +846,23 @@ export class PersistentOrganismEngine {
     return this.latestHealth().healthScore;
   }
 
+  // Light energy read for the homeostatic budget (H1): current/capacity fraction
+  // in [0,1], recharged to now but NOT persisted (a pure read, unlike getState()
+  // which saves). Failure-isolated → full (1) so a read fault can never make the
+  // brain think LESS than it does today — energy only ever GATES, never breaks.
+  getEnergyFraction(): number {
+    try {
+      const row = openDb()
+        .prepare<[string], { value: string }>(`SELECT value FROM organism_state WHERE key = ?`)
+        .get(STATE_KEY);
+      const state = stateFromRecord(row ? safeRecord(row.value) : {}) ?? defaultState();
+      const e = energyAt(nowIso(), state.energy);
+      return e.capacity > 0 ? clamp(e.current / e.capacity, 0, 1) : 1;
+    } catch {
+      return 1;
+    }
+  }
+
   private recentGoals(limit: number): PersistentGoal[] {
     const rows = openDb()
       .prepare<

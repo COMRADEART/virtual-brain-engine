@@ -3417,6 +3417,44 @@ input[type="checkbox"] {
   transform: scale(0.97);
 }
 
+/* Always-visible Settings entry point (floating gear, top-right). Shown in
+   compact / focus / dashboard; hidden in "full" because that layout's StatusBar
+   already carries a settings gear. z 60 sits above docked sidebars (z 10) and the
+   status bar (z 30); the Settings modal opens above everything. */
+.global-settings-fab {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: var(--panel-strong);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: var(--glow-soft);
+  backdrop-filter: blur(12px);
+  transition: all var(--dur-fast) var(--ease-out-quart);
+}
+
+.global-settings-fab:hover {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.7);
+  box-shadow: var(--glow-accent);
+  transform: rotate(35deg);
+}
+
+.global-settings-fab:active {
+  transform: rotate(35deg) scale(0.94);
+}
+
+.app-shell[data-layout="full"] .global-settings-fab {
+  display: none;
+}
+
 .status-bar .stat.preset {
   margin-left: auto;
   text-transform: uppercase;

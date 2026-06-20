@@ -133,6 +133,16 @@ export interface ServerConfig {
   // so all observations accrue to it; a per-ARM gate would deadlock the non-
   // heuristic arms, which get zero pulls until the slot is warm.)
   banditWarmAt: number;
+  // --- Active inference (C3) -------------------------------------------------
+  // Close the predictive loop: ACT to minimise EXPECTED free energy. From the
+  // retrieval prediction + prior uncertainty + arousal, decide whether to forage
+  // for more evidence (broaden recall / augment the web) BEFORE answering, and
+  // LEARN from the realised surprise which contexts warranted it. OFF by default
+  // — opt in with ACTIVE_INFERENCE=true. A no-regression warm-start floor means
+  // a cold brain behaves identically to the heuristics; the augment vote still
+  // rides the same LOCAL_ONLY/hybrid egress gate (it can never reach the web on
+  // its own). Pairs with PREDICTIVE_PROCESSING, whose prediction is its core input.
+  activeInference: boolean;
   // --- Agentic loop ("main thinking") ---------------------------------------
   // The Odysseus-style multi-round ReAct loop behind POST /api/agent. It runs
   // ALONGSIDE the 7-step pipeline (a triage router picks which a request hits)
@@ -149,6 +159,22 @@ export interface ServerConfig {
   // plain question straight to the 7-step pipeline and only multi-step / tool /
   // "do X" requests into the loop. Set AGENT_TRIAGE=false to always use the loop.
   agentTriage: boolean;
+  // --- Creative agent ("give it an objective, it does it through real tools") --
+  // Turns the ReAct loop into a see→act→inspect→refine loop for visual/creative
+  // objectives (e.g. "3D-model a character from this image" driving Blender via
+  // MCP). When on: a CREATIVE PROTOCOL block is injected, and image results from
+  // tools (a viewport screenshot) are captioned via the perception worker + pinned
+  // as artifacts so the model can SEE its own work between rounds. OFF by default
+  // — additive, but it changes the loop's prompt + spends a worker caption per
+  // image result; opt in with CREATIVE_AGENT=true. Reference-image INPUT works
+  // regardless (providing an image is its own opt-in). Needs the perception worker
+  // for vision and an enabled MCP server (e.g. blender) for the tool.
+  creativeAgent: boolean;
+  // Round ceiling for a creative run when the request doesn't specify maxRounds.
+  // Creative tasks (block out → refine → material → light → render) need many more
+  // steps than the default agentMaxRounds. Clamped 1..50; energy-budget (if on)
+  // can pace it down. A normal (non-creative) run still defaults to agentMaxRounds.
+  agentCreativeMaxRounds: number;
   // --- "Do any task on the laptop" -------------------------------------------
   // When true, the registry exposes the confirm-tier `run-command` / `launch-app`
   // actions — the universal "do anything on this PC" primitives (an arbitrary
@@ -171,6 +197,18 @@ export interface ServerConfig {
   // Soft hint surfaced in the coding prompt for how many verify→fix cycles to aim
   // for before giving up. The HARD termination bound stays agentMaxRounds.
   codingMaxVerifyRounds: number;
+  // --- Dynamic plain-code skills (security) ----------------------------------
+  // Whether the executor will RUN a dynamic skill's plain JavaScript handlerCode
+  // (the repo→skills / external-skill path). DEFAULT OFF. A handler runs via
+  // `new Function`, whose body executes in Node's GLOBAL scope — so it can reach
+  // `process`/`globalThis` no matter what the param list is, and the registration
+  // validator's keyword scan is bypassable by obfuscation (string-concat / hex).
+  // The honest fix is not to sandbox-validate untrusted JS (a losing game) but to
+  // not execute it unless the operator explicitly opts in. MCP-backed dynamic
+  // actions (the sanctioned extension path) never touch this gate, so they keep
+  // working when it's off. Opt in with ALLOW_DYNAMIC_CODE=true (your machine,
+  // your generated skills). Static + MCP actions are unaffected either way.
+  allowDynamicCode: boolean;
   // --- MCP client (external tool servers on the spine) -----------------------
   // OFF by default (opt-in). When on, the MCP hub connects the configured servers
   // at boot and registers their tools as confirm-tier dynamic actions reachable
@@ -250,6 +288,19 @@ export interface ServerConfig {
   // needs bitsandbytes) shrinks the per-layer footprint + speeds streaming;
   // "8bit"; "off" for none. Used as the default for /airllm/generate.
   airllmCompression: string;
+  // turbovec — optional alternative vector index on the Python worker
+  // (TurboQuant, ~16x compression, SIMD). OFF by default; sqlite-vec stays the
+  // in-process index and the hot path falls back to it on any turbovec miss.
+  // Forward-looking experiment — value arrives past ~100k vectors.
+  turbovecEnabled: boolean;
+  // Lexical full-text search (FTS5) over memory_points.content. ON by default —
+  // additive + graceful: keywordSearch() queries the FTS index when this is on
+  // AND FTS5 is available, and falls back to the LIKE substring scan otherwise.
+  // The old keyword path was a leading-wildcard `LIKE %q%` full table scan on
+  // every lexical retrieval; FTS turns it into a tokenised index lookup. Flip
+  // with MEMORY_FTS=false to force the LIKE path (e.g. to compare, or if FTS5
+  // misbehaves on a given build).
+  ftsEnabled: boolean;
   // When true (the default), both trainers (the LoRA own-model pass and the
   // from-scratch GPT) filter the exported memory corpus to mostly-English
   // documents before training. The base models are bilingual (Qwen) and a
@@ -290,6 +341,12 @@ export interface ServerConfig {
   // ON by default; skipped quietly when no connector is configured.
   workspaceEnabled: boolean;
   workspaceIntervalMin: number;
+  // Event-driven global workspace (H4): high-salience events (immune/safety
+  // signals, a high-uncertainty cycle) can grab the single conscious slot off
+  // the tonic timer, bounded by a refractory period + the energy gate. OFF by
+  // default — opt in with WORKSPACE_EVENT_DRIVEN=true. The tonic interval timer
+  // is unchanged either way; this only ADDS phasic activation. See core/workspace.ts.
+  workspaceEventDriven: boolean;
   // Creativity engine: on the workspace cadence, bridge two semantically distant
   // memories into one novel idea (core/creativity.ts), stored as a retrievable
   // memory + a creative_ideas row + a cognition event; the Creativity cortex bids
@@ -300,6 +357,26 @@ export interface ServerConfig {
   // promote the supported ones into beliefs (core/hypotheses.ts). OFF by default
   // — it's a reflective offline activity; opt in with HYPOTHESES=true.
   hypotheses: boolean;
+  // --- Homeostatic energy budget (H1) ----------------------------------------
+  // Make the organism's tracked energy ACTUALLY gate cognition: a tired brain
+  // takes the cheap path more often, retrieves a slightly narrower pool, forages
+  // less (active inference), and rests its expensive optional cycles. OFF by
+  // default — opt in with ENERGY_BUDGET=true. No-regression floor: at/above half
+  // energy the budget is identical to today's behavior. See core/energyBudget.ts.
+  energyBudget: boolean;
+  // --- Developmental activation (H2) -----------------------------------------
+  // The "infant → adult" arc: let the richest dark features (theory-of-mind,
+  // narrative grounding, imagination, creativity, adaptive controller, evolution
+  // loop, plus the loop-closers active-inference + the event-driven workspace)
+  // turn ON as the brain GROWS into them (developmental stage) instead of staying
+  // static-OFF forever. ON by default — this is what makes the brain actually
+  // enact, not just measure, its cognition. No-regression: a young brain stays
+  // below every feature's required stage so it behaves identically to before, and
+  // each loop-closer keeps its own cold=heuristic warm-start floor on top. Set
+  // MATURATION=false to pin the brain to its static per-feature flags. Maturation
+  // can only ENABLE COGNITION — never a security / egress flag (localOnly/
+  // allowShell are not in its map). See core/maturation.ts.
+  maturation: boolean;
   // --- Fast mode ("be like Fable: fast + efficient") --------------------------
   // Biases the pipeline's adaptive compute toward the cheap path: more queries
   // answer directly from retrieved memory (embed → search → stream) instead of
@@ -387,6 +464,13 @@ export interface ServerConfig {
   backupIntervalHours: number;
   // How many snapshots to retain in <dataDir>/backups (oldest pruned first).
   backupKeep: number;
+  // --- Observability spine (C1) ----------------------------------------------
+  // Self-telemetry: an in-process metrics registry + a persisted brain_vitals
+  // time-series + a durable diagnostics_log error taxonomy (the in-memory
+  // surfaceError counter used to vanish on restart). ON by default — additive,
+  // failure-isolated, and the prerequisite for the brain seeing its own vitals
+  // over time. Set OBSERVABILITY=false to disable the tick + persistence.
+  observability: boolean;
 }
 
 function num(envKey: string, fallback: number): number {
@@ -461,13 +545,17 @@ export const CONFIG: ServerConfig = {
   citationFaithfulness: bool("CITATION_FAITHFULNESS", false),
   adaptiveController: bool("ADAPTIVE_CONTROLLER", false),
   banditWarmAt: Math.max(1, num("BANDIT_WARM_AT", 30)),
+  activeInference: bool("ACTIVE_INFERENCE", false),
   agentMaxRounds: Math.min(50, Math.max(1, num("AGENT_MAX_ROUNDS", 12))),
   agentConfirmMode: oneOf("AGENT_CONFIRM_MODE", ["ask", "scope", "safe-only"] as const, "ask"),
   agentTriage: bool("AGENT_TRIAGE", true),
+  creativeAgent: bool("CREATIVE_AGENT", false),
+  agentCreativeMaxRounds: Math.min(50, Math.max(1, num("AGENT_CREATIVE_MAX_ROUNDS", 36))),
   allowShell: bool("ALLOW_SHELL", true),
   shellTimeoutMs: Math.min(600_000, Math.max(1_000, num("SHELL_TIMEOUT_MS", 120_000))),
   codingVerifyRequired: bool("CODING_VERIFY_REQUIRED", true),
   codingMaxVerifyRounds: Math.min(20, Math.max(1, num("CODING_MAX_VERIFY_ROUNDS", 6))),
+  allowDynamicCode: bool("ALLOW_DYNAMIC_CODE", false),
   mcpEnabled: bool("MCP_ENABLED", false),
   mcpServersRaw: str("MCP_SERVERS", ""),
   mcpRegistryUrl: str("MCP_REGISTRY_URL", "https://registry.modelcontextprotocol.io"),
@@ -483,6 +571,8 @@ export const CONFIG: ServerConfig = {
   ownModelDistill: bool("OWN_MODEL_DISTILL", false),
   airllmTeacherModel: str("AIRLLM_TEACHER_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
   airllmCompression: str("AIRLLM_COMPRESSION", "4bit"),
+  turbovecEnabled: bool("TURBOVEC", false),
+  ftsEnabled: bool("MEMORY_FTS", true),
   autoStartScratchLlm: bool("AUTO_START_SCRATCH_LLM", true),
   trainEnglishMostly: bool("TRAIN_ENGLISH_MOSTLY", true),
   autoStartMinCorpusChars: Math.max(0, num("AUTO_START_MIN_CORPUS_CHARS", 10_000)),
@@ -497,8 +587,11 @@ export const CONFIG: ServerConfig = {
   sleepIntervalHours: Math.max(1, num("SLEEP_INTERVAL_HOURS", 24)),
   workspaceEnabled: bool("WORKSPACE", true),
   workspaceIntervalMin: Math.max(1, num("WORKSPACE_INTERVAL_MIN", 10)),
+  workspaceEventDriven: bool("WORKSPACE_EVENT_DRIVEN", false),
   creativityEnabled: bool("CREATIVITY", false),
   hypotheses: bool("HYPOTHESES", false),
+  energyBudget: bool("ENERGY_BUDGET", false),
+  maturation: bool("MATURATION", true),
   fastMode: bool("BRAIN_FAST_MODE", true),
   fastModeDepthThreshold: Math.min(1, Math.max(0, num("BRAIN_FAST_MODE_DEPTH_THRESHOLD", 0.65))),
   fastModeMaxTokens: Math.max(128, num("BRAIN_FAST_MODE_MAX_TOKENS", 768)),
@@ -518,6 +611,7 @@ export const CONFIG: ServerConfig = {
   backupEnabled: bool("BACKUP_ENABLED", true),
   backupIntervalHours: Math.max(1, num("BACKUP_INTERVAL_HOURS", 24)),
   backupKeep: Math.max(1, num("BACKUP_KEEP", 7)),
+  observability: bool("OBSERVABILITY", true),
 };
 
 export const REPO_ROOT_PATH = REPO_ROOT;

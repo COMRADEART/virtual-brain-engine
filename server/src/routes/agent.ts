@@ -11,7 +11,7 @@
 // Every tool the loop runs goes through the permissioned executor; egress stays
 // LOCAL_ONLY-gated. See server/src/reasoning/agentLoop.ts.
 
-import { Router } from "express";
+import express, { Router } from "express";
 import { z } from "zod";
 import { ulid } from "ulid";
 import { CONFIG } from "../config.js";
@@ -25,6 +25,11 @@ import type { PipelineEvent } from "../../../shared/pipeline.js";
 
 export const agentRouter = Router();
 
+// Reference images (base64) can exceed the global 1mb cap, so parse this router's
+// bodies with a larger limit. index.ts lets /api/agent bypass the global parser
+// (body-parser is idempotent, so the inner parser only takes effect on bypass).
+agentRouter.use(express.json({ limit: "25mb" }));
+
 const riskTier = z.enum(["safe", "confirm"]);
 
 const agentSchema = z.object({
@@ -33,6 +38,9 @@ const agentSchema = z.object({
   confirmMode: z.enum(["ask", "scope", "safe-only"]).optional(),
   scope: z.object({ allow: z.array(riskTier) }).optional(),
   forceLoop: z.boolean().optional(),
+  // Creative-objective extras (see CREATIVE_AGENT). An image task forces the loop.
+  referenceImages: z.array(z.object({ base64: z.string().min(1), mime: z.string().optional() })).max(4).optional(),
+  maxRounds: z.number().int().min(1).max(50).optional(),
 });
 
 const confirmSchema = z.object({
@@ -65,12 +73,14 @@ agentRouter.post("/agent", async (req, res) => {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
-  const { prompt, conversationId, scope, forceLoop } = parsed.data;
+  const { prompt, conversationId, scope, forceLoop, referenceImages, maxRounds } = parsed.data;
   const mode: AgentConfirmMode = parsed.data.confirmMode ?? CONFIG.agentConfirmMode;
   const allow: ActionRiskTier[] = scope?.allow ?? [];
 
   const emit = openSse(res);
-  const route = forceLoop || !CONFIG.agentTriage ? "loop" : triage(prompt);
+  // An image objective is never a plain question — force the loop.
+  const hasImages = !!referenceImages && referenceImages.length > 0;
+  const route = forceLoop || hasImages || !CONFIG.agentTriage ? "loop" : triage(prompt);
 
   try {
     if (route === "pipeline") {
@@ -80,7 +90,7 @@ agentRouter.post("/agent", async (req, res) => {
       // perceives inside runPipeline). A deep-reason tool call later closes the
       // cycle via the pipeline; a tool-only run at least holds the request.
       getBrainState().perceive(prompt);
-      const run = startAgentRun({ prompt, conversationId, mode, scope: allow });
+      const run = startAgentRun({ prompt, conversationId, mode, scope: allow, referenceImages, maxRounds });
       await runAgentLoop(run, emit);
     }
   } catch (err) {

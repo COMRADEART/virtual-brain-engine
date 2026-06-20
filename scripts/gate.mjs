@@ -94,6 +94,13 @@ const steps = [
   { label: "mcp selfcheck", args: ["--prefix", "server", "run", "mcp:selfcheck"] },
   { label: "mcpmarket selfcheck", args: ["--prefix", "server", "run", "mcpmarket:selfcheck"] },
   { label: "airllm selfcheck", args: ["--prefix", "server", "run", "airllm:selfcheck"] },
+  { label: "turbovec selfcheck", args: ["--prefix", "server", "run", "turbovec:selfcheck"] },
+  { label: "substrate selfcheck", args: ["--prefix", "server", "run", "substrate:selfcheck"] },
+  { label: "observability selfcheck", args: ["--prefix", "server", "run", "observability:selfcheck"] },
+  { label: "activeinference selfcheck", args: ["--prefix", "server", "run", "activeinference:selfcheck"] },
+  { label: "energybudget selfcheck", args: ["--prefix", "server", "run", "energybudget:selfcheck"] },
+  { label: "maturation selfcheck", args: ["--prefix", "server", "run", "maturation:selfcheck"] },
+  { label: "eventworkspace selfcheck", args: ["--prefix", "server", "run", "eventworkspace:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Server unit tests (tsx --test "src/**/*.test.ts" — memory + route tests).
   // Hermetic: each test points openDb() at its own temp BRAIN_DB_PATH; no LLM,

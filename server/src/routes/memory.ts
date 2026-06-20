@@ -42,7 +42,7 @@ memoryRouter.get("/memory/search", async (req, res) => {
   if (connector?.embed) {
     try {
       const embedding = await connector.embed(q);
-      vectorHits = vectorSearch(embedding, limit, {
+      vectorHits = await vectorSearch(embedding, limit, {
         sourceType: kind,
         projectName: project,
       });

@@ -38,6 +38,9 @@ import { surfaceError } from "../util/diagnostics.js";
 import { pendingIdeasForWorkspace, markSurfaced } from "./creativity.js";
 import { gatherEmotions, dominantEmotion } from "./emotions.js";
 import { getNeuromodulators, underStress } from "./neuromodulators.js";
+import { CONFIG } from "../config.js";
+import { currentEnergyBudget } from "./energyBudget.js";
+import { isFeatureActive } from "./maturation.js";
 
 export type WorkspaceBidKind =
   | "open-question"
@@ -376,4 +379,46 @@ export async function runWorkspaceCycle(opts: WorkspaceOptions = {}): Promise<Wo
     surfaceError("workspace.microThought", err);
     return { bids: bids.length, winner, memoryId: null, thought: null, reason: "micro-thought failed" };
   }
+}
+
+// -----------------------------------------------------------------------------
+// Event-driven activation (H4) — phasic cognition, not just the tonic timer.
+// -----------------------------------------------------------------------------
+// GWT predicts rapid, salience-driven conscious switching: a high-salience event
+// (a new open question, a contested belief, an immune/safety signal, a big
+// prediction surprise) should be able to GRAB the conscious slot off-cadence
+// instead of waiting up to 10 minutes for the next tick. requestWorkspaceCycle is
+// that path, bounded so it can't thrash — a REFRACTORY period between event
+// cycles, an energy gate (a depleted brain rests), and the connector requirement
+// runWorkspaceCycle already enforces. The tonic timer in brainCore is unchanged;
+// this ADDS phasic activation. OFF by default (CONFIG.workspaceEventDriven).
+
+export const WORKSPACE_REFRACTORY_MS = 45_000;
+let lastEventCycleAt = 0;
+
+export async function requestWorkspaceCycle(
+  reason: string,
+  opts: WorkspaceOptions = {},
+  nowMs: number = Date.now(),
+): Promise<WorkspaceReport | null> {
+  // Loop-closer routed through maturation (H2): a matured brain (stage ≥ 7)
+  // earns reactive consciousness even with the static flag off. The tonic timer
+  // is unchanged; this only ADDS phasic activation, bounded below.
+  if (!isFeatureActive("event-workspace")) return null;
+  // Refractory — anti-thrash: at most one event-triggered cycle per window.
+  if (nowMs - lastEventCycleAt < WORKSPACE_REFRACTORY_MS) return null;
+  // Energy (H1) — a depleted brain rests its discretionary cognition.
+  if (CONFIG.energyBudget && !currentEnergyBudget().mayRunOptional) return null;
+  lastEventCycleAt = nowMs;
+  try {
+    return await runWorkspaceCycle(opts);
+  } catch (err) {
+    surfaceError("workspace.requestCycle", err);
+    return null;
+  }
+}
+
+/** Selfcheck hook — reset the refractory clock. */
+export function _resetWorkspaceEventForTest(): void {
+  lastEventCycleAt = 0;
 }

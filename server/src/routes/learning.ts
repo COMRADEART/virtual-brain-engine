@@ -26,6 +26,13 @@ import {
   startOwnModelTraining,
 } from "../learning/ownModelClient.js";
 import { generateWithAirllm, getAirllmStatus } from "../learning/airllmClient.js";
+import {
+  getTurbovecStatus,
+  turbovecAddBatch,
+  turbovecClear,
+} from "../learning/turbovecClient.js";
+import { getAllEmbeddingRows } from "../db/repositories/memory.js";
+import { CONFIG } from "../config.js";
 import { getUsageSummary } from "../learning/usage.js";
 import { countSftPairs, exportSftJsonl } from "../db/repositories/sft.js";
 
@@ -161,4 +168,47 @@ learningRouter.post("/learning/airllm/generate", async (req, res) => {
     return;
   }
   res.json(await generateWithAirllm(parsed.data));
+});
+
+// --- turbovec — optional alternative vector index on the worker ----------------
+//   GET  /api/learning/turbovec/status    worker index state (ready/available/off)
+//   POST /api/learning/turbovec/backfill  clear + re-add every sqlite-vec embedding
+// OFF by default (CONFIG.turbovecEnabled); these routes are always mounted so the UI
+// can show "off" without a probe. The hot path (vectorSearch) only branches to the
+// worker when enabled AND the status probe returns "ready" — see memory.ts.
+learningRouter.get("/learning/turbovec/status", async (_req, res) => {
+  // The worker reports its own state/dim/count; `enabled` mirrors the SERVER-side
+  // gate (CONFIG.turbovecEnabled) so the UI can show "off" without ever probing.
+  const status = await getTurbovecStatus();
+  res.json({ ...status, enabled: CONFIG.turbovecEnabled });
+});
+
+// Rebuild the worker's turbovec index from the existing sqlite-vec store: clear,
+// then batch-add every (embedding_id, vector) pair. Chunked so a multi-thousand-row
+// backfill stays under the worker's payload ceiling. Worker-down → honest
+// { ok:false } (clear fails before any add); a mid-batch add failure returns the
+// partial count. Idempotent — safe to re-run after enabling TURBOVEC.
+learningRouter.post("/learning/turbovec/backfill", async (_req, res) => {
+  const rows = getAllEmbeddingRows();
+  if (rows.length === 0) {
+    res.json({ ok: true, added: 0, totalInDb: 0, error: null });
+    return;
+  }
+  const cleared = await turbovecClear();
+  if (!cleared.ok) {
+    res.json({ ok: false, added: 0, totalInDb: rows.length, error: cleared.error });
+    return;
+  }
+  const items = rows.map((r) => ({ id: r.embeddingId, vector: r.embedding }));
+  const CHUNK = 500;
+  let added = 0;
+  for (let i = 0; i < items.length; i += CHUNK) {
+    const r = await turbovecAddBatch(items.slice(i, i + CHUNK));
+    if (!r.ok) {
+      res.json({ ok: false, added, totalInDb: rows.length, error: r.error });
+      return;
+    }
+    added += r.added;
+  }
+  res.json({ ok: true, added, totalInDb: rows.length, error: null });
 });

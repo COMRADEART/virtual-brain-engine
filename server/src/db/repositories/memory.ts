@@ -5,8 +5,15 @@ import type {
   MemoryRelationKind,
   MemorySourceType,
 } from "../../../../shared/memory.js";
-import { openDb, isVectorAvailable } from "../sqlite.js";
+import { openDb, isVectorAvailable, isFtsAvailable } from "../sqlite.js";
 import { CONFIG } from "../../config.js";
+import { surfaceError } from "../../util/diagnostics.js";
+import {
+  isTurbovecAvailable,
+  turbovecEnqueueAdd,
+  turbovecSearch,
+  scoreFromTurbovecSimilarity,
+} from "../../learning/turbovecClient.js";
 
 interface MemoryRow {
   id: string;
@@ -69,6 +76,17 @@ function embeddingToBlob(values: number[]): Buffer {
   return buf;
 }
 
+// Reverse of embeddingToBlob — read a float32 LE BLOB back into a number[]. Used
+// only by the turbovec backfill, which re-derives every memory_vec row's vector so
+// the worker index can be rebuilt from the existing sqlite-vec store.
+export function blobToEmbedding(blob: Buffer): number[] {
+  const out = new Array<number>(blob.length / 4);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = blob.readFloatLE(i * 4);
+  }
+  return out;
+}
+
 export function upsertMemoryPoint(input: MemoryUpsertInput): MemoryPoint {
   const db = openDb();
   const id = ulid();
@@ -101,6 +119,16 @@ export function upsertMemoryPoint(input: MemoryUpsertInput): MemoryPoint {
       .prepare(`INSERT INTO memory_vec (embedding) VALUES (?)`)
       .run(blob);
     embeddingId = Number(result.lastInsertRowid);
+    // Mirror into the optional turbovec worker index. Still fire-and-forget (this
+    // stays sync — awaiting would cascade async through every ingest caller), but
+    // routed through a BOUNDED single-in-flight queue rather than spawning one
+    // unresolved promise per upsert: against a slow/wedged worker the old path
+    // piled up a 30s-timeout promise per ingest (a 50k scan = 50k in-flight). The
+    // queue drops oldest on overflow; the next backfill reconciles any miss. See
+    // memory/turbovec-deferred.md.
+    if (CONFIG.turbovecEnabled) {
+      turbovecEnqueueAdd(embeddingId, input.embedding);
+    }
   }
 
   db.prepare(
@@ -174,7 +202,33 @@ export interface VectorSearchHit {
   score: number;
 }
 
-export function vectorSearch(
+export async function vectorSearch(
+  embedding: number[],
+  limit: number,
+  filter?: { sourceType?: MemorySourceType; projectName?: string },
+): Promise<VectorSearchHit[]> {
+  if (embedding.length !== CONFIG.embeddingDim) {
+    throw new Error(`Embedding dim mismatch in vectorSearch: ${embedding.length}`);
+  }
+
+  // turbovec branch — only when explicitly enabled AND the worker index is live.
+  // Returns null when the worker is down so the caller falls back to sqlite-vec;
+  // any thrown error is also caught and falls back. The hot path never breaks on a
+  // turbovec miss. See memory/turbovec-deferred.md.
+  if (CONFIG.turbovecEnabled) {
+    try {
+      const hits = await vectorSearchTurbovec(embedding, limit, filter);
+      if (hits !== null) return hits;
+    } catch {
+      // fall through to the sqlite-vec path
+    }
+  }
+
+  return vectorSearchSqlite(embedding, limit, filter);
+}
+
+// The in-process sqlite-vec path — the default and the always-available fallback.
+function vectorSearchSqlite(
   embedding: number[],
   limit: number,
   filter?: { sourceType?: MemorySourceType; projectName?: string },
@@ -182,9 +236,6 @@ export function vectorSearch(
   const db = openDb();
   if (!isVectorAvailable()) {
     return [];
-  }
-  if (embedding.length !== CONFIG.embeddingDim) {
-    throw new Error(`Embedding dim mismatch in vectorSearch: ${embedding.length}`);
   }
 
   const blob = embeddingToBlob(embedding);
@@ -214,8 +265,124 @@ export function vectorSearch(
   }));
 }
 
+// The optional turbovec worker path. Returns null when the worker is down (caller
+// falls back to sqlite-vec); otherwise a (possibly empty) hit list. Keys the worker
+// index by memory_points.embedding_id (the memory_vec rowid) so the post-search
+// hydration mirrors the sqlite-vec join exactly.
+async function vectorSearchTurbovec(
+  embedding: number[],
+  limit: number,
+  filter?: { sourceType?: MemorySourceType; projectName?: string },
+): Promise<VectorSearchHit[] | null> {
+  if (!(await isTurbovecAvailable())) return null;
+  const db = openDb();
+
+  // turbovec searches by id only, so a sourceType/projectName filter is applied as
+  // an allowlist of the matching embedding_ids (one cheap indexed scan).
+  let filterIds: number[] | undefined;
+  if (filter?.sourceType || filter?.projectName) {
+    const clauses: string[] = ["embedding_id IS NOT NULL"];
+    const params: string[] = [];
+    if (filter?.sourceType) {
+      clauses.push("source_type = ?");
+      params.push(filter.sourceType);
+    }
+    if (filter?.projectName) {
+      clauses.push("project_name = ?");
+      params.push(filter.projectName);
+    }
+    const idRows = db
+      .prepare<unknown[], { embedding_id: number }>(
+        `SELECT embedding_id FROM memory_points WHERE ${clauses.join(" AND ")}`,
+      )
+      .all(...params);
+    filterIds = idRows.map((r) => r.embedding_id);
+    if (filterIds.length === 0) return [];
+  }
+
+  const res = await turbovecSearch(embedding, limit, filterIds);
+  if (!res.ok) return null; // worker errored mid-search → fall back
+  if (res.hits.length === 0) return [];
+
+  // Hydrate the memory_points rows for the returned embedding_ids (same join as
+  // sqlite-vec). The IN-list is bounded by `limit`.
+  const ids = res.hits.map((h) => h.id);
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare<unknown[], MemoryRow>(
+      `SELECT * FROM memory_points WHERE embedding_id IN (${placeholders})`,
+    )
+    .all(...ids);
+  const byId = new Map(rows.map((r) => [r.embedding_id, r]));
+  const out: VectorSearchHit[] = [];
+  for (const h of res.hits) {
+    const row = byId.get(h.id);
+    if (row) {
+      out.push({ memory: rowToMemory(row), score: scoreFromTurbovecSimilarity(h.score) });
+    }
+  }
+  return out;
+}
+
+// All (embedding_id, vector) pairs in the sqlite-vec store — the source for a
+// turbovec backfill (rebuild the worker index from the existing local store).
+// Returns [] when sqlite-vec isn't loaded (nothing to copy — reported honestly).
+export function getAllEmbeddingRows(): { embeddingId: number; embedding: number[] }[] {
+  const db = openDb();
+  if (!isVectorAvailable()) return [];
+  const rows = db
+    .prepare<unknown[], { rowid: number; embedding: Buffer }>(
+      `SELECT rowid, embedding FROM memory_vec ORDER BY rowid ASC`,
+    )
+    .all();
+  return rows.map((r) => ({ embeddingId: r.rowid, embedding: blobToEmbedding(r.embedding) }));
+}
+
+// Build an FTS5 MATCH expression from a free-text query: lowercase, extract
+// word/number tokens (Unicode-aware), drop 1-char noise, double-quote each token
+// (so punctuation / FTS operators in the raw query can't break MATCH syntax or
+// inject), and OR them for lexical recall. Returns null when nothing usable
+// remains, so the caller falls back to LIKE. Pure — covered by substrate:selfcheck.
+export function toFtsMatchQuery(query: string): string | null {
+  const tokens = (query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((t) => t.length > 1);
+  if (tokens.length === 0) return null;
+  return tokens
+    .slice(0, 16)
+    .map((t) => `"${t}"`)
+    .join(" OR ");
+}
+
 export function keywordSearch(query: string, limit: number): VectorSearchHit[] {
   const db = openDb();
+
+  // FTS path — a tokenised index lookup instead of a leading-wildcard LIKE scan.
+  // Gated live on CONFIG.ftsEnabled so the flag can be flipped without a reboot.
+  if (CONFIG.ftsEnabled && isFtsAvailable()) {
+    const match = toFtsMatchQuery(query);
+    if (match) {
+      try {
+        const rows = db
+          .prepare<[string, number], MemoryRow>(
+            `SELECT mp.* FROM memory_fts f
+             JOIN memory_points mp ON mp.id = f.id
+             WHERE memory_fts MATCH ?
+             ORDER BY bm25(memory_fts), mp.importance DESC
+             LIMIT ?`,
+          )
+          .all(match, limit);
+        return rows.map((row) => ({
+          memory: rowToMemory(row),
+          score: 0.4, // flat score so vector hits naturally outrank lexical matches
+        }));
+      } catch (err) {
+        // Any FTS quirk (malformed MATCH, missing shadow table) degrades to LIKE
+        // rather than failing the retrieval.
+        surfaceError("memory.keywordSearch.fts", err);
+      }
+    }
+  }
+
+  // LIKE fallback — substring match, the always-available path.
   const like = `%${query.replace(/[%_]/g, " ")}%`;
   const rows = db
     .prepare<[string, number], MemoryRow>(
@@ -244,7 +411,7 @@ export function insertRelation(
   return { id, fromId, toId, kind, weight, createdAt: now };
 }
 
-export function getRelationsFor(memoryId: string): MemoryRelation[] {
+export function getRelationsFor(memoryId: string, limit = 256): MemoryRelation[] {
   const db = openDb();
   type Row = {
     id: string;
@@ -254,11 +421,14 @@ export function getRelationsFor(memoryId: string): MemoryRelation[] {
     weight: number;
     created_at: string;
   };
+  // Bounded: a hub memory (a summary node) can accrue thousands of relations;
+  // without a LIMIT every caller pulled the whole star even when it uses the top
+  // few. Newest-first so the cap keeps the most recent edges.
   const rows = db
-    .prepare<[string, string], Row>(
-      `SELECT * FROM memory_relations WHERE from_id = ? OR to_id = ? ORDER BY created_at DESC`,
+    .prepare<[string, string, number], Row>(
+      `SELECT * FROM memory_relations WHERE from_id = ? OR to_id = ? ORDER BY created_at DESC LIMIT ?`,
     )
-    .all(memoryId, memoryId);
+    .all(memoryId, memoryId, limit);
   return rows.map((row) => ({
     id: row.id,
     fromId: row.from_id,

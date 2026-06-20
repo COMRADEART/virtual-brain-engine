@@ -29,8 +29,10 @@ process.env.BRAIN_DATA_DIR = tmp;
 process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 
 const { openDb } = await import("../src/db/sqlite.js");
+const { CONFIG } = await import("../src/config.js");
 const { resolveAction } = await import("../src/actions/resolver.js");
 const { executeAction } = await import("../src/actions/executor.js");
+const { registerSkill } = await import("../src/actions/dynamicRegistry.js");
 const { mintConfirmToken, _resetConfirmTokens } = await import("../src/actions/confirmTokens.js");
 const { listActionLog } = await import("../src/db/repositories/actions.js");
 const { countMemoryPoints, getMemoryPoint } = await import("../src/db/repositories/memory.js");
@@ -193,6 +195,46 @@ _resetConfirmTokens();
     connector: makeStub(`{"actionId":"open-url","args":{"url":"ftp://evil/x"},"confidence":0.9}`),
   });
   check("resolver: open-url rejects non-http(s) scheme", r.plan === null && /invalid args/.test(r.reason ?? ""));
+}
+
+// --- Dynamic plain-code handler gate (ALLOW_DYNAMIC_CODE) --------------------
+// A dynamic skill's handlerCode runs via `new Function`, whose body executes in
+// Node's GLOBAL scope (process/globalThis reachable regardless of params) and
+// whose registration validator is bypassable by obfuscation. The defence is to
+// NOT execute it unless the operator opts in. Prove the gate both ways.
+{
+  const reg = await registerSkill(
+    {
+      id: "selfcheck-dyn-echo",
+      title: "echo",
+      description: "test-only dynamic handler",
+      risk: "safe",
+      surface: "server",
+      params: { x: "a value to echo" },
+      // contains "async" → passes validateHandlerCode; returns a result object.
+      handlerCode: 'return (async () => ({ summary: "dyn ok", data: { x: args.x } }))();',
+    },
+    false,
+  );
+  check("dynamic-code: a safe plain-code skill registers", reg.ok === true, reg.error ?? "");
+
+  const wasAllowed = CONFIG.allowDynamicCode;
+  CONFIG.allowDynamicCode = false;
+  const refused = await executeAction({ actionId: "selfcheck-dyn-echo", args: { x: "hi" } });
+  check(
+    "dynamic-code: handler is REFUSED by default (ALLOW_DYNAMIC_CODE off)",
+    refused.ok === false && /disabled/.test(refused.error ?? ""),
+    refused.error ?? "",
+  );
+
+  CONFIG.allowDynamicCode = true;
+  const ran = await executeAction({ actionId: "selfcheck-dyn-echo", args: { x: "hi" } });
+  check(
+    "dynamic-code: handler RUNS only when opted in",
+    ran.ok === true && (ran.data as { x?: string } | undefined)?.x === "hi",
+    ran.error ?? "",
+  );
+  CONFIG.allowDynamicCode = wasAllowed;
 }
 
 // --- Audit completeness -----------------------------------------------------

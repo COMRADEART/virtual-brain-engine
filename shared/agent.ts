@@ -112,6 +112,15 @@ export function isAgentEvent(frame: AgentStreamFrame): frame is AgentEvent {
   return (frame as AgentEvent).type !== undefined;
 }
 
+// A reference image attached to an objective ("model a character like THIS").
+// base64 of the raw image bytes; mime is a hint (defaults to image/png). The
+// server captions it via the perception worker into text the model can reason
+// over — the connector has no native multimodal channel.
+export interface AgentReferenceImage {
+  base64: string;
+  mime?: string;
+}
+
 // POST /api/agent body.
 export interface AgentRequest {
   prompt: string;
@@ -126,6 +135,13 @@ export interface AgentRequest {
   // which is the FRIDAY "do things" surface). When false/omitted, triage may
   // route a plain question straight to the 7-step pipeline.
   forceLoop?: boolean;
+  // Reference images for a creative/visual objective. Captioned into the loop's
+  // task context (see CREATIVE_AGENT). Always forces the loop (an image task is
+  // never a plain question).
+  referenceImages?: AgentReferenceImage[];
+  // Override the loop's round ceiling for this run (clamped 1..50 server-side).
+  // Creative objectives need many steps; omit to use the server default.
+  maxRounds?: number;
 }
 
 // POST /api/agent/confirm body — approve or deny a paused confirm-tier action.

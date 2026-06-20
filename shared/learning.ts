@@ -143,6 +143,28 @@ export interface AirllmGenerateResult {
   error: string | null;
 }
 
+// turbovec — an OPTIONAL alternative vector index hosted on the Python worker
+// sidecar (TurboQuant, ~16x compression at 2-bit, SIMD ARM/x86). OFF by default
+// (TURBOVEC); the in-process sqlite-vec index stays the default and the hot path
+// falls back to it on ANY turbovec error/miss. At personal-brain scale (~9k
+// vectors) turbovec's compression+SIMD is a forward-looking experiment — its
+// value arrives past ~100k vectors (see memory/turbovec-deferred.md).
+export type TurbovecState = "ready" | "unavailable" | "error";
+
+export interface TurbovecStatus {
+  state: TurbovecState;
+  /** Mirrors CONFIG.turbovecEnabled so the UI can show "off" without a probe. */
+  enabled: boolean;
+  /** Index dimensionality (matches EMBEDDING_DIM once the first vector is added). */
+  dim: number | null;
+  /** Quantization width in use: 2 or 4. */
+  bitWidth: number | null;
+  /** Vectors currently held in the worker's in-memory index. */
+  count: number;
+  message: string | null;
+  updatedAt: string | null;
+}
+
 export interface FeedbackStats {
   up: number;
   down: number;

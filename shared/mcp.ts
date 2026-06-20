@@ -209,4 +209,18 @@ export const MCP_PRESETS: McpServerConfig[] = [
     enabled: false,
     risk: "confirm",
   },
+  {
+    // Blender — the worked example for "give it an objective, it does it through a
+    // real tool". The ahujasid/blender-mcp server (run via uvx) bridges to a
+    // Blender socket addon and exposes execute_blender_code / get_viewport_screenshot
+    // / get_scene_info / asset generation. stdio → gated by ALLOW_SHELL; every tool
+    // is confirm-tier (execute_blender_code runs arbitrary bpy). The user must
+    // install the Blender addon + start its socket server first (see docs).
+    id: "blender",
+    transport: "stdio",
+    command: "uvx",
+    args: ["blender-mcp"],
+    enabled: false,
+    risk: "confirm",
+  },
 ];

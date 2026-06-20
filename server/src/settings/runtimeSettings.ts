@@ -276,6 +276,390 @@ export const SETTINGS_CATALOG: SettingSpec[] = [
     envVar: "WORKSPACE",
     requiresRestart: true,
   },
+
+  // ── Speed (more) ─────────────────────────────────────────────────────────
+  {
+    key: "ollamaNumCtx",
+    label: "Local model context size",
+    description:
+      "Context window (num_ctx) for Ollama, in tokens. Capping it keeps an oversized model GPU-resident instead of spilling to RAM and hanging on the next request. 0 = let Ollama decide (only safe with plenty of VRAM).",
+    group: "Speed",
+    type: "number",
+    envVar: "OLLAMA_NUM_CTX",
+    min: 0,
+    max: 32768,
+    step: 1024,
+  },
+  {
+    key: "fastSalvageScoreFloor",
+    label: "Fast-salvage score floor",
+    description:
+      "When a fast answer's best retrieved memory scores below this, escalate to the full path instead of answering thin. Needs 'Salvage thin fast answers' ON.",
+    group: "Speed",
+    type: "number",
+    envVar: "FAST_SALVAGE_SCORE_FLOOR",
+    min: 0,
+    max: 1,
+    step: 0.05,
+  },
+
+  // ── Privacy & network (more) ─────────────────────────────────────────────
+  {
+    key: "webSearchProvider",
+    label: "Web search backend",
+    description:
+      "Which search backend the brain uses when it goes online. auto picks: local SearXNG → a keyed API → keyless DuckDuckGo. Remote backends still require Local-only OFF.",
+    group: "Privacy & network",
+    type: "enum",
+    envVar: "WEB_SEARCH_PROVIDER",
+    options: ["auto", "searxng", "brave", "tavily", "exa", "duckduckgo"],
+  },
+  {
+    key: "webResearchMaxPages",
+    label: "Web pages per research",
+    description:
+      "How many search results a single web research / augmentation fetches and learns. Lower = faster and less outbound traffic.",
+    group: "Privacy & network",
+    type: "number",
+    envVar: "WEB_RESEARCH_MAX_PAGES",
+    min: 1,
+    max: 10,
+    step: 1,
+  },
+
+  // ── Retrieval (more) ─────────────────────────────────────────────────────
+  {
+    key: "multiQueryVariants",
+    label: "Multi-query variants",
+    description:
+      "How many alternative phrasings to generate when multi-query retrieval fires (total queries = this + 1). Higher = better recall, more cost.",
+    group: "Retrieval",
+    type: "number",
+    envVar: "MULTI_QUERY_VARIANTS",
+    min: 1,
+    max: 3,
+    step: 1,
+  },
+  {
+    key: "banditWarmAt",
+    label: "Adaptive controller warm-up",
+    description:
+      "Per-decision observations the RL adaptive controller must see before it explores. Below this it returns EXACTLY the heuristic — the no-regression floor.",
+    group: "Retrieval",
+    type: "number",
+    envVar: "BANDIT_WARM_AT",
+    min: 1,
+    max: 200,
+    step: 1,
+  },
+
+  // ── Reasoning (more) ─────────────────────────────────────────────────────
+  {
+    key: "parallelReasoningDrafts",
+    label: "Parallel reasoning draft count",
+    description:
+      "How many reasoning drafts to sample concurrently when 'Parallel reasoning drafts' is on. More = steadier consensus, more LLM calls.",
+    group: "Reasoning",
+    type: "number",
+    envVar: "PARALLEL_REASONING_DRAFTS",
+    min: 2,
+    max: 3,
+    step: 1,
+  },
+  {
+    key: "adaptiveDepthWarmAt",
+    label: "Adaptive depth warm-up",
+    description:
+      "Observations before 'Outcome-learned depth' begins nudging the difficulty gate. Below this it returns the base gate exactly (no-regression).",
+    group: "Reasoning",
+    type: "number",
+    envVar: "ADAPTIVE_DEPTH_WARM_AT",
+    min: 1,
+    max: 100,
+    step: 1,
+  },
+
+  // ── Actions & agent (more) ───────────────────────────────────────────────
+  {
+    key: "agentTriage",
+    label: "Agent triage router",
+    description:
+      "Route plain questions straight to the fast 7-step pipeline and only send multi-step / tool / 'do X' requests into the agent loop. Off = always use the loop.",
+    group: "Actions & agent",
+    type: "boolean",
+    envVar: "AGENT_TRIAGE",
+  },
+  {
+    key: "shellTimeoutMs",
+    label: "Shell command timeout (ms)",
+    description:
+      "Hard limit on a single run-command before it is killed, so a wedged process can't hang the brain.",
+    group: "Actions & agent",
+    type: "number",
+    envVar: "SHELL_TIMEOUT_MS",
+    min: 1000,
+    max: 600000,
+    step: 5000,
+  },
+  {
+    key: "codingVerifyRequired",
+    label: "Require coding verification",
+    description:
+      "Enforce the honesty gate: if a coding run edited files but no build/test passed afterward, the answer is stamped unverified with a caveat — never a silent 'it works'.",
+    group: "Actions & agent",
+    type: "boolean",
+    envVar: "CODING_VERIFY_REQUIRED",
+  },
+  {
+    key: "codingMaxVerifyRounds",
+    label: "Coding verify rounds",
+    description:
+      "Soft target for how many edit→test→fix cycles to attempt before giving up. The hard cap is still 'Agent max rounds'.",
+    group: "Actions & agent",
+    type: "number",
+    envVar: "CODING_MAX_VERIFY_ROUNDS",
+    min: 1,
+    max: 20,
+    step: 1,
+  },
+
+  // ── Memory (more) ────────────────────────────────────────────────────────
+  {
+    key: "dedupSimilarityThreshold",
+    label: "Duplicate similarity threshold",
+    description:
+      "How similar (cosine, 0–1) two memories must be to count as near-duplicates in the dedup audit. Higher = stricter, fewer false matches.",
+    group: "Memory",
+    type: "number",
+    envVar: "DEDUP_SIMILARITY_THRESHOLD",
+    min: 0.5,
+    max: 0.99,
+    step: 0.01,
+  },
+  {
+    key: "dedupMaxPairs",
+    label: "Dedup pairs per audit",
+    description: "Maximum near-duplicate pairs to surface in a single dedup audit run.",
+    group: "Memory",
+    type: "number",
+    envVar: "DEDUP_MAX_PAIRS",
+    min: 1,
+    max: 500,
+    step: 1,
+  },
+
+  // ── Models (more) ────────────────────────────────────────────────────────
+  {
+    key: "remoteRetryAttempts",
+    label: "Remote retry attempts",
+    description:
+      "How many times to retry a failed remote-provider request before giving up (or falling back to local).",
+    group: "Models",
+    type: "number",
+    envVar: "REMOTE_RETRY_ATTEMPTS",
+    min: 0,
+    max: 5,
+    step: 1,
+  },
+
+  // ── Cognition (more) ─────────────────────────────────────────────────────
+  {
+    key: "selfNarrative",
+    label: "Self-narrative synthesis",
+    description:
+      "During the sleep cycle, distill the brain's identity material (beliefs/goals/stage/episodes) into a coherent first-person self-narrative. No effect without a connector.",
+    group: "Cognition",
+    type: "boolean",
+    envVar: "SELF_NARRATIVE",
+  },
+  {
+    key: "innerMonologue",
+    label: "First-person inner monologue",
+    description:
+      "Let the brain author 'I wonder… / I'm working toward…' lines into the cognition stream on the workspace cadence. Rate-limited.",
+    group: "Cognition",
+    type: "boolean",
+    envVar: "INNER_MONOLOGUE",
+  },
+  {
+    key: "sleepIntervalHours",
+    label: "Sleep cycle interval (hours)",
+    description:
+      "How often the nightly episodic→semantic distillation runs. The schedule is wired at boot.",
+    group: "Cognition",
+    type: "number",
+    envVar: "SLEEP_INTERVAL_HOURS",
+    min: 1,
+    max: 168,
+    step: 1,
+    requiresRestart: true,
+  },
+  {
+    key: "workspaceIntervalMin",
+    label: "Workspace interval (minutes)",
+    description:
+      "How often the global workspace generates one autonomous micro-thought. The schedule is wired at boot.",
+    group: "Cognition",
+    type: "number",
+    envVar: "WORKSPACE_INTERVAL_MIN",
+    min: 1,
+    max: 1440,
+    step: 1,
+    requiresRestart: true,
+  },
+
+  // ── Subsystems (restart to fully apply) ──────────────────────────────────
+  {
+    key: "mcpEnabled",
+    label: "MCP tool servers",
+    description:
+      "Connect external Model Context Protocol servers and expose their tools as confirm-gated actions. Servers are configured in .env (MCP_SERVERS) and connected at boot.",
+    group: "Subsystems",
+    type: "boolean",
+    envVar: "MCP_ENABLED",
+    requiresRestart: true,
+  },
+  {
+    key: "civilizationEnabled",
+    label: "Civilization (P2P)",
+    description:
+      "Enable the experimental peer-to-peer 'civilization of minds' subsystem. Binds network ports at boot.",
+    group: "Subsystems",
+    type: "boolean",
+    envVar: "CIVILIZATION_ENABLED",
+    requiresRestart: true,
+  },
+  {
+    key: "routingAutoOptimize",
+    label: "Auto-optimize model routing",
+    description: "Let the brain automatically tune per-cortex model routing from usage feedback.",
+    group: "Subsystems",
+    type: "boolean",
+    envVar: "ROUTING_AUTO_OPTIMIZE",
+  },
+
+  // ── Training (own model) ─────────────────────────────────────────────────
+  {
+    key: "autoStartOwnModel",
+    label: "Auto-train own model (LoRA)",
+    description:
+      "On boot, automatically run a LoRA continued-pretraining pass over the memory corpus. Compute-intensive; the result is seeded as a disabled, non-default model. Wired at boot.",
+    group: "Training",
+    type: "boolean",
+    envVar: "AUTO_START_OWN_MODEL",
+    requiresRestart: true,
+  },
+  {
+    key: "autoStartScratchLlm",
+    label: "Auto-train from-scratch model",
+    description:
+      "On boot, train the small from-scratch char-level model over the memory corpus (educational; progress shown in the training bar). Wired at boot.",
+    group: "Training",
+    type: "boolean",
+    envVar: "AUTO_START_SCRATCH_LLM",
+    requiresRestart: true,
+  },
+  {
+    key: "ownModelDistill",
+    label: "Distillation teacher (AirLLM)",
+    description:
+      "When training the own model, first have a high-parameter teacher rewrite corpus notes into clean instructional answers, then train the student on those. Needs AirLLM + a CUDA build; falls back to the raw corpus when absent.",
+    group: "Training",
+    type: "boolean",
+    envVar: "OWN_MODEL_DISTILL",
+  },
+  {
+    key: "trainEnglishMostly",
+    label: "Train on English mostly",
+    description:
+      "Filter the exported corpus to mostly-English documents before training, so a mixed-language corpus doesn't pull the brain's own model away from English.",
+    group: "Training",
+    type: "boolean",
+    envVar: "TRAIN_ENGLISH_MOSTLY",
+  },
+  {
+    key: "airllmCompression",
+    label: "AirLLM compression",
+    description:
+      "Quantization for the high-parameter AirLLM teacher / generator. 4bit = smallest footprint + fastest streaming; off = none.",
+    group: "Training",
+    type: "enum",
+    envVar: "AIRLLM_COMPRESSION",
+    options: ["4bit", "8bit", "off"],
+  },
+
+  // ── Backup (restart to fully apply) ──────────────────────────────────────
+  {
+    key: "backupEnabled",
+    label: "Scheduled backups",
+    description:
+      "Snapshot the whole brain (SQLite VACUUM INTO) on boot and on an interval, so a disk fault or bad migration is recoverable. The schedule is wired at boot.",
+    group: "Backup",
+    type: "boolean",
+    envVar: "BACKUP_ENABLED",
+    requiresRestart: true,
+  },
+  {
+    key: "backupIntervalHours",
+    label: "Backup interval (hours)",
+    description: "How often to snapshot the brain's database. The schedule is wired at boot.",
+    group: "Backup",
+    type: "number",
+    envVar: "BACKUP_INTERVAL_HOURS",
+    min: 1,
+    max: 168,
+    step: 1,
+    requiresRestart: true,
+  },
+  {
+    key: "backupKeep",
+    label: "Backups to keep",
+    description: "How many snapshots to retain in data/backups (the oldest are pruned first).",
+    group: "Backup",
+    type: "number",
+    envVar: "BACKUP_KEEP",
+    min: 1,
+    max: 30,
+    step: 1,
+  },
+
+  // ── Maintenance ──────────────────────────────────────────────────────────
+  {
+    key: "githubMinStars",
+    label: "GitHub min stars",
+    description:
+      "Minimum stars a repository must have to be discovered and learned from ('learn from popular repos').",
+    group: "Maintenance",
+    type: "number",
+    envVar: "GITHUB_MIN_STARS",
+    min: 1,
+    max: 100000,
+    step: 100,
+  },
+  {
+    key: "githubMaxRepos",
+    label: "GitHub repos per run",
+    description:
+      "Maximum repositories a single GitHub discovery/learn run touches — caps the fetch budget so one query can't spam GitHub.",
+    group: "Maintenance",
+    type: "number",
+    envVar: "GITHUB_MAX_REPOS",
+    min: 1,
+    max: 50,
+    step: 1,
+  },
+  {
+    key: "usageLogRetentionDays",
+    label: "Usage log retention (days)",
+    description:
+      "How long to keep per-request usage logs before they are automatically pruned.",
+    group: "Maintenance",
+    type: "number",
+    envVar: "USAGE_LOG_RETENTION_DAYS",
+    min: 1,
+    max: 365,
+    step: 1,
+  },
 ];
 
 // CONFIG is typed ServerConfig; the catalog only touches boolean/number/string
