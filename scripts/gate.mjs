@@ -121,6 +121,7 @@ const steps = [
 // when no chat model is reachable, so it's safe even on a connector-less CI box.
 if (process.env.GATE_ASK_SMOKE === "1") {
   steps.push({ label: "ask smoke (live /api/ask)", args: ["run", "ask:smoke"] });
+  steps.push({ label: "ws smoke (live /api/ask -> /ws/brain broadcast)", args: ["run", "ws:smoke"] });
   steps.push({ label: "agent smoke (live /api/agent main-thinking)", args: ["run", "agent:smoke"] });
   steps.push({ label: "actions smoke (live /api/actions/resolve)", args: ["run", "actions:smoke"] });
   steps.push({ label: "models smoke (live ollama pull)", args: ["run", "models:smoke"] });
