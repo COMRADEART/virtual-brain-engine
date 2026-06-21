@@ -76,6 +76,18 @@ function makeStub(json: string): Connector {
   } satisfies Connector;
 }
 
+function makeSequenceStub(jsons: string[]): Connector {
+  let index = 0;
+  return {
+    ...makeStub(jsons.at(-1) ?? "{}"),
+    async send() {
+      const json = jsons[Math.min(index, jsons.length - 1)] ?? "{}";
+      index += 1;
+      return json;
+    },
+  } satisfies Connector;
+}
+
 // --- Resolver ---------------------------------------------------------------
 {
   const r = await resolveAction("nuke it", {
@@ -100,6 +112,32 @@ function makeStub(json: string): Connector {
     connector: makeStub(`{"actionId":"search-memory","args":{"query":"x"},"confidence":0.1}`),
   });
   check("resolver rejects below the confidence floor", r.plan === null && /confidence/.test(r.reason ?? ""), r.reason ?? "");
+}
+{
+  const r = await resolveAction("maybe search", {
+    connector: makeSequenceStub([
+      `{"actionId":"search-memory","args":{"query":123},"confidence":0.1}`,
+      `{"actionId":"search-memory","args":{"query":"x"},"confidence":1}`,
+    ]),
+  });
+  check(
+    "resolver never repairs an explicitly low-confidence candidate",
+    r.plan === null && /confidence/.test(r.reason ?? ""),
+    r.reason ?? "",
+  );
+}
+{
+  const r = await resolveAction("list my most recent memories", {
+    connector: makeSequenceStub([
+      `{"actionId":"recent-memories","args":{"limit":"10"}}`,
+      `{"actionId":"recent-memories","args":{},"rationale":"recent memories","confidence":1}`,
+    ]),
+  });
+  check(
+    "resolver corrects one near-valid local-model response before rejecting it",
+    r.plan?.actionId === "recent-memories" && r.plan.args.limit === undefined && r.plan.confidence === 1,
+    r.reason ?? "",
+  );
 }
 {
   const r = await resolveAction("what's the weather", {

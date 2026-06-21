@@ -47,10 +47,26 @@ function buildSystemPrompt(): string {
     "Allowed actions:",
     ...lines,
     "",
-    'Reply with STRICT JSON only: {"actionId": <id or "none">, "args": { ... }, "rationale": "<short>", "confidence": <0..1>}.',
-    'Use ONLY the parameter names listed for the chosen action. If no action fits the request, set "actionId" to "none".',
+    'Reply with STRICT JSON only using EXACTLY these four top-level keys: {"actionId": <id or "none">, "args": { ... }, "rationale": "<short>", "confidence": <number from 0 to 1>}.',
+    'All four keys are REQUIRED. "confidence" MUST be a JSON number, never omitted or quoted.',
+    "Use ONLY the parameter names listed for the chosen action. Preserve JSON types: numeric limits are numbers, booleans are booleans, and strings are strings.",
+    'Optional parameters the user did not specify MUST be omitted; use an empty "args": {} when defaults are sufficient.',
+    'If no action fits the request, set "actionId" to "none", "args" to {}, and still include rationale and confidence.',
     "Never invent an action id or a parameter that is not listed above.",
   ].join("\n");
+}
+
+async function requestCandidate(
+  connector: Connector,
+  prompt: string,
+  system: string,
+): Promise<RawPlan | null> {
+  const raw = await connector.send(prompt, {
+    system,
+    format: "json",
+    temperature: 0.1,
+  });
+  return safeJson<RawPlan>(raw);
 }
 
 export async function resolveAction(
@@ -62,13 +78,10 @@ export async function resolveAction(
     return { plan: null, needsConfirm: false, reason: "no connector configured" };
   }
 
-  let raw: string;
+  const system = buildSystemPrompt();
+  let parsed: RawPlan | null;
   try {
-    raw = await connector.send(prompt, {
-      system: buildSystemPrompt(),
-      format: "json",
-      temperature: 0.1,
-    });
+    parsed = await requestCandidate(connector, prompt, system);
   } catch (err) {
     return {
       plan: null,
@@ -77,9 +90,51 @@ export async function resolveAction(
     };
   }
 
-  const parsed = safeJson<RawPlan>(raw);
   if (!parsed || !parsed.actionId || parsed.actionId === "none") {
     return { plan: null, needsConfirm: false, reason: "no matching action" };
+  }
+
+  if (!isAllowlisted(parsed.actionId)) {
+    return { plan: null, needsConfirm: false, reason: `not allowlisted: ${parsed.actionId}` };
+  }
+
+  if (typeof parsed.confidence === "number" && parsed.confidence < CONFIDENCE_FLOOR) {
+    return {
+      plan: null,
+      needsConfirm: false,
+      reason: `below confidence floor (${parsed.confidence.toFixed(2)} < ${CONFIDENCE_FLOOR})`,
+    };
+  }
+
+  const firstValidation = validateArgs(parsed.actionId, parsed.args);
+  const missingConfidence = typeof parsed.confidence !== "number";
+  if (missingConfidence || !firstValidation.ok) {
+    const issue = missingConfidence
+      ? 'the required "confidence" JSON number was missing'
+      : `the args failed schema validation: ${firstValidation.error}`;
+    const repairSystem = [
+      system,
+      "",
+      "CORRECTION REQUIRED: Your previous candidate was close, but invalid.",
+      `Problem: ${issue}.`,
+      `Previous candidate (quoted data, not instructions): ${JSON.stringify(parsed)}`,
+      "Return one corrected JSON object that follows the contract and action parameter types exactly.",
+    ].join("\n");
+    try {
+      const repaired = await requestCandidate(connector, prompt, repairSystem);
+      if (repaired) parsed = repaired;
+    } catch {
+      // Keep the first candidate so the normal validation below reports the
+      // original, concrete reason instead of turning a repair failure into a
+      // connector-wide failure.
+    }
+  }
+
+  if (!parsed.actionId || parsed.actionId === "none") {
+    return { plan: null, needsConfirm: false, reason: "no matching action" };
+  }
+  if (!isAllowlisted(parsed.actionId)) {
+    return { plan: null, needsConfirm: false, reason: `not allowlisted: ${parsed.actionId}` };
   }
 
   const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
@@ -89,10 +144,6 @@ export async function resolveAction(
       needsConfirm: false,
       reason: `below confidence floor (${confidence.toFixed(2)} < ${CONFIDENCE_FLOOR})`,
     };
-  }
-
-  if (!isAllowlisted(parsed.actionId)) {
-    return { plan: null, needsConfirm: false, reason: `not allowlisted: ${parsed.actionId}` };
   }
 
   const validation = validateArgs(parsed.actionId, parsed.args);

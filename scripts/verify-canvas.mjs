@@ -12,7 +12,7 @@ const TARGET_URL = process.env.VERIFY_URL ?? "http://127.0.0.1:5173/";
 const USE_GPU = process.env.VERIFY_GPU === "1" || process.argv.includes("--gpu");
 // Post-reload settle time before sampling. The sparse spiking/hybrid engines warm
 // up slower than the default engine, so allow overriding via VERIFY_WAIT_MS.
-const RENDER_WAIT_MS = Number(process.env.VERIFY_WAIT_MS ?? 2600);
+const RENDER_WAIT_MS = Number(process.env.VERIFY_WAIT_MS ?? 15000);
 // Which Brain OS layout to seed before sampling. Defaults to "full" (the
 // scientific control surface this check has always exercised); override with
 // VERIFY_LAYOUT=dashboard to confirm the dashboard's centre BrainScene draws.
@@ -20,11 +20,11 @@ const VERIFY_LAYOUT = process.env.VERIFY_LAYOUT ?? "full";
 // The FIRST navigate hits a cold Vite dev server, which must transpile the whole
 // React + Three.js + app module graph on demand — that can exceed 8s on Windows
 // and grows as the app does (perception, learning lab, civilization, dashboard…),
-// so give the initial window-load a generous budget. The reload reuses Vite's
-// warm cache, so it stays tight and still catches a genuine hang. Both are
-// env-overridable for slow CI.
+// so give the initial window-load a generous budget. The GPU path also builds
+// the full million-neuron field after reload, so use the same bounded budget
+// there. Both are env-overridable for slow CI.
 const FIRST_LOAD_MS = Number(process.env.VERIFY_FIRST_LOAD_MS ?? 30000);
-const RELOAD_LOAD_MS = Number(process.env.VERIFY_RELOAD_MS ?? 10000);
+const RELOAD_LOAD_MS = Number(process.env.VERIFY_RELOAD_MS ?? 30000);
 const chromeCandidates = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -87,7 +87,11 @@ async function main() {
       "--remote-debugging-port=0",
       `--user-data-dir=${userDataDir}`,
       "--window-size=1440,900",
-      TARGET_URL,
+      // Attach CDP before the app navigation starts. Launching directly at
+      // TARGET_URL races Page.loadEventFired: a fast page can finish before the
+      // listener is registered, leaving the verifier waiting for an event that
+      // already happened.
+      "about:blank",
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
@@ -100,7 +104,10 @@ async function main() {
   try {
     const port = await waitForDevToolsPort(userDataDir);
     const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
-    const tab = tabs.find((entry) => entry.url === TARGET_URL) ?? tabs[0];
+    const tab = tabs.find((entry) => entry.type === "page");
+    if (!tab?.webSocketDebuggerUrl) {
+      throw new Error("Chrome exposed no navigable page target for canvas verification.");
+    }
     const client = await CdpClient.connect(tab.webSocketDebuggerUrl);
     const issues = [];
     const blockingIssues = [];
@@ -125,15 +132,17 @@ async function main() {
     await client.send("Runtime.enable");
     await client.send("Log.enable");
     await client.send("Page.bringToFront");
-    const loadEvent = client.waitForEvent("Page.loadEventFired", FIRST_LOAD_MS);
-    await client.send("Page.navigate", { url: TARGET_URL });
-    await loadEvent;
+    const navigation = await client.send("Page.navigate", { url: TARGET_URL });
+    if (navigation.errorText) {
+      throw new Error(`Chrome could not navigate to ${TARGET_URL}: ${navigation.errorText}`);
+    }
+    await waitForDocumentReady(client, FIRST_LOAD_MS);
     await client.send("Runtime.evaluate", {
       expression: `localStorage.setItem("brain-layout", JSON.stringify(${JSON.stringify(VERIFY_LAYOUT)}))`,
     });
-    const reloadEvent = client.waitForEvent("Page.loadEventFired", RELOAD_LOAD_MS);
+    const beforeReload = await readDocumentState(client);
     await client.send("Page.reload", { ignoreCache: true });
-    await reloadEvent;
+    await waitForDocumentReady(client, RELOAD_LOAD_MS, beforeReload.timeOrigin);
     await delay(RENDER_WAIT_MS);
 
     const result = await client.send("Runtime.evaluate", {
@@ -245,6 +254,45 @@ async function waitForDevToolsPort(userDataDir) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readDocumentState(client) {
+  const result = await client.send("Runtime.evaluate", {
+    returnByValue: true,
+    expression: `({
+      readyState: document.readyState,
+      href: location.href,
+      timeOrigin: performance.timeOrigin
+    })`,
+  });
+  return result.result.value;
+}
+
+async function waitForDocumentReady(client, timeoutMs, previousTimeOrigin = null) {
+  const deadline = Date.now() + timeoutMs;
+  let lastState = null;
+  while (Date.now() < deadline) {
+    try {
+      lastState = await readDocumentState(client);
+      const isNewDocument =
+        previousTimeOrigin === null || lastState.timeOrigin !== previousTimeOrigin;
+      if (
+        lastState.readyState !== "loading" &&
+        lastState.href !== "about:blank" &&
+        isNewDocument
+      ) {
+        return lastState;
+      }
+    } catch {
+      // Navigation destroys the old execution context briefly. Retry until the
+      // new document is available or the bounded timeout expires.
+    }
+    await delay(100);
+  }
+  throw new Error(
+    `Timed out waiting for the document to load after ${timeoutMs}ms` +
+      (lastState ? ` (last state: ${JSON.stringify(lastState)})` : ""),
+  );
 }
 
 function terminateChrome(process) {
