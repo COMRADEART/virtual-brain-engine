@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "tsx --test",
     "router:selfcheck": "tsx scripts/router-selfcheck.ts",
     "ranker:selfcheck": "tsx scripts/ranker-selfcheck.ts",
     "agents:selfcheck": "tsx scripts/agents-selfcheck.ts",
