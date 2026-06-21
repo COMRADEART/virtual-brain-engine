@@ -840,6 +840,69 @@ CREATE TABLE IF NOT EXISTS procedures (
 );
 CREATE INDEX IF NOT EXISTS idx_procedures_score ON procedures(score DESC, success_count DESC);
 
+-- Creativity engine (core/creativity.ts) — distant-concept recombinations. A
+-- mutable status lifecycle (pending → surfaced → kept) + a per-row novelty the
+-- workspace bidder + the route query/filter need indexed, so this is a real
+-- table, not a memory_points kind. seed_a / seed_b reference memory_points ids.
+CREATE TABLE IF NOT EXISTS creative_ideas (
+  id           TEXT PRIMARY KEY,
+  seed_a       TEXT NOT NULL,
+  seed_b       TEXT NOT NULL,
+  idea         TEXT NOT NULL,
+  novelty      REAL NOT NULL DEFAULT 0,
+  status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'surfaced', 'kept')),
+  memory_id    TEXT,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creative_ideas_status ON creative_ideas(status, created_at DESC);
+
+-- Scientific-reasoning hypothesis lifecycle (core/hypotheses.ts) — observe →
+-- hypothesize → (cheap, ledger-read) test → evaluate → keep/retire. Mutable
+-- status + dual observation counters + a statement-hash dedup need indexed
+-- columns, so this is a real table. Supported hypotheses promote into beliefs.
+CREATE TABLE IF NOT EXISTS hypotheses (
+  id                TEXT PRIMARY KEY,
+  statement         TEXT NOT NULL,
+  statement_hash    TEXT NOT NULL UNIQUE,
+  status            TEXT NOT NULL DEFAULT 'open'
+                      CHECK (status IN ('open', 'testing', 'supported', 'refuted', 'retired')),
+  support_obs       INTEGER NOT NULL DEFAULT 0,
+  refute_obs        INTEGER NOT NULL DEFAULT 0,
+  confidence        REAL NOT NULL DEFAULT 0.5,
+  source_belief_id  TEXT,
+  cause_class       TEXT,
+  effect_class      TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status, updated_at DESC);
+
+-- Observability spine (C1) — the brain's own vitals time-series + a durable
+-- error taxonomy. brain_vitals is a narrow (metric, value) EAV sampled on the
+-- brainCore tick; diagnostics_log persists what surfaceError used to keep only
+-- in an in-memory counter (lost on restart). Both retention-pruned. See
+-- server/src/observability/. (Existing DBs get these via migration 0014.)
+CREATE TABLE IF NOT EXISTS brain_vitals (
+  id          TEXT PRIMARY KEY,
+  metric      TEXT NOT NULL,
+  value       REAL NOT NULL,
+  captured_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brain_vitals_metric ON brain_vitals(metric, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_brain_vitals_time   ON brain_vitals(captured_at DESC);
+
+CREATE TABLE IF NOT EXISTS diagnostics_log (
+  id          TEXT PRIMARY KEY,
+  source      TEXT NOT NULL,
+  level       TEXT NOT NULL,
+  message     TEXT NOT NULL,
+  count       INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_log_time   ON diagnostics_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_log_source ON diagnostics_log(source, created_at DESC);
+
 -- Migration tracking: runMigrations() uses this to apply only new migrations.
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id         INTEGER PRIMARY KEY,

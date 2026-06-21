@@ -54,3 +54,12 @@ sentencepiece>=0.2.0
 airllm>=2.11.0
 accelerate>=0.30.0
 bitsandbytes>=0.43.0 ; platform_system != "Windows"
+
+# turbovec — optional alternative vector index (TurboQuant, ~16x compression at
+# 2-bit, SIMD ARM/x86). Powers the worker /vector/* surface the Node server uses
+# ONLY when CONFIG.turbovecEnabled=true (OFF by default; sqlite-vec stays the
+# in-process index and the hot path falls back to it on any turbovec miss).
+# numpy-only at the worker boundary — no torch needed. Forward-looking experiment;
+# its compression+SIMD value arrives past ~100k vectors (see memory/turbovec-deferred).
+turbovec>=0.1.0
+numpy>=1.24.0

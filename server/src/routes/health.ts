@@ -5,6 +5,8 @@ import { countMemoryPoints } from "../db/repositories/memory.js";
 import { getDiagnosticCounts } from "../util/diagnostics.js";
 import { probeWorker } from "../perception/workerClient.js";
 import { computeLocality } from "../util/locality.js";
+import { CONFIG } from "../config.js";
+import { cachedTurbovecAvailable } from "../learning/turbovecClient.js";
 
 export const healthRouter = Router();
 
@@ -46,5 +48,11 @@ healthRouter.get("/health", async (_req, res) => {
     // Per-source counts of previously-swallowed errors (empty when healthy).
     diagnostics: getDiagnosticCounts(),
     perception,
+    // turbovec — optional alternative vector index on the worker. `enabled` mirrors
+    // the server-side gate; `available` is the LAST cached probe (sync, no probe here
+    // — the real probe lives in GET /api/learning/turbovec/status and the hot path).
+    // False before the first probe and while the worker is down; the in-process
+    // sqlite-vec index (above `vector`) is always the default + fallback.
+    turbovec: { enabled: CONFIG.turbovecEnabled, available: cachedTurbovecAvailable() },
   });
 });

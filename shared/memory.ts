@@ -21,6 +21,26 @@ export interface MemoryPoint {
   metadata?: Record<string, unknown>;
 }
 
+// Memory DNA — the living per-memory attributes the master vision asks for
+// beyond importance/decay/connections (already on memory_points): an affective
+// VALENCE, a credibility/TRUST, and a source VERIFICATION label. Stored under
+// `metadata.dna` (no migration); read back via memory/memoryDna.ts, which also
+// infers these from provenance for memories written before the feature.
+export type MemoryVerification =
+  | "unverified" // raw, unconfirmed (e.g. fetched web text)
+  | "web-corroborated" // came from a real fetched source (web/github), weak corroboration
+  | "user-confirmed" // the user's own files / notes / a 👍'd answer
+  | "self-derived"; // the brain's own reasoning / distillation
+
+export interface MemoryDna {
+  /** Affective valence at write time, [0,1] (0.5 = neutral). */
+  emotion?: number;
+  /** Source credibility / trust, [0,1]. Low trust gently down-ranks retrieval. */
+  trust?: number;
+  /** How the content was verified / where it came from. */
+  verification?: MemoryVerification;
+}
+
 export type MemoryRelationKind =
   | "cites" // conversation message -> chunk it referenced
   | "derived-from" // summary -> source chunk

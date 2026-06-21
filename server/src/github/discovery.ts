@@ -26,7 +26,7 @@
 
 import { Buffer } from "node:buffer";
 import { CONFIG } from "../config.js";
-import { isLocalUrl } from "../util/network.js";
+import { assertEgressAllowed } from "../util/network.js";
 import { readCapped } from "../ingest/webFetch.js";
 import type { GitHubDiscoverOutcome, GitHubRepo } from "../../../shared/github.js";
 
@@ -96,7 +96,7 @@ async function ghFetch(endpoint: string, opts: GitHubFetchOptions): Promise<GhFe
 
   // EGRESS GATE — under LOCAL_ONLY, api.github.com is not local, so this blocks
   // before `doFetch` is ever called (proven by the selfcheck's call counter).
-  if (localOnly && !isLocalUrl(endpoint)) {
+  if (!assertEgressAllowed(endpoint, localOnly).ok) {
     return {
       ok: false,
       reason: "blocked: GitHub discovery is off while LOCAL_ONLY=true (set LOCAL_ONLY=false to allow it)",

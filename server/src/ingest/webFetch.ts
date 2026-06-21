@@ -30,7 +30,7 @@
 // deny-list for link-local/metadata ranges before trusting it there.
 
 import { CONFIG } from "../config.js";
-import { isLocalUrl } from "../util/network.js";
+import { assertEgressAllowed } from "../util/network.js";
 
 export interface WebFetchOptions {
   // Injected in tests; defaults to the global fetch in production.
@@ -200,7 +200,7 @@ export async function fetchUrlText(rawUrl: string, opts: WebFetchOptions = {}): 
   }
 
   // EGRESS GATE — see file header. Blocked targets never reach `doFetch`.
-  if (localOnly && !isLocalUrl(rawUrl)) {
+  if (!assertEgressAllowed(rawUrl, localOnly).ok) {
     return {
       ok: false,
       reason: "blocked: web learning is off while LOCAL_ONLY=true (set LOCAL_ONLY=false to allow internet fetches)",

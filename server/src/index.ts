@@ -208,10 +208,12 @@ async function main(): Promise<void> {
   // it inside reorder gymnastics.
   const globalBodyParser = express.json({ limit: "1mb" });
   app.use((req, res, next) => {
-    // /api/perceive/* and /api/ingest/file install their OWN larger json() parser
-    // (audio/image/file base64 payloads exceed 1mb); let them bypass the global
-    // parser, or that inner json() is a no-op (body-parser is idempotent).
-    if (req.path.startsWith("/api/perceive/") || req.path === "/api/ingest/file") return next();
+    // /api/perceive/*, /api/ingest/file, and /api/agent install their OWN larger
+    // json() parser (audio/image/file base64 payloads exceed 1mb — /api/agent
+    // carries reference images); let them bypass the global parser, or that inner
+    // json() is a no-op (body-parser is idempotent).
+    if (req.path.startsWith("/api/perceive/") || req.path === "/api/ingest/file" || req.path === "/api/agent")
+      return next();
     return globalBodyParser(req, res, next);
   });
   app.use("/api", healthRouter);

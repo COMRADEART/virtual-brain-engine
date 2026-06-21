@@ -35,6 +35,7 @@ import { decayAssociations } from "./hebbian.js";
 import { tokens } from "../attention/saliency.js";
 import { CONFIG } from "../config.js";
 import { getBeliefEngine } from "../core/beliefs.js";
+import { getHypothesisEngine } from "../core/hypotheses.js";
 import { extractProcedures } from "./procedural.js";
 import { synthesizeNarrative } from "../core/narrative.js";
 import { getCognitiveDna, signalsFromConsolidation } from "../core/cognitiveDna.js";
@@ -229,6 +230,16 @@ export async function runSleepCycle(opts: SleepOptions = {}): Promise<SleepRepor
   // Beliefs decay "during sleep" too — same use-it-or-lose-it cadence as the
   // Hebbian edges, no separate timer. Failure-isolated inside the engine.
   const beliefDecay = getBeliefEngine().decayTick();
+  // Scientific reasoning — form hypotheses from the most-uncertain causal links,
+  // test them cheaply against the ledger, promote the supported ones into
+  // beliefs. Reflective, offline, failure-isolated; gated by CONFIG.hypotheses.
+  if (CONFIG.hypotheses) {
+    try {
+      getHypothesisEngine().sleepTick();
+    } catch (err) {
+      surfaceError("sleep.hypotheses", err);
+    }
+  }
   // Procedural consolidation: mine the action audit for recurring successful
   // sequences (memory/procedural.ts). Failure-isolated inside the module.
   const proceduresLearned = extractProcedures();

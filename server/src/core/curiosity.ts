@@ -34,6 +34,7 @@ import type { CausalLink } from "./causalMap.js";
 import { getAllCausalLinks } from "./causalMap.js";
 import { getPersistentOrganism } from "./organism.js";
 import { getCognitiveDna, curiosityGain } from "./cognitiveDna.js";
+import { getNeuromodulators, moodExploreBias } from "./neuromodulators.js";
 
 export interface CuriosityInput {
   causalLinks: CausalLink[];
@@ -45,6 +46,8 @@ export interface CuriosityInput {
   organismHealth?: number;
   /** Additive cognitive-DNA curiosity bias in ~[-0.15,0.15]; 0/absent = no-op. */
   dnaGain?: number;
+  /** Additive serotonin mood bias (low mood → more exploration); 0/absent = no-op. */
+  moodBias?: number;
 }
 
 export interface CuriosityResult {
@@ -127,7 +130,12 @@ export function computeCuriosity(input: CuriosityInput): CuriosityResult {
   const dnaGain =
     typeof input.dnaGain === "number" && Number.isFinite(input.dnaGain) ? input.dnaGain : 0;
 
-  const curiosity = clamp01((frontier + 0.15 * modulation) * healthFactor + dnaGain);
+  // Serotonin mood bias: a low mood makes the brain more restless/exploratory.
+  // Centred so a baseline mood (bias 0) leaves the score exactly as it was.
+  const moodBias =
+    typeof input.moodBias === "number" && Number.isFinite(input.moodBias) ? input.moodBias : 0;
+
+  const curiosity = clamp01((frontier + 0.15 * modulation) * healthFactor + dnaGain + moodBias);
 
   return { curiosity, frontier, topTarget };
 }
@@ -161,7 +169,15 @@ export function gatherCuriosity(): CuriosityResult {
     /* keep dnaGain = 0 (neutral) */
   }
 
+  // Serotonin mood bias (failure-isolated → stays 0, a no-op at baseline).
+  let moodBias = 0;
+  try {
+    moodBias = moodExploreBias(getNeuromodulators().levels());
+  } catch {
+    /* keep moodBias = 0 (neutral) */
+  }
+
   // saliencyUncertainty / rankerSpread are optional modulators. We do not block
   // on them — passing undefined is spec-compliant and avoids new coupling.
-  return computeCuriosity({ causalLinks, organismHealth, dnaGain });
+  return computeCuriosity({ causalLinks, organismHealth, dnaGain, moodBias });
 }

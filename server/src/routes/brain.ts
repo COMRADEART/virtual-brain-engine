@@ -32,6 +32,7 @@ import { Router } from "express";
 import { getBrainState } from "../core/brainState.js";
 import { getBeliefEngine, type BeliefStatus } from "../core/beliefs.js";
 import { getGoalManager } from "../core/goalManager.js";
+import { pursueNextGoal } from "../reasoning/goalPursuit.js";
 import { getKernel } from "../core/kernel.js";
 import { stageAllows, FEATURE_STAGE } from "../core/stages.js";
 import { getNeuromodulators } from "../core/neuromodulators.js";
@@ -47,6 +48,14 @@ import { getCognitiveDna } from "../core/cognitiveDna.js";
 import { emotionStatus } from "../core/emotions.js";
 import { gatherSkills, skillSummary } from "../core/skills.js";
 import { getSelfRepresentation } from "../core/selfRepresentation.js";
+import { getUserModel } from "../core/userModel.js";
+import { memoryDnaStats } from "../memory/memoryDna.js";
+import { runCreativeCycle, listIdeas, creativityStats } from "../core/creativity.js";
+import { getHypothesisEngine } from "../core/hypotheses.js";
+import type { HypothesisStatus } from "../../../shared/hypotheses.js";
+import { snapshot as metricsSnapshot } from "../observability/metrics.js";
+import { readVitals, readDiagnostics } from "../observability/vitals.js";
+import { maturationStatus } from "../core/maturation.js";
 
 export const brainRouter = Router();
 
@@ -107,8 +116,47 @@ brainRouter.post("/brain/goals/decompose", (req, res) => {
     .catch((err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) }));
 });
 
+// Goal-leaf → execution (E5): work on the next actionable goal leaf via the agent
+// loop (safe-only — autonomous pursuit never gets confirm-tier authority). Manual
+// trigger; the interactive /api/agent path is how confirm-tier work gets done.
+brainRouter.post("/brain/goals/pursue", (_req, res) => {
+  void pursueNextGoal()
+    .then((report) => res.json(report))
+    .catch((err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) }));
+});
+
 brainRouter.get("/brain/kernel", (_req, res) => {
   res.json(getKernel().status());
+});
+
+// OBSERVABILITY (C1) — the brain's own vitals. `metrics` = the live in-process
+// registry snapshot (counters/gauges/p50/p95); `series` = the persisted
+// brain_vitals time-series sampled on the brainCore tick; `diagnostics` = the
+// durable error taxonomy (what surfaceError used to keep only in memory).
+brainRouter.get("/brain/vitals", (req, res) => {
+  const since = typeof req.query.since === "string" ? req.query.since : undefined;
+  const limit = Math.min(5000, Math.max(1, Number(req.query.limit) || 1000));
+  res.json({
+    metrics: metricsSnapshot(),
+    series: readVitals(since, limit),
+    diagnostics: readDiagnostics(100),
+  });
+});
+
+brainRouter.get("/brain/metrics", (_req, res) => {
+  res.json(metricsSnapshot());
+});
+
+brainRouter.get("/brain/diagnostics", (req, res) => {
+  const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100));
+  res.json({ diagnostics: readDiagnostics(limit) });
+});
+
+// DEVELOPMENTAL ACTIVATION (H2) — which "dark" cognitive features the brain has
+// grown into vs. which are still locked behind a developmental stage. The
+// infant→adult arc, made observable.
+brainRouter.get("/brain/maturation", (_req, res) => {
+  res.json(maturationStatus());
 });
 
 brainRouter.get("/brain/procedures", (req, res) => {
@@ -158,6 +206,69 @@ brainRouter.get("/brain/skills", (req, res) => {
 // SELF — the unified self-representation (who / what / why / what to become).
 brainRouter.get("/brain/self", (_req, res) => {
   res.json(getSelfRepresentation().self);
+});
+
+// USER — Theory of Mind: the brain's model of the PERSON it talks with
+// (recurring interests, sustained domains, preferred style, current goals) plus
+// the grounding preamble (empty until the model has formed).
+brainRouter.get("/brain/user", (_req, res) => {
+  res.json(getUserModel().status());
+});
+
+// MEMORY DNA — affect/trust/verification tally over a recent memory sample
+// (the "living memory" surface).
+brainRouter.get("/brain/memory-dna/stats", (req, res) => {
+  const limit = Math.min(5000, Math.max(1, Number(req.query.limit) || 500));
+  res.json(memoryDnaStats(limit));
+});
+
+// CREATIVITY — distant-concept recombinations (the ideas the brain invented).
+brainRouter.get("/brain/creativity", (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  res.json({ stats: creativityStats(), ideas: listIdeas(limit) });
+});
+
+// Run one creative cycle now (bridge two distant memories) — the runtime check.
+brainRouter.post("/brain/creative", (_req, res) => {
+  void runCreativeCycle()
+    .then((report) => res.json(report))
+    .catch((err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) }));
+});
+
+// HYPOTHESES — the scientific-reasoning ledger (open → tested → supported/refuted).
+brainRouter.get("/brain/hypotheses", (req, res) => {
+  const raw = typeof req.query.status === "string" ? req.query.status : undefined;
+  const status: HypothesisStatus | undefined =
+    raw === "open" || raw === "testing" || raw === "supported" || raw === "refuted" || raw === "retired"
+      ? raw
+      : undefined;
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  const engine = getHypothesisEngine();
+  res.json({ stats: engine.hypothesisStats(), hypotheses: engine.listHypotheses({ status, limit }) });
+});
+
+// Form (optional) + test a hypothesis now — the runtime check. Body:
+// { statement?, causeClass?, effectClass? } forms then tests; else runs a sleep tick.
+brainRouter.post("/brain/hypotheses/test", (req, res) => {
+  try {
+    const engine = getHypothesisEngine();
+    const statement = typeof req.body?.statement === "string" ? req.body.statement : "";
+    if (statement) {
+      const formed = engine.formHypothesisFromObservation(statement, {
+        causeClass: typeof req.body?.causeClass === "string" ? req.body.causeClass : null,
+        effectClass: typeof req.body?.effectClass === "string" ? req.body.effectClass : null,
+      });
+      if (!formed) {
+        res.status(400).json({ error: "could not form hypothesis (statement too short?)" });
+        return;
+      }
+      res.json(engine.test(formed.id));
+      return;
+    }
+    res.json(engine.sleepTick());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // MYTHOS — the brain's self-narrative ("who I am / how I've grown").

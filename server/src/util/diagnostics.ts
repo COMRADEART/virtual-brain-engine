@@ -8,6 +8,8 @@
 //   3. broadcast on the brain bus, throttled so a recurring failure can't flood it.
 
 import { broadcast } from "../ws/brainBus.js";
+import { incr } from "../observability/metrics.js";
+import { persistDiagnostic } from "../observability/vitals.js";
 
 const counts = new Map<string, number>();
 const lastBroadcast = new Map<string, number>();
@@ -19,7 +21,11 @@ export function surfaceError(
   level: "warn" | "error" = "warn",
 ): void {
   const message = err instanceof Error ? err.message : String(err);
-  counts.set(source, (counts.get(source) ?? 0) + 1);
+  const count = (counts.get(source) ?? 0) + 1;
+  counts.set(source, count);
+  // (2) Feed the metrics registry so the error rate surfaces in vitals.
+  incr("errors.total");
+  incr(`errors.${source}`);
 
   // (1) Always log — this is the "stops being silent" guarantee.
   if (level === "error") {
@@ -33,6 +39,10 @@ export function surfaceError(
   const now = Date.now();
   if (now - (lastBroadcast.get(source) ?? 0) >= BROADCAST_THROTTLE_MS) {
     lastBroadcast.set(source, now);
+    // (4) Persist into the durable taxonomy. The throttle gate bounds DB writes
+    // to one row per source per window. Best-effort — persistDiagnostic never
+    // throws (it must not: it's called from the universal error sink).
+    persistDiagnostic(source, level, message, count);
     try {
       broadcast({
         type: "diagnostic",

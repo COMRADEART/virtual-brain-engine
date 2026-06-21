@@ -102,6 +102,8 @@ import {
   type CognitiveTraits,
 } from "../core/cognitiveDna.js";
 import { getSelfRepresentation, selfPreamble } from "../core/selfRepresentation.js";
+import { getUserModel, userPreamble } from "../core/userModel.js";
+import { deriveDna, mergeDna, readDna, trustDemotion } from "../memory/memoryDna.js";
 import { associativeNeighbors, recordCoCitations } from "../memory/hebbian.js";
 import type { GraphContext } from "./ranker.js";
 import {
@@ -112,6 +114,16 @@ import {
   savePredictiveState,
   type RetrievalPrediction,
 } from "./predictiveProcessing.js";
+import {
+  buildActiveInferenceContext,
+  decideActiveInference,
+  learnActiveInference,
+  loadActiveInferenceState,
+  saveActiveInferenceState,
+} from "./activeInference.js";
+import type { ActiveInferenceContext, ActiveInferencePolicy } from "../../../shared/activeInference.js";
+import { currentEnergyBudget } from "../core/energyBudget.js";
+import { isFeatureActive } from "../core/maturation.js";
 import {
   calibrateConfidence,
   isWeakDomain,
@@ -393,20 +405,47 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       surfaceError("pipeline.adaptiveDepth", err);
     }
   }
+  // HOMEOSTATIC ENERGY (H1) — a tired brain thinks less hard: low energy nudges
+  // the depth gate UP so more queries take the cheap embed→search→stream path.
+  // Captured once for the whole run and reused below for retrieval breadth + the
+  // active-inference energy deficit. No-regression: at/above FULL_FLOOR energy
+  // depthPenalty is 0 (and the whole budget is a strict no-op when ENERGY_BUDGET
+  // is off, or on any organism read fault).
+  const energyBudget = currentEnergyBudget();
+  if (energyBudget.depthPenalty > 0) {
+    const base = depthThreshold ?? DEPTH_DIFFICULTY_THRESHOLD;
+    depthThreshold = Math.min(1, base + energyBudget.depthPenalty);
+  }
   let route: RouteDecision = routeQuery(req.prompt, { depthThreshold });
   const swarm = getCognitiveSwarm();
-  swarm.routeCognitiveWorkflow(
-    `Answer user request: ${req.prompt.slice(0, 180)}`,
-    { conversationId: cid, runId, prompt: req.prompt },
-    { includeExecution: false, priority: 68, privacyMode: "local-first" },
-  );
-  getImaginationEngine().imagine({
-    goal: `Mentally rehearse answer path for: ${req.prompt.slice(0, 180)}`,
-    action: req.prompt,
-    mode: "future-prediction",
-    branchCount: 3,
-    context: { conversationId: cid, runId },
-  });
+  // Per-request swarm/imagination rehearsal — OFF by default (experimental
+  // subsystems stay behind routers, not in the pipeline hot path; CLAUDE.md).
+  // Wrapped in try/catch FIRST: a throw here used to kill /api/ask outright.
+  // (`swarm` is also used downstream at the full-route consensus call.)
+  if (CONFIG.enablePerRequestSwarm) {
+    try {
+      swarm.routeCognitiveWorkflow(
+        `Answer user request: ${req.prompt.slice(0, 180)}`,
+        { conversationId: cid, runId, prompt: req.prompt },
+        { includeExecution: false, priority: 68, privacyMode: "local-first" },
+      );
+    } catch (err) {
+      surfaceError("pipeline.swarm", err);
+    }
+  }
+  if (CONFIG.enablePerRequestImagination) {
+    try {
+      getImaginationEngine().imagine({
+        goal: `Mentally rehearse answer path for: ${req.prompt.slice(0, 180)}`,
+        action: req.prompt,
+        mode: "future-prediction",
+        branchCount: 3,
+        context: { conversationId: cid, runId },
+      });
+    } catch (err) {
+      surfaceError("pipeline.imagination", err);
+    }
+  }
 
   // 2. MEMORY
   stepStart = Date.now();
@@ -429,6 +468,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // step → reward in the learning step). null whenever the controller is off.
   let controllerDecision: ControllerDecision | null = null;
   let controllerCtx: RetrievalContext | null = null;
+  // ACTIVE INFERENCE (C3) state for this run — context + policy captured in the
+  // memory step, the realised surprise folded back in the learning step. null
+  // whenever active inference is off or its context build failed.
+  let aiCtx: ActiveInferenceContext | null = null;
+  let aiPolicy: ActiveInferencePolicy | null = null;
+  // Active inference is gated once per request (maturation reads the persisted
+  // stage from SQLite; computing it once avoids a redundant read at the learn site).
+  const aiActive = isFeatureActive("active-inference");
   const webHitIds = new Set<string>(); // ids of FUSED WEB hits, for the augment reward
   const embedder = getEmbedder(connector);
   if (embedder?.embed) {
@@ -451,8 +498,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // pull the widest arm so the retrievalK slot can SLICE down to its choice
       // from a single fetch (no re-query); otherwise the historical default.
       const controllerOn = CONFIG.adaptiveController;
-      const baseK = controllerOn ? Math.max(...RETRIEVAL_K_ARMS) : DEFAULT_RETRIEVAL_K;
-      let raw = vectorSearch(embedding, baseK);
+      let baseK = controllerOn ? Math.max(...RETRIEVAL_K_ARMS) : DEFAULT_RETRIEVAL_K;
+      // Energy (H1): a tired brain retrieves a slightly narrower pool. Applied
+      // only on the non-controller path (the controller manages its own k by
+      // slicing down from the widest arm); strict no-op at full energy.
+      if (!controllerOn && energyBudget.retrievalScale < 1) {
+        baseK = Math.max(5, Math.round(baseK * energyBudget.retrievalScale));
+      }
+      let raw = await vectorSearch(embedding, baseK);
 
       // PREDICTIVE PROCESSING — record what the brain expected of LOCAL memory
       // here (top raw vec score, before augmentation), so the learning step can
@@ -515,14 +568,49 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       const broadenForMemoryFocus = CONFIG.multiQueryRag && wantsBroaderRetrieval(dnaTraits);
       if (broadenForMemoryFocus) feedForwardNote += " · dna:broaden";
 
+      // ACTIVE INFERENCE (C3) — close the predictive loop: ACT to reduce
+      // EXPECTED free energy. From the retrieval prediction + prior uncertainty +
+      // arousal/ACh, decide whether to FORAGE for more evidence (broaden /
+      // augment) BEFORE answering, so the brain reduces predicted surprise
+      // instead of merely measuring it after the fact. Warm-start floor → zero
+      // perturbation on a cold brain; the augment vote is still gated by hybridOn
+      // below (egress-safe). The realised surprise trains the policy in the
+      // learning step.
+      let aiBroaden = false;
+      let aiAugment = false;
+      // Active inference (C3) — a loop-closer routed through maturation (H2): a
+      // matured brain (stage ≥ 8) earns it even with the static flag off, while
+      // its own warm-start floor keeps a cold brain identical to the heuristics.
+      if (aiActive) {
+        try {
+          aiPolicy = loadActiveInferenceState();
+          aiCtx = buildActiveInferenceContext({
+            prediction,
+            uncertainty: priorUncertainty,
+            norepinephrine: modulatorLevels.norepinephrine,
+            acetylcholine: (modulatorLevels as Record<string, number>).acetylcholine ?? 0.2,
+            // H1: a depleted brain forages less (holding is metabolically cheaper).
+            energyDeficit: energyBudget.energyDeficit,
+          });
+          const aiDecision = decideActiveInference(aiCtx, aiPolicy);
+          aiBroaden = aiDecision.broaden;
+          aiAugment = aiDecision.augment;
+          if (aiDecision.acted) feedForwardNote += ` · ai:${aiDecision.action}(efe ${aiDecision.efe.toFixed(2)})`;
+        } catch (err) {
+          surfaceError("pipeline.activeInference", err);
+        }
+      }
+
       // The heuristic baselines (what the pipeline would do without the
       // controller). These are ALSO the warm-start the controller falls back to.
       // Acetylcholine (uncertainty tone) votes for fresh data over memory; the
       // vote only matters when the brain is already online (hybridOn carries
-      // the LOCAL_ONLY egress gate — ACh can never bypass it).
+      // the LOCAL_ONLY egress gate — ACh can never bypass it). Active inference's
+      // augment vote rides the SAME hybridOn gate; its broaden vote rides
+      // CONFIG.multiQueryRag, exactly like the other broaden signals.
       const hybridOn = hybridEnabled();
       const heuristicAugment =
-        hybridOn && (shouldAugment(req.prompt, raw).augment || wantsFreshData(modulatorLevels));
+        hybridOn && (shouldAugment(req.prompt, raw).augment || wantsFreshData(modulatorLevels) || aiAugment);
       const heuristicMultiQuery =
         CONFIG.multiQueryRag &&
         raw.length > 0 &&
@@ -531,7 +619,8 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
           broadenForUncertainty ||
           broadenForArousal ||
           weakDomainBroaden ||
-          broadenForMemoryFocus);
+          broadenForMemoryFocus ||
+          aiBroaden);
 
       // RL CONTROLLER (opt-in). Decides augment / retrieval-k / multi-query /
       // model-profile from the bandit (warm-started at the heuristics, so a cold
@@ -734,17 +823,34 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // unchanged. As the brain develops a character/goals, its voice begins to
   // appear here — which is the intended effect, not a regression.
   let narrativeGroundingBlock = "";
-  if (CONFIG.narrativeGrounding) {
+  if (CONFIG.narrativeGrounding || CONFIG.theoryOfMind) {
     try {
-      const lines: string[] = [];
-      const narrativePre = narrativePreamble(getNarrative());
-      if (narrativePre) lines.push(narrativePre);
-      const { self, parts } = getSelfRepresentation();
-      const selfPre = selfPreamble(self, parts);
-      if (selfPre) lines.push(selfPre);
-      if (lines.length > 0) {
-        narrativeGroundingBlock = `Your identity (keep your answer consistent with who you are; this is your voice, NOT factual memory to cite):\n${lines.join(" ")}`;
+      const sections: string[] = [];
+      // M3 — the brain's own identity voice (narrative + unified self).
+      if (CONFIG.narrativeGrounding) {
+        const lines: string[] = [];
+        const narrativePre = narrativePreamble(getNarrative());
+        if (narrativePre) lines.push(narrativePre);
+        const { self, parts } = getSelfRepresentation();
+        const selfPre = selfPreamble(self, parts);
+        if (selfPre) lines.push(selfPre);
+        if (lines.length > 0) {
+          sections.push(
+            `Your identity (keep your answer consistent with who you are; this is your voice, NOT factual memory to cite):\n${lines.join(" ")}`,
+          );
+        }
       }
+      // Theory of Mind — who the brain is talking to. Empty (no section) until
+      // the user model has formed over a few turns, so a cold brain is unchanged.
+      if (CONFIG.theoryOfMind) {
+        const userPre = userPreamble(getUserModel().model());
+        if (userPre) {
+          sections.push(
+            `Who you're assisting (adapt depth and register to them; this is context, NOT factual memory to cite):\n${userPre}`,
+          );
+        }
+      }
+      if (sections.length > 0) narrativeGroundingBlock = sections.join("\n\n");
     } catch (err) {
       surfaceError("pipeline.narrativeGrounding", err);
     }
@@ -762,6 +868,16 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   // local inference. The full ranked set is still kept for training + the UI.
   // Kept OUTSIDE the depth branch — the error and response steps consume
   // memoryList even when reasoning is shallow.
+  // MEMORY DNA — gently down-rank low-trust memories (raw web text) before
+  // selecting what the LLM reads, so the answer leans on credible memory. Same
+  // multiplicative re-score pattern as the project rerank below; strict no-op
+  // when CONFIG.memoryDna is off OR a memory's trust is normal/high (factor 1.0).
+  if (CONFIG.memoryDna) {
+    memoryHits = memoryHits.map((hit) => {
+      const factor = trustDemotion(readDna(hit.memory));
+      return factor === 1 ? hit : { ...hit, score: hit.score * factor };
+    });
+  }
   const promptHits = maybeExplore(
     selectPromptHits(memoryHits, rankFeatures, rankWarm),
     runId,
@@ -1286,6 +1402,20 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   } catch (err) {
     surfaceError("pipeline.dnaEvolve", err);
   }
+  // THEORY OF MIND — fold this turn into the model of the PERSON (recurring
+  // interests, sustained domains, preferred style, stated goals). Passive: it
+  // updates whether or not the preamble is injected (the inject is separately
+  // gated by CONFIG.theoryOfMind), so the model is always warming. Failure-isolated.
+  try {
+    getUserModel().observe({
+      prompt: req.prompt,
+      answer: finalAnswer,
+      citedCount: citedIds.size,
+      confidence: calibratedConfidence,
+    });
+  } catch (err) {
+    surfaceError("pipeline.userModel", err);
+  }
   // PREDICTIVE PROCESSING — compare expectation against reality. Surprise
   // pulses norepinephrine; "expected to KNOW this and didn't" holds an open
   // question in working memory; the EMA model trains on every cycle.
@@ -1300,6 +1430,14 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
         // (reality diverged from expectation). Lives inside this EXISTING
         // failure-isolated predictive block — not a new pipeline call site.
         if (sr.surprise >= 0.3) getBeliefEngine().noteSurprise(req.prompt, sr.surprise);
+        // ACTIVE INFERENCE (C3) — fold the REALISED surprise back into the
+        // foraging policy so it learns which contexts warranted acting. Rides
+        // this existing predictive block (it needs the same prediction); a brain
+        // with predictiveProcessing off keeps active inference permanently in its
+        // warm-start floor — safe, no perturbation.
+        if (aiActive && aiCtx && aiPolicy) {
+          saveActiveInferenceState(learnActiveInference(aiPolicy, aiCtx, sr.surprise));
+        }
       }
       savePredictiveState(observeRetrieval(loadPredictiveState(), req.prompt, actual));
     } catch (err) {
@@ -1346,7 +1484,18 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       contentHash: sha1(`${req.prompt}|${finalAnswer}`),
       importance: errorReport.confidence,
       embedding: learnedEmbedding,
-      metadata: { conversationId: cid, runId },
+      // MEMORY DNA — stamp the learned memory with affect + trust + verification
+      // (under metadata.dna). Always written (cheap metadata); the retrieval
+      // demotion that reads it is separately gated by CONFIG.memoryDna.
+      metadata: mergeDna(
+        { conversationId: cid, runId },
+        deriveDna({
+          source: "conversation",
+          confidence: calibratedConfidence,
+          citedCount: citedIds.size,
+          emotion: citedIds.size > 0 ? Math.min(1, 0.5 + 0.2 * calibratedConfidence) : 0.45,
+        }),
+      ),
     });
     const memoryContext = processNewMemory(
       learned.content,

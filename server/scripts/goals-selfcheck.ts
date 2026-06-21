@@ -248,6 +248,55 @@ const stub = {
 }
 
 // -----------------------------------------------------------------------------
+// (G) Goal-leaf → execution binding (E5): pursueNextGoal runs the deepest
+//     actionable leaf through the agent loop SAFE-ONLY and emits a cognition
+//     trace. Hermetic — a scripted connector finishes immediately (no tools).
+// -----------------------------------------------------------------------------
+
+{
+  const { pursueNextGoal } = await import("../src/reasoning/goalPursuit.js");
+  const { __setAgentConnector } = await import("../src/reasoning/agentLoop.js");
+  const { getEventBus } = await import("../src/core/eventBus.js");
+
+  // pursueNextGoal uses the SINGLETON manager (→ singleton organism → same temp
+  // DB), which holds the goals created above. Its cognition rides getEventBus().
+  __resetGoalManagerForTests();
+  const pursuitEvents: BrainEvent[] = [];
+  getEventBus().onAny((e) => pursuitEvents.push(e));
+
+  // No actionable goal → a clean no-op (not an error). Proven by pointing the
+  // manager at an empty forest first is overkill; instead assert the happy path
+  // and the failure-driven path below.
+  __setAgentConnector({
+    descriptor: { id: "stub", name: "stub", kind: "ollama", enabled: true, state: "ok", createdAt: "", updatedAt: "", isLocal: true },
+    listModels: async () => [],
+    send: async () => '{"thought":"looked into it","tool":null,"final":"Made progress on the goal."}',
+    stream: async function* () {
+      yield "";
+    },
+    test: async () => ({ ok: true }),
+  } as unknown as Connector);
+
+  const report = await pursueNextGoal();
+  check("(G) pursueNextGoal runs the next actionable goal (done)", report.pursued === true && report.status === "done", JSON.stringify(report));
+  check(
+    "(G) a completed pursuit emits a goal-progress cognition (reason goal-pursuit)",
+    pursuitEvents.some((e) => e.kind === "cognition" && e.event.kind === "goal-progress" && /goal-pursuit/.test(e.event.reason ?? "")),
+  );
+
+  // Failure-driven re-learning: no connector → the run errors → a curiosity-spike
+  // gap signal (never throws).
+  pursuitEvents.length = 0;
+  __setAgentConnector(null);
+  const gap = await pursueNextGoal();
+  check("(G) a failed pursuit still reports + never throws", gap.pursued === true);
+  check(
+    "(G) failure-driven re-learning emits a curiosity-spike gap",
+    pursuitEvents.some((e) => e.kind === "cognition" && e.event.kind === "curiosity-spike" && /gap/.test(e.event.reason ?? "")),
+  );
+}
+
+// -----------------------------------------------------------------------------
 // (F) Failure isolation — drop goal_history; nothing throws.
 // -----------------------------------------------------------------------------
 

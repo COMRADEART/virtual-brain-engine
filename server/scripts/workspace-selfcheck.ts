@@ -76,6 +76,8 @@ getBrainState().noteOpenQuestion("why does the staging deploy keep failing?");
     bids.some((b) => b.kind === "open-question" && b.label.includes("staging deploy")),
     JSON.stringify(bids.map((b) => b.kind)));
   check("open-question salience is high", (selectWinner(bids)?.salience ?? 0) > 0.5);
+  check("open-question bid is raised by the Reasoning cortex",
+    bids.find((b) => b.kind === "open-question")?.cortex === "Reasoning");
 }
 
 // noteOpenQuestion dedups the same label.
@@ -110,11 +112,29 @@ const stubConnector = {
     const row = db
       .prepare(`SELECT metadata FROM memory_points WHERE id = ?`)
       .get(report.memoryId) as { metadata: string } | undefined;
-    const meta = row ? (JSON.parse(row.metadata) as { kind?: string; bidKind?: string }) : {};
+    const meta = row ? (JSON.parse(row.metadata) as { kind?: string; bidKind?: string; cortex?: string }) : {};
     check("memory tagged workspace-thought", meta.kind === "workspace-thought" && meta.bidKind === "open-question");
+    check("memory carries the winning cortex", meta.cortex === "Reasoning");
   }
+  check("winner is tagged with its cortex", report.winner?.cortex === "Reasoning");
   check("idle-thought bus event emitted with workspace reason",
     idleEvent !== null && (idleEvent as unknown as { reason: string }).reason.startsWith("workspace:"));
+}
+
+// -----------------------------------------------------------------------------
+// (C2) Named cortices: a Safety bid pre-empts under stress.
+// -----------------------------------------------------------------------------
+
+{
+  // Force high cortisol (stress) directly in the modulator store; collectBids
+  // reads it live and the Safety cortex should out-arbitrate the open question.
+  db.prepare("INSERT INTO brain_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run("neuromodulators-v1", JSON.stringify({ levels: { dopamine: 0.5, norepinephrine: 0.2, acetylcholine: 0.2, serotonin: 0.5, cortisol: 0.85, oxytocin: 0.2 }, updatedAt: Date.now(), pulses: 1 }));
+  const bids = collectBids();
+  check("high cortisol raises a Safety-cortex bid", bids.some((b) => b.cortex === "Safety"));
+  check("Safety cortex pre-empts idle cognition (top salience)", selectWinner(bids)?.cortex === "Safety");
+  // Reset cortisol to baseline so the later degrade tests are unaffected.
+  db.prepare("DELETE FROM brain_metadata WHERE key = 'neuromodulators-v1'").run();
 }
 
 // -----------------------------------------------------------------------------

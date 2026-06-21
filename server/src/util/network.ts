@@ -67,6 +67,30 @@ export function isLocalUrl(input: string | undefined | null): boolean {
   return isLocalHostname(url.hostname);
 }
 
+// EGRESS GATE — the single decision behind every outbound path that is NOT a
+// curated LLM connector (web search, web fetch/ingest, GitHub discovery, MCP
+// transport, MCP marketplace). Returns whether `url` may be reached under
+// `localOnly`: under LOCAL_ONLY=true only loopback/RFC1918/unique-local targets
+// pass (via isLocalUrl). There is NO remote-host bypass here — unlike
+// isAllowedRemoteHost, which applies ONLY to connectors. Each caller keeps its
+// OWN response: its own reason string, return-result-vs-throw, redirect policy,
+// and host-pin (github/mcp-marketplace pin to their API host before this runs).
+// This helper only answers "may I egress?" so the gate lives in one place and a
+// new outbound path cannot accidentally forget it.
+export function assertEgressAllowed(
+  url: string | undefined | null,
+  localOnly: boolean,
+): { ok: true } | { ok: false; reason: string } {
+  if (localOnly && !isLocalUrl(url)) {
+    return {
+      ok: false,
+      reason:
+        "blocked: egress is off while LOCAL_ONLY=true (set LOCAL_ONLY=false to allow remote targets)",
+    };
+  }
+  return { ok: true };
+}
+
 export function isLocalHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (host === "localhost" || host === "127.0.0.1" || host === "::1") {

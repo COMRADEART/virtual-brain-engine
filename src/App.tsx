@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Settings2 } from "lucide-react";
 import { AiPickOverlay, type AiPickEvent } from "./components/AiPickOverlay";
 import { BrainScene, type AnatomyLoadProgress, type BrainSceneApi } from "./components/BrainScene";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -333,6 +334,19 @@ useEffect(() => {
           is active (i.e. the app was opened with ?useHybrid=true), in any layout. */}
       <CognitivePanel />
       <BrainLegendHUD />
+      {/* Always-visible Settings entry point. The "full" layout already has a gear
+          in its StatusBar; compact / focus / dashboard have no other button, so
+          this floating gear is their only on-screen way in (hidden in full via CSS
+          to avoid a duplicate). The "," key and Ctrl+K palette still work too. */}
+      <button
+        type="button"
+        className="global-settings-fab"
+        onClick={() => setSettingsOpen(true)}
+        title="Settings — ,"
+        aria-label="Open settings"
+      >
+        <Settings2 size={18} />
+      </button>
       {layout === "compact" && (
         <CompactLayout
           running={running}

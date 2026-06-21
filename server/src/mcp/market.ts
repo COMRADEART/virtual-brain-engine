@@ -24,7 +24,7 @@
 // responses and ZERO real network.
 
 import { CONFIG } from "../config.js";
-import { isLocalUrl } from "../util/network.js";
+import { assertEgressAllowed } from "../util/network.js";
 import { readCapped } from "../ingest/webFetch.js";
 import {
   type McpMarketEntry,
@@ -195,7 +195,7 @@ async function marketFetch(
 
   // EGRESS GATE — under LOCAL_ONLY the remote registry is not local → blocked
   // before doFetch is ever called (the selfcheck proves it with a call counter).
-  if (localOnly && !isLocalUrl(endpoint)) {
+  if (!assertEgressAllowed(endpoint, localOnly).ok) {
     return {
       ok: false,
       reason: "blocked: MCP marketplace is off while LOCAL_ONLY=true (set LOCAL_ONLY=false to allow it)",

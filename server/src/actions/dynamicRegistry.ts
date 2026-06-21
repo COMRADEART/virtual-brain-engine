@@ -10,6 +10,7 @@
 
 import { z } from "zod";
 import { ulid } from "ulid";
+import { CONFIG } from "../config.js";
 import { openDb } from "../db/sqlite.js";
 import { getActionDef, isAllowlisted, listActionSpecs } from "./registry.js";
 import { insertActionLog } from "../db/repositories/actions.js";
@@ -296,27 +297,28 @@ export async function executeDynamicHandler(
   if (!action.handlerCode) {
     throw new Error(`dynamic action ${id} has no handler code`);
   }
+  // SECURITY GATE — plain-code handler execution is OFF by default. A handler
+  // runs via `new Function`, whose body executes in Node's GLOBAL scope, so it
+  // can reach `process`/`globalThis` regardless of the param list, and the
+  // registration-time keyword scan is bypassable (obfuscated `Function`/`require`
+  // construction). Rather than pretend to sandbox untrusted JS, we simply don't
+  // run it unless the operator opts in. MCP-backed dynamic actions never reach
+  // here (the executor dispatches them to the hub before this). The throw is
+  // caught + audited by executor.ts as a clean refusal. (Opt in: ALLOW_DYNAMIC_CODE=true.)
+  if (!CONFIG.allowDynamicCode) {
+    throw new Error(
+      "plain-code dynamic handlers are disabled (set ALLOW_DYNAMIC_CODE=true to enable, or use an MCP-backed skill)",
+    );
+  }
 
-  // Build a sandboxed context for the handler.
-  // The handler receives: { args, log: (msg) => void }
-  const context = {
-    args,
-    log: (msg: string) => console.log(`[dynamic:${id}] ${msg}`),
-  };
+  const log = (msg: string) => console.log(`[dynamic:${id}] ${msg}`);
 
   try {
-    // Create a function from the handler code and execute it with the context.
-    // We wrap it in a Promise to handle async handlers.
-    const handlerFn = new Function("ctx", `
-      const { args, log } = ctx;
-      ${action.handlerCode}
-      return (async () => { ${action.handlerCode} })();
-    `);
-
-    // Simpler approach: just eval the handler in a limited scope
-    // This is intentionally minimal - only args and log are available
+    // Only `args` and `log` are passed in. NOTE: this is NOT a real sandbox (the
+    // body still runs in global scope) — the trust boundary is the ALLOW_DYNAMIC_CODE
+    // gate above + the executor's allowlist/confirm/audit, not this construction.
     const fn = new Function("args", "log", action.handlerCode);
-    const result = await fn(args, context.log);
+    const result = await fn(args, log);
     return result || { summary: `Executed ${id}`, data: { args } };
   } catch (err) {
     throw new Error(`handler failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });

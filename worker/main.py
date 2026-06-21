@@ -82,6 +82,38 @@ def _airllm_health() -> str:
     return "unavailable" if importlib.util.find_spec("airllm") is None else "available"
 
 
+# turbovec — optional alternative vector index (TurboQuant, ~16x compression at
+# 2-bit, SIMD ARM/x86). In-memory IdMapIndex keyed by memory_points.embedding_id
+# (the memory_vec rowid) so the Node-side post-search join mirrors sqlite-vec
+# exactly. OFF by default — only used when the server's CONFIG.turbovecEnabled is
+# true. The Node backfill route seeds it from the existing sqlite-vec store, the
+# ingestion mirror keeps it warm, and write()/load() persist it across worker
+# restarts. See memory/turbovec-deferred.md for the scale-based rationale.
+_turbovec_index: Any | None = None
+_turbovec_dim: int | None = None
+_turbovec_bit_width: int = 4
+_turbovec_count: int = 0
+_turbovec_path: str = os.environ.get(
+    "TURBOVEC_INDEX_PATH",
+    os.path.join(os.getcwd(), "data", "turbovec_index.tvim"),
+)
+_turbovec_lock = threading.Lock()
+
+
+def _turbovec_health() -> str:
+    """turbovec capability for /healthz: 'ready' once an index is loaded, else
+    availability by dep presence (turbovec + numpy). Safe on a bare worker — only
+    stdlib + importlib are touched here, no optional dep is imported."""
+    if _turbovec_index is not None:
+        return "ready"
+    if (
+        importlib.util.find_spec("turbovec") is None
+        or importlib.util.find_spec("numpy") is None
+    ):
+        return "unavailable"
+    return "available"
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     return {
@@ -95,6 +127,7 @@ def healthz() -> dict[str, Any]:
             "omniparser": _model_state("omniparser"),
             "tts": _model_state("tts"),
             "airllm": _airllm_health(),
+            "turbovec": _turbovec_health(),
         },
     }
 
@@ -763,6 +796,228 @@ def airllm_generate(body: AirllmGenerateIn) -> dict[str, Any]:
         ) from exc
     except Exception as exc:  # noqa: BLE001 — surface a clean 500, never crash
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# turbovec index service — /vector/* (status / add / add_batch / search / clear).
+# Lazy import of turbovec + numpy (the deps live in requirements-ml.txt). The index
+# is created empty on first add (dim taken from the first vector's length), loaded
+# from disk on first use if a persisted .tvim file exists, and re-written after
+# every mutation. A missing dep → 503; any other failure → a clean 500, never crash.
+# ---------------------------------------------------------------------------
+
+
+def _turbovec_safe_count(index: Any) -> int:
+    """Best-effort vector count (IdMapIndex may expose __len__ or a count attr).
+    Returns 0 if neither is available — a UI nicety, not correctness."""
+    try:
+        return int(len(index))  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return int(getattr(index, "count", 0))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _turbovec_load_if_present() -> None:
+    """Best-effort load of a persisted index into memory so /vector/status reports
+    'ready' immediately after a worker restart. No-op if already loaded, no file,
+    or the dep is missing. Never raises — a load failure stays at 'available'/
+    'unavailable' and the next /vector/add rebuilds from scratch."""
+    global _turbovec_index, _turbovec_dim, _turbovec_count
+    if _turbovec_index is not None or not os.path.exists(_turbovec_path):
+        return
+    try:
+        from turbovec import IdMapIndex  # type: ignore
+
+        idx = IdMapIndex.load(_turbovec_path)
+        _turbovec_index = idx
+        _turbovec_count = _turbovec_safe_count(idx)
+        _turbovec_dim = getattr(idx, "dim", None) or _turbovec_dim
+    except Exception:  # noqa: BLE001 — corrupt/stale file or missing dep → stay cold
+        _turbovec_index = None
+
+
+def _turbovec_ensure(dim: int) -> Any:
+    """Return the live IdMapIndex, loading from disk or creating empty on first use.
+    Raises 503 if turbovec/numpy isn't installed. `dim` (the vector length) is used
+    only when creating fresh — a loaded index keeps its own dim, and a mismatched
+    add surfaces turbovec's own error as a 500 (the clear+backfill flow avoids it)."""
+    global _turbovec_index, _turbovec_dim, _turbovec_bit_width, _turbovec_count
+    with _turbovec_lock:
+        if _turbovec_index is not None:
+            return _turbovec_index
+        try:
+            from turbovec import IdMapIndex  # type: ignore
+            import numpy  # noqa: F401 — verified here so the 503 covers a missing numpy
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "turbovec not installed. pip install -r worker/requirements-ml.txt "
+                    "(turbovec + numpy) to use the alternative vector index."
+                ),
+            ) from exc
+        bw = int(os.environ.get("TURBOVEC_BIT_WIDTH", "4"))
+        if bw not in (2, 4):
+            bw = 4
+        _turbovec_bit_width = bw
+        if os.path.exists(_turbovec_path):
+            try:
+                idx = IdMapIndex.load(_turbovec_path)
+                _turbovec_index = idx
+                _turbovec_count = _turbovec_safe_count(idx)
+                _turbovec_dim = getattr(idx, "dim", None) or dim
+                return idx
+            except Exception:  # noqa: BLE001 — corrupt/stale file → rebuild below
+                _turbovec_index = None
+        idx = IdMapIndex(dim=dim, bit_width=bw)
+        _turbovec_index = idx
+        _turbovec_dim = dim
+        _turbovec_count = 0
+        return idx
+
+
+def _turbovec_persist() -> None:
+    """Write the index to disk in-place, best-effort — a persist failure must not
+    break the in-memory operation that just succeeded."""
+    if _turbovec_index is None:
+        return
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(_turbovec_path)), exist_ok=True)
+        _turbovec_index.write(_turbovec_path)  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001 — persist is best-effort
+        pass
+
+
+class VectorAddIn(BaseModel):
+    id: int = Field(..., description="memory_points.embedding_id (the memory_vec rowid).")
+    vector: list[float] = Field(..., description="Embedding vector.")
+
+
+class VectorAddBatchIn(BaseModel):
+    items: list[VectorAddIn] = Field(default_factory=list)
+
+
+class VectorSearchIn(BaseModel):
+    vector: list[float]
+    k: int = Field(default=10, ge=1, le=200)
+    filter_ids: list[int] | None = Field(
+        default=None, description="Optional allowlist of ids to restrict the search."
+    )
+
+
+@app.get("/vector/status")
+def vector_status() -> dict[str, Any]:
+    _turbovec_load_if_present()
+    state = _turbovec_health()
+    return {
+        "state": state,
+        # The server's CONFIG.turbovecEnabled gates use; the worker just reports
+        # what it has. 'enabled' here means "this worker has turbovec available",
+        # surfaced alongside the state so the UI can show off/available/ready.
+        "enabled": state != "unavailable",
+        "dim": _turbovec_dim,
+        "bitWidth": _turbovec_bit_width if state == "ready" else None,
+        "count": _turbovec_count,
+        "message": (
+            None
+            if state != "unavailable"
+            else "turbovec not installed — pip install -r worker/requirements-ml.txt"
+        ),
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/vector/add")
+def vector_add(body: VectorAddIn) -> dict[str, Any]:
+    import numpy as np  # type: ignore
+
+    global _turbovec_count, _turbovec_dim
+    try:
+        idx = _turbovec_ensure(dim=len(body.vector))
+        idx.add_with_ids(
+            np.asarray(body.vector, dtype=np.float32)[None, :],
+            np.asarray([body.id], dtype=np.uint64),
+        )
+        _turbovec_dim = len(body.vector)
+        _turbovec_count += 1
+        _turbovec_persist()
+        return {"ok": True, "added": 1}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — surface a clean 500, never crash
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/vector/add_batch")
+def vector_add_batch(body: VectorAddBatchIn) -> dict[str, Any]:
+    import numpy as np  # type: ignore
+
+    if not body.items:
+        return {"ok": True, "added": 0}
+    global _turbovec_count, _turbovec_dim
+    try:
+        first_dim = len(body.items[0].vector)
+        idx = _turbovec_ensure(dim=first_dim)
+        mat = np.asarray([item.vector for item in body.items], dtype=np.float32)
+        ids = np.asarray([item.id for item in body.items], dtype=np.uint64)
+        idx.add_with_ids(mat, ids)
+        _turbovec_dim = first_dim
+        _turbovec_count += len(body.items)
+        _turbovec_persist()
+        return {"ok": True, "added": len(body.items)}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/vector/search")
+def vector_search(body: VectorSearchIn) -> dict[str, Any]:
+    import numpy as np  # type: ignore
+
+    global _turbovec_dim
+    try:
+        idx = _turbovec_ensure(dim=len(body.vector))
+        query = np.asarray(body.vector, dtype=np.float32)
+        allowlist = (
+            np.asarray(body.filter_ids, dtype=np.uint64)
+            if body.filter_ids is not None
+            else None
+        )
+        scores, ids = idx.search(query, body.k, allowlist=allowlist)
+        hits = [
+            {"id": int(i), "score": float(s)}
+            for i, s in zip(list(ids), list(scores))
+            if int(i) >= 0
+        ]
+        _turbovec_dim = len(body.vector)
+        return {"ok": True, "hits": hits}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/vector/clear")
+def vector_clear() -> dict[str, Any]:
+    """Drop the in-memory index AND the persisted file (a full reset). The Node
+    backfill route calls this before re-adding everything so stale ids can't
+    accumulate from deleted memory_points rows (the join would drop them, but the
+    slots would leak)."""
+    global _turbovec_index, _turbovec_dim, _turbovec_count
+    with _turbovec_lock:
+        _turbovec_index = None
+        _turbovec_dim = None
+        _turbovec_count = 0
+    try:
+        if os.path.exists(_turbovec_path):
+            os.remove(_turbovec_path)
+    except OSError:
+        pass
+    return {"ok": True}
 
 
 if __name__ == "__main__":  # pragma: no cover

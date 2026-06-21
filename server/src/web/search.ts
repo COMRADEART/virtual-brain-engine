@@ -21,7 +21,7 @@
 //   duckduckgo — duckduckgo.com/html            (no key; brittle HTML fallback)
 
 import { CONFIG } from "../config.js";
-import { isLocalUrl } from "../util/network.js";
+import { assertEgressAllowed } from "../util/network.js";
 import {
   WEB_SEARCH_PROVIDERS,
   type WebSearchOutcome,
@@ -236,7 +236,7 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const req = prepare(provider, q, opts);
 
   // EGRESS GATE — see header. Blocked endpoints never reach `doFetch`.
-  if (localOnly && !isLocalUrl(req.endpoint)) {
+  if (!assertEgressAllowed(req.endpoint, localOnly).ok) {
     return {
       ok: false,
       provider,
