@@ -27,6 +27,7 @@
     "learningloop:selfcheck": "tsx scripts/learningloop-selfcheck.ts",
     "models:selfcheck": "tsx scripts/models-selfcheck.ts",
     "websearch:selfcheck": "tsx scripts/websearch-selfcheck.ts",
+    "deepresearch:selfcheck": "tsx scripts/deepresearch-selfcheck.ts",
     "rag:selfcheck": "tsx scripts/rag-selfcheck.ts",
     "rl:selfcheck": "tsx scripts/rl-selfcheck.ts",
     "agent:selfcheck": "tsx scripts/agent-selfcheck.ts",

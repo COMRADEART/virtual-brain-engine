@@ -17,6 +17,7 @@ import { MemoryInspectorPanel } from "./components/MemoryInspectorPanel";
 import { SelfConsciousnessPanel } from "./components/SelfConsciousnessPanel";
 import { CognitionStreamPanel } from "./components/cognition/CognitionStreamPanel";
 import { SpinePanel } from "./components/SpinePanel";
+import { DeepResearchPanel } from "./components/research/DeepResearchPanel";
 import { IdleThoughtTicker } from "./components/IdleThoughtTicker";
 import { RegionControls } from "./components/RegionControls";
 import { UnifiedPanel } from "./components/UnifiedPanel";
@@ -77,6 +78,7 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useLocalStorage<boolean>("brain-twin-collapsed", true);
   const [cognitionCollapsed, setCognitionCollapsed] = useLocalStorage<boolean>("brain-cognition-collapsed", true);
   const [spineCollapsed, setSpineCollapsed] = useLocalStorage<boolean>("brain-spine-collapsed", true);
+  const [deepResearchCollapsed, setDeepResearchCollapsed] = useLocalStorage<boolean>("brain-dresearch-collapsed", true);
   const [unifiedTab, setUnifiedTab] = useLocalStorage<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("brain-unified-tab", "ask");
   const [unifiedCollapsed, setUnifiedCollapsed] = useLocalStorage<boolean>("brain-unified-collapsed", true);
   const [modelHubOpen, setModelHubOpen] = useState(false);
@@ -124,6 +126,11 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
   const toggleSpine = useCallback((collapsed?: boolean) => {
     setMode("full");
     setSpineCollapsed((c) => (collapsed !== undefined ? collapsed : !c));
+  }, [setMode]);
+
+  const toggleDeepResearch = useCallback((collapsed?: boolean) => {
+    setMode("full");
+    setDeepResearchCollapsed((c) => (collapsed !== undefined ? collapsed : !c));
   }, [setMode]);
 
   const toggleUnifiedPanel = useCallback((collapsed?: boolean) => {
@@ -492,6 +499,7 @@ useEffect(() => {
             onCollapsedChange={setCognitionCollapsed}
           />
           <SpinePanel collapsed={spineCollapsed} onCollapsedChange={setSpineCollapsed} />
+          <DeepResearchPanel collapsed={deepResearchCollapsed} onCollapsedChange={setDeepResearchCollapsed} />
           <IdleThoughtTicker />
           <UnifiedPanel
             tab={unifiedTab}
@@ -543,6 +551,7 @@ useEffect(() => {
         onToggleDigitalTwin={toggleDigitalTwin}
         onToggleCognitionStream={toggleCognitionStream}
         onToggleSpine={toggleSpine}
+        onToggleDeepResearch={toggleDeepResearch}
         onOpenUnifiedTab={openUnifiedTab}
         onToggleUnifiedPanel={toggleUnifiedPanel}
         onOpenModelHub={() => setModelHubOpen(true)}

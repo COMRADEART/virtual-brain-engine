@@ -21,7 +21,9 @@ import { CONFIG } from "../config.js";
 import { getActionDef, isAllowlisted, validateArgs } from "./registry.js";
 import { consumeConfirmToken } from "./confirmTokens.js";
 import { insertActionLog } from "../db/repositories/actions.js";
-import { keywordSearch, listRecentMemories, upsertMemoryPoint } from "../db/repositories/memory.js";
+import { keywordSearch, listRecentMemories, upsertMemoryPoint, vectorSearch } from "../db/repositories/memory.js";
+import { loadRerankerState } from "../db/repositories/adaptive.js";
+import { runDeepResearch, clampResearchOpts, type DeepResearchDeps } from "../reasoning/deepResearch.js";
 import { fetchAndIngestUrl } from "../ingest/index.js";
 import { isExcludedPath } from "../ingest/governance.js";
 import { webSearch } from "../web/search.js";
@@ -330,6 +332,57 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
     return {
       summary: `Researched "${query}" via ${r.provider} — learned ${r.ingested} new memor${r.ingested === 1 ? "y" : "ies"}${dup} from ${r.results.length} page${r.results.length === 1 ? "" : "s"}`,
       data: { provider: r.provider, ingested: r.ingested, deduped: r.deduped, results: r.results },
+    };
+  },
+  // "Deep research" — the iterative, multi-source, cited investigation. Runs the
+  // SAME engine as POST /api/research/deep but with a no-op emit (the loop's live
+  // progress isn't streamed through the action path). Egress stays LOCAL_ONLY-
+  // gated inside webResearch; on a local-only box it degrades to a local report.
+  "deep-research": async (args) => {
+    const question = String(args.question);
+    const maxRounds = typeof args.maxRounds === "number" ? args.maxRounds : undefined;
+    const breadth = typeof args.breadth === "number" ? args.breadth : undefined;
+    const maxPages = typeof args.maxPages === "number" ? args.maxPages : undefined;
+    if (!CONFIG.deepResearchEnabled) {
+      return { summary: "Deep research is disabled (set DEEP_RESEARCH_ENABLED=true)." };
+    }
+    const conn = getDefaultConnectorInstance();
+    if (!conn) {
+      return { summary: `Couldn't research "${question}" — no chat model is configured.` };
+    }
+    const embed = resolveEmbedFn();
+    if (!embed) {
+      return { summary: `Couldn't research "${question}" — no embedder available for retrieval.` };
+    }
+    const deps: DeepResearchDeps = {
+      generate: (system, user) => conn.send(user, { system, temperature: 0.3 }),
+      stream: (system, user) => conn.stream(user, { system, temperature: 0.4 }),
+      embed,
+      vectorSearch: (e, l) => vectorSearch(e, l),
+      webResearch: (q, o) => webResearch(q, o),
+      rerankerState: loadRerankerState(),
+      localOnly: CONFIG.localOnly,
+      upsert: upsertMemoryPoint,
+    };
+    // Resolve against the operator CONFIG ceilings (same as the route path).
+    const resolved = clampResearchOpts(
+      { maxRounds, breadth, maxPages },
+      { maxRounds: CONFIG.deepResearchMaxRounds, breadth: CONFIG.deepResearchBreadth, maxPages: CONFIG.deepResearchMaxPages },
+    );
+    const report = await runDeepResearch(question, deps, resolved, () => {});
+    const web = report.sources.filter((s) => s.origin === "web").length;
+    return {
+      summary:
+        `Researched "${question}" — ${report.sources.length} source${report.sources.length === 1 ? "" : "s"}` +
+        ` (${web} web), ${report.rounds} round${report.rounds === 1 ? "" : "s"}` +
+        `${report.reportMemoryId ? ", saved to memory" : ""}`,
+      data: {
+        reportMemoryId: report.reportMemoryId,
+        rounds: report.rounds,
+        converged: report.converged,
+        summary: report.summary,
+        sources: report.sources,
+      },
     };
   },
   // --- GitHub project discovery ----------------------------------------------

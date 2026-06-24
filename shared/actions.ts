@@ -29,6 +29,11 @@ export type ActionId =
   // Both egress, so both are confirm-tier and gated by LOCAL_ONLY.
   | "web-search"
   | "research-web"
+  // Deep research — an iterative, multi-source, CITED investigation (Fable-style
+  // /deep-research): plan sub-questions → gather local memory + egress-gated web →
+  // synthesize cited findings → reflect → loop → final report (saved to memory).
+  // confirm-tier (it can egress) and gated by LOCAL_ONLY exactly like research-web.
+  | "deep-research"
   // GitHub project discovery — find popular repos (>1k stars) by topic and learn
   // their READMEs into memory. github-learn-repo learns ONE specific repo by
   // owner/name or URL ("add this repo to the brain"). All egress, so all are
@@ -90,6 +95,7 @@ export const ACTION_IDS: ActionId[] = [
   "learn-url",
   "web-search",
   "research-web",
+  "deep-research",
   "github-search",
   "github-learn",
   "github-learn-repo",

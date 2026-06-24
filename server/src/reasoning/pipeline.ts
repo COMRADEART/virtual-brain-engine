@@ -76,6 +76,7 @@ import { computeSaliency, type SaliencyContext } from "../attention/saliency.js"
 import type { AttentionFocus } from "../../../shared/brainState.js";
 import { hybridEnabled, shouldAugment, webResearch } from "../web/research.js";
 import { expandQuery, reciprocalRankFusion } from "./queryExpansion.js";
+import { validateMarkers } from "./citations.js";
 import { applyReranker, trainReranker } from "./rerankerModel.js";
 import { loadRerankerState, saveRerankerState } from "../db/repositories/adaptive.js";
 import { DEFAULT_RETRIEVAL_K, RETRIEVAL_K_ARMS } from "../../../shared/adaptive.js";
@@ -269,21 +270,6 @@ function ensureSections(answer: string, knownMemoryIds: Set<string>): string {
     "Uncertain:",
     "Model did not produce the required three sections; reasoning is shown above without verified citations.",
   ].join("\n");
-}
-
-function validateMarkers(answer: string, knownIds: Set<string>): string {
-  const markers = Array.from(answer.matchAll(/\[m:([A-Za-z0-9]+)\]/g)).map((m) => m[1]);
-  const unknown = markers.filter((id) => !knownIds.has(id));
-  if (unknown.length === 0) {
-    return answer;
-  }
-  let cleaned = answer;
-  for (const id of unknown) {
-    cleaned = cleaned.split(`[m:${id}]`).join("");
-  }
-  // Append a note in the Uncertain section.
-  const note = `Stripped ${unknown.length} unknown memory marker(s) from the model output.`;
-  return cleaned.replace(/(Uncertain:\s*)/, `$1${note} `);
 }
 
 async function chatJson<T>(

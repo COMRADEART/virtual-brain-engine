@@ -53,6 +53,7 @@ const steps = [
   { label: "learningloop selfcheck", args: ["--prefix", "server", "run", "learningloop:selfcheck"] },
   { label: "models selfcheck",    args: ["--prefix", "server", "run", "models:selfcheck"] },
   { label: "websearch selfcheck",  args: ["--prefix", "server", "run", "websearch:selfcheck"] },
+  { label: "deepresearch selfcheck", args: ["--prefix", "server", "run", "deepresearch:selfcheck"] },
   { label: "rag selfcheck",        args: ["--prefix", "server", "run", "rag:selfcheck"] },
   { label: "rl selfcheck",         args: ["--prefix", "server", "run", "rl:selfcheck"] },
   { label: "agent selfcheck",      args: ["--prefix", "server", "run", "agent:selfcheck"] },

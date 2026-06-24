@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, Brain, HelpCircle, Loader2, Send, Sparkles, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { apiClient, ApiError } from "../engine/apiClient";
+import { RichText } from "./RichText";
 import type { PipelineEvent } from "../../shared/pipeline";
 
 interface Citation {
@@ -54,54 +55,6 @@ function parseSections(text: string): AnswerSections {
     sections[matches[i].key] = normalized.slice(start, end).trim();
   }
   return sections;
-}
-
-interface CitationRendererProps {
-  text: string;
-  knownIds: Set<string>;
-  onClickCitation: (memoryId: string) => void;
-}
-
-// Render text with [m:<id>] markers as clickable chips. Unknown ids appear as
-// dim chips so the reader still sees them but they don't pretend to be valid.
-function RichText({ text, knownIds, onClickCitation }: CitationRendererProps): JSX.Element {
-  const parts = useMemo(() => {
-    const out: Array<{ kind: "text" | "cite"; value: string }> = [];
-    const re = /\[m:([A-Za-z0-9]+)\]/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text))) {
-      if (m.index > last) {
-        out.push({ kind: "text", value: text.slice(last, m.index) });
-      }
-      out.push({ kind: "cite", value: m[1] });
-      last = m.index + m[0].length;
-    }
-    if (last < text.length) {
-      out.push({ kind: "text", value: text.slice(last) });
-    }
-    return out;
-  }, [text]);
-
-  return (
-    <>
-      {parts.map((part, idx) =>
-        part.kind === "text" ? (
-          <span key={idx}>{part.value}</span>
-        ) : (
-          <button
-            key={idx}
-            type="button"
-            className={`citation-chip ${knownIds.has(part.value) ? "known" : "unknown"}`}
-            onClick={() => onClickCitation(part.value)}
-            title={knownIds.has(part.value) ? "Jump to citation" : "Marker not in retrieved memory"}
-          >
-            m:{part.value.slice(-6)}
-          </button>
-        ),
-      )}
-    </>
-  );
 }
 
 export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {

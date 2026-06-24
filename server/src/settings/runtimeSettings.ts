@@ -69,6 +69,50 @@ export const SETTINGS_CATALOG: SettingSpec[] = [
     envVar: "HYBRID_RESEARCH",
   },
 
+  // ── Deep research (Fable-style /deep-research) ─────────────────────────────
+  {
+    key: "deepResearchEnabled",
+    label: "Deep research mode",
+    description:
+      "Enable the iterative, multi-source, cited research mode (POST /api/research/deep + the deep-research action). The web half still obeys Local-only; off = local memory only.",
+    group: "Deep research",
+    type: "boolean",
+    envVar: "DEEP_RESEARCH_ENABLED",
+  },
+  {
+    key: "deepResearchMaxRounds",
+    label: "Research rounds",
+    description: "How many plan→gather→synthesize→reflect rounds a deep-research run may take before writing its report.",
+    group: "Deep research",
+    type: "number",
+    envVar: "DEEP_RESEARCH_MAX_ROUNDS",
+    min: 1,
+    max: 5,
+    step: 1,
+  },
+  {
+    key: "deepResearchBreadth",
+    label: "Sub-questions per round",
+    description: "How many distinct sub-questions deep research investigates in each round.",
+    group: "Deep research",
+    type: "number",
+    envVar: "DEEP_RESEARCH_BREADTH",
+    min: 1,
+    max: 8,
+    step: 1,
+  },
+  {
+    key: "deepResearchMaxPages",
+    label: "Web pages per sub-question",
+    description: "How many live web pages deep research fetches and learns per sub-question (only when Local-only is off).",
+    group: "Deep research",
+    type: "number",
+    envVar: "DEEP_RESEARCH_MAX_PAGES",
+    min: 1,
+    max: 10,
+    step: 1,
+  },
+
   // ── Speed ────────────────────────────────────────────────────────────────
   {
     key: "fastMode",
