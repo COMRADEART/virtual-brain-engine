@@ -35,6 +35,7 @@ const { executeAction } = await import("../src/actions/executor.js");
 const { registerSkill } = await import("../src/actions/dynamicRegistry.js");
 const { mintConfirmToken, _resetConfirmTokens } = await import("../src/actions/confirmTokens.js");
 const { listActionLog } = await import("../src/db/repositories/actions.js");
+const { getActionDef } = await import("../src/actions/registry.js");
 const { countMemoryPoints, getMemoryPoint } = await import("../src/db/repositories/memory.js");
 const ConnectorMod = await import("../src/connectors/Connector.js");
 type Connector = import("../src/connectors/Connector.js").Connector;
@@ -273,6 +274,39 @@ _resetConfirmTokens();
     ran.error ?? "",
   );
   CONFIG.allowDynamicCode = wasAllowed;
+}
+
+// --- Deep research action — the new feature's trust boundary -----------------
+_resetConfirmTokens();
+{
+  const def = getActionDef("deep-research");
+  check("deep-research is registered confirm-tier (server surface)", def?.risk === "confirm" && def?.surface === "server");
+
+  // No token → the trust boundary refuses BEFORE the handler runs (no engine,
+  // no web, no connector). Risk is re-derived from the registry, never the caller.
+  const refused = await executeAction({ actionId: "deep-research", args: { question: "how does X work" } });
+  check("deep-research without a confirm token is refused (403)", refused.ok === false && refused.status === 403);
+
+  // CONFIG.deepResearchEnabled=false short-circuits the handler BEFORE any
+  // connector/engine/web work — so a disabled brain never egresses via this path.
+  const wasEnabled = CONFIG.deepResearchEnabled;
+  CONFIG.deepResearchEnabled = false;
+  const disabledToken = mintConfirmToken("deep-research", { question: "how does X work" });
+  const disabled = await executeAction({
+    actionId: "deep-research",
+    args: { question: "how does X work" },
+    confirmToken: disabledToken,
+  });
+  check("deep-research disabled flag returns the disabled summary (no engine run)", disabled.ok === true && /disabled/i.test(disabled.summary ?? ""));
+  CONFIG.deepResearchEnabled = wasEnabled;
+
+  // Valid token + enabled + no default connector → the handler ran PAST the
+  // confirm gate to the connector check. (The engine itself is covered hermeti-
+  // cally by deepresearch:selfcheck with injected fakes; this proves the gate.)
+  const token = mintConfirmToken("deep-research", { question: "how does X work" });
+  const ran = await executeAction({ actionId: "deep-research", args: { question: "how does X work" }, confirmToken: token });
+  check("deep-research with a valid token reaches the handler (200, not 403)", ran.ok === true && ran.status === 200);
+  check("deep-research handler reports no-model gracefully (no connector in selfcheck)", /no chat model/i.test(ran.summary ?? ""));
 }
 
 // --- Audit completeness -----------------------------------------------------

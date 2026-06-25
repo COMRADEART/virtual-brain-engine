@@ -114,6 +114,31 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       })
       .strict(),
   },
+  "deep-research": {
+    id: "deep-research",
+    title: "Deep research (cited report)",
+    description:
+      "Run an iterative, multi-source investigation: decompose the question into sub-questions, " +
+      "gather from local memory AND (when LOCAL_ONLY is off) the live web across several rounds, " +
+      "synthesize a cited report, and save it to memory. Use for 'deeply research X', 'do thorough " +
+      "research on X', 'investigate X'. Egresses, so gated by LOCAL_ONLY.",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      question: "the question to research deeply",
+      maxRounds: "research rounds, 1-5 (default 3)",
+      breadth: "sub-questions per round, 1-8 (default 4)",
+      maxPages: "web pages per sub-question, 1-10 (default 3)",
+    },
+    schema: z
+      .object({
+        question: z.string().min(1).max(4000),
+        maxRounds: z.number().int().min(1).max(5).optional(),
+        breadth: z.number().int().min(1).max(8).optional(),
+        maxPages: z.number().int().min(1).max(10).optional(),
+      })
+      .strict(),
+  },
   // --- GitHub project discovery ("learn from popular repos") -----------------
   "github-search": {
     id: "github-search",

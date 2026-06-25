@@ -43,10 +43,6 @@ export class PerformanceManager {
     low: 0.3
   };
 
-  // Web Worker for offloading simulation (placeholder for future implementation)
-  private useWebWorker = false;
-  private simulationWorker: Worker | null = null;
-
   // Camera reference for distance calculations
   private camera: THREE.Camera | null = null;
   private sceneCenter = new THREE.Vector3(0, 0, 0);
@@ -72,25 +68,6 @@ export class PerformanceManager {
   constructor() {
     // Bind methods for use in event listeners if needed
     this.update = this.update.bind(this);
-  }
-
-  /**
-   * Enable or disable Web Worker offloading for simulation.
-   * Note: Actual worker implementation would be needed for this to function.
-   * @param enabled True to use Web Worker, false to run simulation on main thread
-   */
-  setUseWebWorker(enabled: boolean): void {
-    this.useWebWorker = enabled;
-    // In a full implementation, we would initialize or terminate the worker here.
-    // For now, this is a placeholder.
-    if (enabled && !this.simulationWorker) {
-      // TODO: Initialize simulation worker
-      // this.simulationWorker = new Worker(new URL('./signalSimulationWorker.ts', import.meta.url));
-    } else if (!enabled && this.simulationWorker) {
-      // TODO: Terminate worker
-      // this.simulationWorker.terminate();
-      // this.simulationWorker = null;
-    }
   }
 
   /**

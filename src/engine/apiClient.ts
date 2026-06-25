@@ -66,6 +66,7 @@ import type { FileIngestResult, IngestItem, IngestRunResult, IngestSourceId, Ing
 import type { SettingsView, UpdateSettingsResult } from "../../shared/settings";
 import type { ModelPullState, ModelsView } from "../../shared/models";
 import type { WebResearchView, WebSearchOutcome } from "../../shared/web";
+import type { DeepResearchEvent } from "../../shared/research";
 import type { SwarmConsensusRound, SwarmNodeDescriptor, SwarmSnapshot, SwarmTask } from "../../shared/swarm";
 import type { TwinView, SimulationResult } from "../../shared/twin";
 import type {
@@ -179,7 +180,10 @@ async function* sseStream<T>(path: string, body: unknown, signal?: AbortSignal):
           try {
             yield JSON.parse(dataLine.slice(5).trim()) as T;
           } catch {
-            // skip malformed
+            // ponytail: silently skip a malformed SSE data line. Ceiling: a dropped
+            // mid-stream frame is lost (no stream-error surfaces). Acceptable because
+            // every consumer's final `report`/`done` frame re-asserts full state, so a
+            // dropped delta never corrupts the end result. Shared by all 4 SSE consumers.
           }
         }
         sep = buffer.indexOf("\n\n");
@@ -833,6 +837,19 @@ export const apiClient = {
 
   webResearch(query: string, maxPages?: number): Promise<WebResearchView> {
     return json(`/api/web/research`, { method: "POST", body: JSON.stringify({ query, maxPages }) });
+  },
+
+  // ----- Deep Research (Fable-style /deep-research) -------------------------
+  // POST /api/research/deep returns SSE. Yields DeepResearchEvent frames as the
+  // engine plans sub-questions → gathers local memory + (egress-gated) web →
+  // synthesizes cited findings → reflects → streams a final cited report (saved
+  // to memory). Egress stays LOCAL_ONLY-gated server-side; on a local-only box it
+  // degrades to a local-memory report. The 3D brain flashes from the bus as it runs.
+  deepResearch(
+    input: { question: string; conversationId?: string; maxRounds?: number; breadth?: number; maxPages?: number },
+    signal?: AbortSignal,
+  ): AsyncGenerator<DeepResearchEvent> {
+    return sseStream<DeepResearchEvent>("/api/research/deep", input, signal);
   },
 
   // ----- Model Hub: download a chat model → wire it into the brain ----------

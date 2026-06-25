@@ -1,5 +1,24 @@
 # Personal Brain OS — Grounded Roadmap
 
+> **⚠️ SUPERSEDED (2026-06-25).** This is a point-in-time snapshot from the
+> 2026-05-22 audit/repair session. Several of its "blocking" findings are now
+> resolved and should NOT be acted on:
+> - **The build + gate are green.** `npm run build` (root `tsc --noEmit` +
+>   `vite build`) and `npm run gate` (typecheck + all selfchecks + smoke) both
+>   pass; the "315 TypeScript errors / green-build gate missing" problem is gone.
+> - **The spiking rewrite landed.** `src/engine/SpikingEngine.ts` is now a
+>   13-line alias re-exporting `AdvancedBrainCore` (Izhikevich population + CSR
+>   connectome + neuromodulation + STDP). The `propagateSpike` no-op TODO and
+>   the duplicate `nmdaMgBlock` member no longer exist — propagation is the
+>   implemented `AdvancedBrainCore.propagateSpikes()`. The `USE_SPIKING_ENGINE`
+>   toggle and the main-thread hang described below are historical.
+> - **Graph retrieval (#2)** shipped as `memory/graphTraversal*` (personalised
+>   PageRank) + the Hebbian `GraphContext` seam; **MoE routing (#4)** shipped as
+>   `reasoning/modelRouting*` (per-cortex profile assignment).
+>
+> Kept for the *why* behind the stabilization sequence. Read `CLAUDE.md` for the
+> current contract; read `docs/COGNITIVE_LOOP_ROADMAP.md` for the live roadmap.
+
 > Written after a full repository audit + repair session (2026-05-22). The goal
 > of this doc is to map the **Personal One-on-One Computer Brain** vision onto
 > what the codebase *actually* contains today, separate real from aspirational,

@@ -28,6 +28,7 @@ import { scanRouter } from "./routes/scan.js";
 import { connectorsRouter } from "./routes/connectors.js";
 import { askRouter } from "./routes/ask.js";
 import { agentRouter } from "./routes/agent.js";
+import { researchRouter } from "./routes/research.js";
 import { feedbackRouter } from "./routes/feedback.js";
 import { learningRouter } from "./routes/learning.js";
 import { actionsRouter } from "./routes/actions.js";
@@ -222,6 +223,7 @@ async function main(): Promise<void> {
   app.use("/api", connectorsRouter);
   app.use("/api", askRouter);
   app.use("/api", agentRouter);
+  app.use("/api", researchRouter);
   app.use("/api", feedbackRouter);
   app.use("/api", learningRouter);
   app.use("/api", actionsRouter);

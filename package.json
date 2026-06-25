@@ -16,6 +16,7 @@
     "web:smoke": "node scripts/web-ingest-smoke.mjs",
     "websearch:smoke": "node scripts/websearch-smoke.mjs",
     "github:smoke": "node scripts/github-smoke.mjs",
+    "deepresearch:smoke": "node scripts/smoke-deepresearch.mjs",
     "dev:all": "concurrently --names \"vite,server\" --prefix-colors \"cyan,magenta\" \"npm run dev\" \"npm run dev:server\"",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
@@ -62,15 +63,15 @@
     "@types/three": "^0.171.0",
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/ui": "^4.1.7",
-    "concurrently": "^9.0.1",
-    "esbuild": "^0.28.0",
+    "concurrently": "^10.0.3",
+    "esbuild": "^0.28.1",
     "eslint": "^10.4.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.6.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.61.0",
-    "vite": "^6.0.3",
+    "vite": "^6.4.3",
     "vitest": "^4.1.7"
   }
 }

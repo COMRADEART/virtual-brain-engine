@@ -22,7 +22,9 @@ import type { MemoryPoint } from "../../../shared/memory.js";
 // Ingest sources whose CONTENT originates outside this machine. Local sources
 // (files the user scanned, their own clipboard/conversations) stay trusted —
 // over-flagging the user's own notes as hostile would degrade every answer.
-const EXTERNAL_SOURCES = new Set(["ingest:web", "ingest:github"]);
+// "deep-research" reports are derived from web-learned memories, so they're
+// treated as second-order external and fenced on retrieval too.
+const EXTERNAL_SOURCES = new Set(["ingest:web", "ingest:github", "deep-research"]);
 
 export const UNTRUSTED_BEGIN = "<<<EXTERNAL-QUOTED-DATA";
 export const UNTRUSTED_END = "END-EXTERNAL-QUOTED-DATA>>>";

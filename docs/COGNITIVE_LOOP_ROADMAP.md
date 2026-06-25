@@ -78,5 +78,8 @@ the broaden gate; the `open-question` working item is the observable trace.
    what surprised me / what to improve" pass that writes durable lessons.
 6. **Reasoning-trace persistence** (#15). Persist the reasoning/error step traces
    so the loop's decisions are fully auditable, not just the final answer.
-7. **Per-conversation BrainState** (concurrency). The current singleton is
-   last-writer-wins single-user; key BrainState by conversation for concurrent asks.
+7. **Per-conversation BrainState** (concurrency). **DONE.** BrainState is now
+   keyed per conversation (`organism_state` KV: `brain-state-v1` + per-`<conversationId>`,
+   no migration) so concurrent asks can't corrupt each other's working memory or
+   feed-forward signal; idle conversation states are pruned by `tickDecay` after
+   7 days. See `core/brainState.ts` + the `brainstate:selfcheck`.

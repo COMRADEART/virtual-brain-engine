@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Search, LayoutGrid, LayoutDashboard, Focus, Maximize2, Zap, Cpu, Brain,
   Database, Sparkles, Settings2, ChevronRight, Command, Camera,
-  Network, HeartPulse, BrainCircuit, Activity, GitBranch, MessageSquare
+  Network, HeartPulse, BrainCircuit, Activity, GitBranch, MessageSquare, Telescope
 } from "lucide-react";
 import type { LayoutMode } from "../../engine/useLayoutMode";
 
@@ -31,6 +31,7 @@ interface CommandPaletteProps {
   onToggleDigitalTwin: (collapsed?: boolean) => void;
   onToggleCognitionStream: (collapsed?: boolean) => void;
   onToggleSpine: (collapsed?: boolean) => void;
+  onToggleDeepResearch: (collapsed?: boolean) => void;
   onOpenUnifiedTab: (tab: "ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism") => void;
   onToggleUnifiedPanel: (collapsed?: boolean) => void;
   onOpenModelHub: () => void;
@@ -49,7 +50,7 @@ const CATEGORY_LABELS: Record<Command["category"], string> = {
 export function CommandPalette({
   isOpen, onClose, currentLayout, currentPerfMode,
   onLayoutChange, onCyclePreset, onFocusMode, onCompactMode, onFullMode,
-  onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
+  onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onToggleDeepResearch, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
   onOpenSettings, onScreenshot,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
@@ -153,6 +154,14 @@ export function CommandPalette({
       action: () => { onToggleSpine(); onClose(); },
     },
     {
+      id: "toggle-deep-research",
+      label: "Toggle Deep Research",
+      description: "Fable-style iterative research: plan sub-questions → gather local memory + web → cited report (saved to memory)",
+      category: "panels",
+      icon: <Telescope size={16} />,
+      action: () => { onToggleDeepResearch(); onClose(); },
+    },
+    {
       id: "toggle-unified",
       label: "Toggle Unified Panel",
       description: "Show or hide the main Brain OS panel",
@@ -226,7 +235,7 @@ export function CommandPalette({
     },
   ], [
     currentLayout, currentPerfMode, onLayoutChange, onCompactMode, onFullMode, onFocusMode, onCyclePreset, onClose,
-    onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
+    onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onToggleDeepResearch, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
   ]);
 
   const filtered = useMemo(() => {

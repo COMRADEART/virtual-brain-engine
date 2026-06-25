@@ -103,6 +103,15 @@ export interface ServerConfig {
   // How many search results a single hybrid augmentation / research action will
   // fetch + ingest. Bounded to keep one query from pulling the whole web.
   webResearchMaxPages: number;
+  // --- Deep Research mode (Fable-style /deep-research) -----------------------
+  // Iterative, multi-source, cited research run via POST /api/research/deep and
+  // the `deep-research` action — NEVER inside /api/ask. ON by default; the web
+  // half stays LOCAL_ONLY-gated, so on a local box it degrades to a local-memory
+  // report. The three knobs bound the cost of one run.
+  deepResearchEnabled: boolean;
+  deepResearchMaxRounds: number; // plan→gather→synthesize→reflect rounds
+  deepResearchBreadth: number; // sub-questions investigated per round
+  deepResearchMaxPages: number; // web pages fetched+learned per sub-question
   // --- RL-adaptive RAG (ML/RL/RAG layer) ------------------------------------
   // Multi-query RAG: when local memory is thin/weak, rephrase the query a few
   // ways, retrieve each, and Reciprocal-Rank-Fuse the union for higher recall.
@@ -539,6 +548,10 @@ export const CONFIG: ServerConfig = {
   searxngUrl: str("SEARXNG_URL", "").replace(/\/$/, ""),
   hybridResearch: bool("HYBRID_RESEARCH", true),
   webResearchMaxPages: Math.min(10, Math.max(1, num("WEB_RESEARCH_MAX_PAGES", 3))),
+  deepResearchEnabled: bool("DEEP_RESEARCH_ENABLED", true),
+  deepResearchMaxRounds: Math.min(5, Math.max(1, num("DEEP_RESEARCH_MAX_ROUNDS", 3))),
+  deepResearchBreadth: Math.min(8, Math.max(1, num("DEEP_RESEARCH_BREADTH", 4))),
+  deepResearchMaxPages: Math.min(10, Math.max(1, num("DEEP_RESEARCH_MAX_PAGES", 3))),
   multiQueryRag: bool("MULTI_QUERY_RAG", true),
   multiQueryVariants: Math.min(3, Math.max(1, num("MULTI_QUERY_VARIANTS", 2))),
   rerankerEnabled: bool("RERANKER", true),
