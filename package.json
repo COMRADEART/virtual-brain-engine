@@ -16,6 +16,7 @@
     "web:smoke": "node scripts/web-ingest-smoke.mjs",
     "websearch:smoke": "node scripts/websearch-smoke.mjs",
     "github:smoke": "node scripts/github-smoke.mjs",
+    "deepresearch:smoke": "node scripts/smoke-deepresearch.mjs",
     "dev:all": "concurrently --names \"vite,server\" --prefix-colors \"cyan,magenta\" \"npm run dev\" \"npm run dev:server\"",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
