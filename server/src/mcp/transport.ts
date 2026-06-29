@@ -197,7 +197,24 @@ function createHttpTransport(config: McpServerConfig, fetchImpl: FetchImpl): Mcp
       ...(config.headers ?? {}),
     };
     if (sessionId) headers["mcp-session-id"] = sessionId;
-    const res = await fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body) });
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      // SAME redirect discipline as every other outbound path (webFetch.ts /
+      // github discovery): assertEndpointReady() validated only `url`. Under
+      // LOCAL_ONLY a 30x `Location` could point at a REMOTE host and the default
+      // "follow" would transparently re-issue this POST (with its JSON-RPC body)
+      // off-box — the exact second-hop egress the first-hop gate can't see.
+      // "manual" surfaces the 3xx without contacting the target so we refuse it.
+      redirect: CONFIG.localOnly ? "manual" : "follow",
+    });
+    // Off-box redirect refusal (LOCAL_ONLY). The target was NOT contacted.
+    if (CONFIG.localOnly && (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))) {
+      throw new McpError(
+        `MCP server "${config.id}" attempted an off-box redirect — refused under LOCAL_ONLY (set LOCAL_ONLY=false for remote MCP)`,
+      );
+    }
     const sid = res.headers.get("mcp-session-id");
     if (sid) sessionId = sid;
     if (!res.ok) {

@@ -594,6 +594,17 @@ export function isAllowlisted(id: string): id is ActionId {
   return true;
 }
 
+// Raw static-registry membership, INDEPENDENT of CONFIG.allowShell. isAllowlisted
+// hides shell actions when ALLOW_SHELL=off (so a disabled action 403s cleanly),
+// but a disabled-yet-reserved id must NOT be free for a dynamic skill to claim:
+// executeAction checks isDynamicAction() before the static def, so a dynamic skill
+// registered under e.g. "run-command" while shell is off would permanently shadow
+// the built-in if shell were later enabled. Collision checks use THIS, not
+// isAllowlisted, to keep the allowlist's id space uniquely owned.
+export function isRegisteredId(id: string): boolean {
+  return Object.prototype.hasOwnProperty.call(REGISTRY, id);
+}
+
 export interface ArgValidation {
   ok: boolean;
   args?: Record<string, unknown>;

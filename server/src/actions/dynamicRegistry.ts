@@ -12,7 +12,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { CONFIG } from "../config.js";
 import { openDb } from "../db/sqlite.js";
-import { getActionDef, isAllowlisted, listActionSpecs } from "./registry.js";
+import { getActionDef, isRegisteredId, listActionSpecs } from "./registry.js";
 import { insertActionLog } from "../db/repositories/actions.js";
 import type { ActionId, ActionRiskTier, ActionSurface, ActionSpec } from "../../../shared/actions.js";
 
@@ -136,8 +136,12 @@ export async function registerSkill(
   def: SkillDefinition,
   audited = true,
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
-  // Check the action ID isn't already in the static registry.
-  if (isAllowlisted(def.id)) {
+  // Check the action ID isn't already in the static registry. Use raw membership
+  // (isRegisteredId), NOT isAllowlisted: a shell action hidden by ALLOW_SHELL=off
+  // still OWNS its id, so a dynamic skill must not be able to claim "run-command"
+  // et al. and permanently shadow the built-in (executeAction resolves dynamic
+  // actions before static ones).
+  if (isRegisteredId(def.id)) {
     return { ok: false, error: `action ${def.id} is already registered (static)` };
   }
 

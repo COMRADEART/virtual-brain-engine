@@ -4,7 +4,7 @@ import type {
   PipelineStatus,
   PipelineStepId,
 } from "../../../shared/pipeline.js";
-import type { MemoryPoint, ConversationMessage } from "../../../shared/memory.js";
+import type { ConversationMessage } from "../../../shared/memory.js";
 import {
   getMemoryCount,
   getRelationCount,
@@ -27,8 +27,8 @@ import {
   buildRetrievalText,
   selectPriorTurns,
 } from "./conversationContext.js";
-import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
-import { Connector, ConnectorError } from "../connectors/Connector.js";
+import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import { ConnectorError } from "../connectors/Connector.js";
 import { CONFIG } from "../config.js";
 import { broadcast } from "../ws/brainBus.js";
 import {
@@ -62,21 +62,25 @@ import { recordRankTrainingLog } from "../db/repositories/feedback.js";
 import {
   COMBINED_REASONING_ERROR_SYSTEM,
   ERROR_SYSTEM,
-  PROJECT_RERANK_SYSTEM,
   REASONING_SYSTEM,
   buildResponseSystem,
 } from "./prompts.js";
-import { createHash } from "node:crypto";
 import { getCognitiveSwarm } from "../core/swarm.js";
 import { getImaginationEngine } from "../core/imagination.js";
-import { getPersistentOrganism } from "../core/organism.js";
 import { getBrainState, shouldBroadenRetrieval } from "../core/brainState.js";
 import { getBeliefEngine } from "../core/beliefs.js";
-import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
-import type { AttentionFocus } from "../../../shared/brainState.js";
 import { hybridEnabled, shouldAugment, webResearch } from "../web/research.js";
 import { expandQuery, reciprocalRankFusion } from "./queryExpansion.js";
-import { validateMarkers } from "./citations.js";
+import {
+  buildSaliencyContext,
+  buildAttentionFocuses,
+  sha1,
+  snippetFor,
+  ensureSections,
+  chatJson,
+  getEmbedder,
+  inferProjectName,
+} from "./pipelineHelpers.js";
 import { applyReranker, trainReranker } from "./rerankerModel.js";
 import { loadRerankerState, saveRerankerState } from "../db/repositories/adaptive.js";
 import { DEFAULT_RETRIEVAL_K, RETRIEVAL_K_ARMS } from "../../../shared/adaptive.js";
@@ -133,57 +137,6 @@ import {
   saveSelfModelState,
 } from "../core/selfModel.js";
 
-// Phase 1 (blueprint) — assemble the per-query SaliencyContext from the
-// organism singleton. Returns null if any of the cheap getters fails (the
-// pipeline still works without saliency; the ranker just falls back to its
-// pre-saliency blend). Wrapped in try/catch so the organism never becomes a
-// hard dependency of /api/ask.
-function buildSaliencyContext(query: string): SaliencyContext | null {
-  try {
-    const org = getPersistentOrganism();
-    return {
-      query,
-      activeGoals: org.getActiveGoalTitles(8),
-      organismHealth: org.getHealthScore(),
-    };
-  } catch (err) {
-    surfaceError("pipeline.buildSaliencyContext", err);
-    return null;
-  }
-}
-
-// Build the BrainState attention map from the ranked hits. When a saliency
-// context is present we recompute the full per-memory breakdown (cheap + pure)
-// so the BrainStatePanel can show WHY each memory drew attention; otherwise we
-// fall back to the raw retrieval score with a zeroed breakdown. Bounded to the
-// top `limit` hits. Pure-ish (only computeSaliency); never throws into caller.
-function buildAttentionFocuses(
-  hits: VectorSearchHit[],
-  ctx: SaliencyContext | null,
-  limit = 8,
-): AttentionFocus[] {
-  const zero = { novelty: 0, goalRelevance: 0, emotion: 0, survival: 0, uncertainty: 0 };
-  return hits.slice(0, limit).map((hit) => {
-    const label = hit.memory.content.trim().slice(0, 80);
-    if (!ctx) {
-      return { id: hit.memory.id, label, score: Math.max(0, Math.min(1, hit.score)), breakdown: zero };
-    }
-    const b = computeSaliency(hit.memory, ctx);
-    return {
-      id: hit.memory.id,
-      label,
-      score: b.score,
-      breakdown: {
-        novelty: b.novelty,
-        goalRelevance: b.goalRelevance,
-        emotion: b.emotion,
-        survival: b.survival,
-        uncertainty: b.uncertainty,
-      },
-    };
-  });
-}
-
 export interface AskRequest {
   prompt: string;
   conversationId?: string;
@@ -200,10 +153,6 @@ const STEP_REGIONS: Record<PipelineStepId, LogicalRegionId[]> = {
   response: ["response-center"],
   learning: ["learning-feedback-center"],
 };
-
-function sha1(content: string): string {
-  return createHash("sha1").update(content).digest("hex");
-}
 
 function makeEvent(
   conversationId: string,
@@ -228,106 +177,12 @@ function emitAll(event: PipelineEvent, emit: EmitFn): void {
   broadcast({ type: "pipeline", ...event });
 }
 
-function safeJson<T>(text: string): T | null {
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    // Try to recover by extracting the first {...} block.
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]) as T;
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-}
-
-function snippetFor(memory: MemoryPoint): string {
-  const trimmed = memory.content.trim();
-  return trimmed.length > 600 ? `${trimmed.slice(0, 600)}…` : trimmed;
-}
-
 // Vector-hit re-ranking now lives in ./ranker.ts (learned LTR + heuristic
 // cold-start blend). The original recency/importance formula is preserved
 // there as heuristicScore() so alpha=0 reproduces prior behaviour exactly.
 
-function ensureSections(answer: string, knownMemoryIds: Set<string>): string {
-  const headerRe = /\b(Known memory:|Inferred reasoning:|Uncertain:)/g;
-  const headers = answer.match(headerRe) ?? [];
-  if (headers.length === 3) {
-    return validateMarkers(answer, knownMemoryIds);
-  }
-  // Rewrap a malformed answer.
-  return [
-    "Known memory:",
-    "",
-    "Inferred reasoning:",
-    answer.trim(),
-    "",
-    "Uncertain:",
-    "Model did not produce the required three sections; reasoning is shown above without verified citations.",
-  ].join("\n");
-}
-
-async function chatJson<T>(
-  connector: Connector,
-  system: string,
-  prompt: string,
-  model?: string,
-  temperature = 0.2,
-): Promise<T | null> {
-  const text = await connector.send(prompt, { system, format: "json", temperature, model });
-  return safeJson<T>(text);
-}
-
 // FABLE F2 — difficulty at/above which a full route samples parallel drafts.
 const PARALLEL_REASONING_DIFFICULTY_FLOOR = 0.8;
-
-// Embeddings fallback chain. If the active chat connector cannot embed (e.g.
-// GPT4All HTTP, or an OpenAI-compatible runtime configured without an
-// embeddingModel), try any local Ollama instance the registry knows about.
-// If neither path works, return null and the memory step will skip retrieval
-// rather than fail the run.
-function getEmbedder(active: Connector): Connector | null {
-  if (active.embed) {
-    return active;
-  }
-  const ollama = listConnectorInstances().find(
-    (c) =>
-      c.descriptor.kind === "ollama" &&
-      c.descriptor.enabled &&
-      c.descriptor.state === "ok" &&
-      c.descriptor.isLocal &&
-      Boolean(c.embed),
-  );
-  return ollama ?? null;
-}
-
-async function inferProjectName(
-  connector: Connector,
-  prompt: string,
-  hits: VectorSearchHit[],
-): Promise<string | null> {
-  const candidates = Array.from(
-    new Set(hits.map((h) => h.memory.projectName).filter((p): p is string => Boolean(p))),
-  );
-  if (candidates.length === 0) {
-    return null;
-  }
-  try {
-    const result = await chatJson<{ projectName: string | null }>(
-      connector,
-      PROJECT_RERANK_SYSTEM,
-      `Question: ${prompt}\nCandidates: ${JSON.stringify(candidates)}`,
-    );
-    return result?.projectName ?? null;
-  } catch {
-    return null;
-  }
-}
 
 export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> {
   const connector = getDefaultConnectorInstance();
