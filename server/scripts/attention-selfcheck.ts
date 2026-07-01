@@ -54,7 +54,7 @@ const s2 = computeSaliency(mem, ctx);
 check("computeSaliency is deterministic", s1.score === s2.score, `s1=${s1.score} s2=${s2.score}`);
 check("score in [0,1]", s1.score >= 0 && s1.score <= 1, `score=${s1.score}`);
 check("breakdown components all in [0,1]",
-  [s1.novelty, s1.goalRelevance, s1.emotion, s1.survival, s1.uncertainty].every((v) => v >= 0 && v <= 1),
+  [s1.novelty, s1.goalRelevance, s1.emotion, s1.survival, s1.uncertainty, s1.beliefRelevance].every((v) => v >= 0 && v <= 1),
   JSON.stringify(s1),
 );
 
@@ -186,10 +186,61 @@ check(
   `A=${sA.score.toFixed(4)} B=${sB.score.toFixed(4)}`,
 );
 
-// (B.5.f) Weights still sum to 1.0 after rebalancing for the 5th term — already
-// asserted at the top, but re-state explicitly here for the regression record.
+// (B.5.f) Weights still sum to 1.0 after rebalancing for the 5th term.
 check(
   "weight closure preserved after adding W_UNCERTAINTY",
+  Math.abs(SALIENCY_WEIGHT_SUM - 1.0) < 1e-9,
+  `sum=${SALIENCY_WEIGHT_SUM}`,
+);
+
+// -----------------------------------------------------------------------------
+// (B.6) Belief relevance (the 6th term — closes beliefs → retrieval loop).
+// -----------------------------------------------------------------------------
+
+// (B.6.a) Backward compat: absent activeBeliefs → beliefRelevance is 0.
+check(
+  "beliefRelevance defaults to 0 when activeBeliefs absent",
+  computeSaliency(mem, ctx).beliefRelevance === 0,
+  `got=${computeSaliency(mem, ctx).beliefRelevance}`,
+);
+
+// (B.6.b) Empty belief list → 0.
+check(
+  "beliefRelevance is 0 for empty belief list",
+  computeSaliency(mem, { ...ctx, activeBeliefs: [] }).beliefRelevance === 0,
+);
+
+// (B.6.c) A matching uncertain belief raises beliefRelevance over no-belief.
+const matchingBelief = { statement: "brain engine recovery is unreliable", confidence: 0.3 };
+const ctxWithBelief: SaliencyContext = { ...ctx, activeBeliefs: [matchingBelief] };
+const sWithBelief = computeSaliency(mem, ctxWithBelief);
+check(
+  "matching uncertain belief raises beliefRelevance > 0",
+  sWithBelief.beliefRelevance > 0,
+  `got=${sWithBelief.beliefRelevance.toFixed(3)}`,
+);
+
+// (B.6.d) Settled belief (confidence=0.99) contributes less than uncertain (0.2).
+const ctxSettled: SaliencyContext = { ...ctx, activeBeliefs: [{ statement: matchingBelief.statement, confidence: 0.99 }] };
+const ctxUncertain: SaliencyContext = { ...ctx, activeBeliefs: [{ statement: matchingBelief.statement, confidence: 0.2 }] };
+check(
+  "uncertain belief pulls harder than settled belief on same memory",
+  computeSaliency(mem, ctxUncertain).beliefRelevance > computeSaliency(mem, ctxSettled).beliefRelevance,
+  `uncertain=${computeSaliency(mem, ctxUncertain).beliefRelevance.toFixed(3)} settled=${computeSaliency(mem, ctxSettled).beliefRelevance.toFixed(3)}`,
+);
+
+// (B.6.e) Unrelated belief → beliefRelevance stays near 0 even when uncertain.
+const unrelatedBelief = { statement: "photosynthesis produces oxygen", confidence: 0.1 };
+const sUnrelated = computeSaliency(mem, { ...ctx, activeBeliefs: [unrelatedBelief] });
+check(
+  "unrelated belief does not inflate beliefRelevance",
+  sUnrelated.beliefRelevance < 0.05,
+  `got=${sUnrelated.beliefRelevance.toFixed(4)}`,
+);
+
+// (B.6.f) Weights still sum to 1.0 after adding W_BELIEF.
+check(
+  "weight closure preserved after adding W_BELIEF",
   Math.abs(SALIENCY_WEIGHT_SUM - 1.0) < 1e-9,
   `sum=${SALIENCY_WEIGHT_SUM}`,
 );

@@ -133,8 +133,9 @@ export interface ServerConfig {
   citationFaithfulness: boolean;
   // RL adaptive controller: a contextual bandit that learns the augment /
   // retrieval-k / multi-query / model-routing decisions from the dense citation
-  // reward. OFF by default — it warm-starts at the heuristics and only helps once
-  // feedback accrues, so it's opt-in. Flip with ADAPTIVE_CONTROLLER=true.
+  // reward. ON by default — the warm-start floor (banditWarmAt observations)
+  // returns the heuristic with zero exploration until data accrues, so enabling
+  // it on a cold brain is a strict no-op. Disable with ADAPTIVE_CONTROLLER=false.
   adaptiveController: boolean;
   // Per-SLOT real-observation count below which a bandit slot returns EXACTLY the
   // heuristic decision (no exploration) — the no-regression floor. (Gated on the
@@ -568,7 +569,7 @@ export const CONFIG: ServerConfig = {
   multiQueryVariants: Math.min(3, Math.max(1, num("MULTI_QUERY_VARIANTS", 2))),
   rerankerEnabled: bool("RERANKER", true),
   citationFaithfulness: bool("CITATION_FAITHFULNESS", false),
-  adaptiveController: bool("ADAPTIVE_CONTROLLER", false),
+  adaptiveController: bool("ADAPTIVE_CONTROLLER", true),
   banditWarmAt: Math.max(1, num("BANDIT_WARM_AT", 30)),
   activeInference: bool("ACTIVE_INFERENCE", false),
   agentMaxRounds: Math.min(50, Math.max(1, num("AGENT_MAX_ROUNDS", 12))),

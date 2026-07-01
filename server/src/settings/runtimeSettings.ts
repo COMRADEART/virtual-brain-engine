@@ -199,7 +199,7 @@ export const SETTINGS_CATALOG: SettingSpec[] = [
   {
     key: "adaptiveController",
     label: "RL adaptive controller",
-    description: "A contextual bandit that learns the augment / retrieval-k / multi-query decisions from citation usage. Opt-in.",
+    description: "A contextual bandit that learns augment / retrieval-k / multi-query decisions from citation usage. Safe on a cold brain — returns the heuristic baseline until enough observations accrue.",
     group: "Retrieval",
     type: "boolean",
     envVar: "ADAPTIVE_CONTROLLER",
