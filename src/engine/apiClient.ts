@@ -2,6 +2,7 @@
 // but pointed at our Express server (default http://127.0.0.1:8787).
 
 import type { ConnectorDescriptor } from "../../shared/connector";
+import { toastError } from "./toastBus";
 import type {
   CognitiveAbstraction,
   ImaginationMode,
@@ -267,6 +268,19 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+// A malformed SSE frame is skipped (the final report/done frame re-asserts full
+// state, so a dropped delta never corrupts the end result) — but it is no longer
+// SILENT: surface one throttled toast so a lagging/garbled stream is visible.
+// Module-level throttle: a burst of bad frames is one toast, not a storm. The
+// pet window has no ToastHost, so this surfaces in the main app only.
+let lastSseToastAt = 0;
+function noteStreamParseError(path: string): void {
+  const now = Date.now();
+  if (now - lastSseToastAt < 10_000) return;
+  lastSseToastAt = now;
+  toastError(`Live stream from ${path} dropped a malformed frame — display may lag until the final frame.`);
+}
+
 // Shared SSE reader: POST a JSON body, parse `event:`/`data:` blocks, and yield
 // each parsed `data` payload until the `event: done` sentinel. Used by the
 // agent-loop streams (POST /api/agent and /api/agent/confirm).
@@ -299,10 +313,9 @@ async function* sseStream<T>(path: string, body: unknown, signal?: AbortSignal):
           try {
             yield JSON.parse(dataLine.slice(5).trim()) as T;
           } catch {
-            // ponytail: silently skip a malformed SSE data line. Ceiling: a dropped
-            // mid-stream frame is lost (no stream-error surfaces). Acceptable because
-            // every consumer's final `report`/`done` frame re-asserts full state, so a
-            // dropped delta never corrupts the end result. Shared by all 4 SSE consumers.
+            // Skip the malformed frame (the final report/done frame re-asserts
+            // state) but surface a throttled toast. Shared by all SSE consumers.
+            noteStreamParseError(path);
           }
         }
         sep = buffer.indexOf("\n\n");
@@ -1130,7 +1143,8 @@ export const apiClient = {
             const payload = JSON.parse(dataLine.slice(5).trim()) as PipelineEvent;
             yield payload;
           } catch {
-            // skip malformed
+            // Skip the malformed frame; visible via the shared throttled toast.
+            noteStreamParseError("/api/ask");
           }
           sep = buffer.indexOf("\n\n");
         }

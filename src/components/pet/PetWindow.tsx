@@ -472,6 +472,7 @@ export function PetWindow(): JSX.Element {
           font-size: 10px; line-height: 1.35; color: #c7c7da; padding: 6px 8px;
           border-radius: 8px; background: rgba(12, 12, 20, 0.6); border: 1px solid ${color}33;
         }
+        .pet-confirm-hint { display: block; font-size: 9px; color: #8b8ba3; margin-top: 4px; }
         .pet-confirm-risk {
           display: inline-block; font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em;
           color: #0a0a0f; background: ${color}; border-radius: 999px; padding: 1px 6px; margin-right: 6px;
@@ -654,6 +655,9 @@ export function PetWindow(): JSX.Element {
                   cancel
                 </button>
               </div>
+              <small className="pet-confirm-hint">
+                "run all" grants this run session-wide permission at this risk tier (every step audited)
+              </small>
             </div>
           ) : (
             <div className="pet-quick">

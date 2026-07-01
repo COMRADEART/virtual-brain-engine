@@ -13,8 +13,7 @@
 //       persists as a procedure + emits a `cognition` procedure-learned
 //       event; re-extraction is idempotent (no duplicate rows).
 //   (C) recordOutcome Laplace scoring; creditMatchingProcedures credits a
-//       procedure whose steps appear in order in a successful run;
-//       recordReasoningConfig round-trips.
+//       procedure whose steps appear in order in a successful run.
 //   (D) proceduresFor retrieves by task tokens; listProcedures shape.
 //   (E) toCognition (brainCore bridge): all five legacy thought events map to
 //       cognition kinds with bounded magnitude; self-snapshot monologue
@@ -47,7 +46,6 @@ const {
   proceduresFor,
   listProcedures,
   creditMatchingProcedures,
-  recordReasoningConfig,
   MIN_OCCURRENCES,
   SEQUENCE_WINDOW_MS,
 } = await import("../src/memory/procedural.js");
@@ -198,13 +196,6 @@ offCog();
   const re = listProcedures().find((p) => p.id === proc.id)!;
   check("(C) creditMatchingProcedures credits an in-order match", credited >= 1 && re.successCount === after.successCount + 1);
   check("(C) no credit for an out-of-order trail", creditMatchingProcedures(["learn-url", "web-search"]) === 0);
-
-  recordReasoningConfig("multi-query on weak retrieval", { multiQuery: true, k: 12 }, true);
-  const cfg = listProcedures().find((p) => p.source === "reasoning-config");
-  check("(C) reasoning config persists", cfg?.title === "multi-query on weak retrieval" && cfg.successCount === 1);
-  recordReasoningConfig("multi-query on weak retrieval", { multiQuery: true, k: 12 }, true);
-  const cfg2 = listProcedures().find((p) => p.source === "reasoning-config")!;
-  check("(C) repeated config records an outcome, not a duplicate", cfg2.successCount === 2);
 }
 
 // -----------------------------------------------------------------------------
@@ -282,7 +273,6 @@ offCog();
     proceduresFor("anything");
     listProcedures();
     creditMatchingProcedures(["a"]);
-    recordReasoningConfig("x", {}, true);
   } catch {
     threw = true;
   }

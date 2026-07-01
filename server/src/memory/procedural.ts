@@ -19,8 +19,6 @@
 //   recordOutcome()        — Laplace-smoothed success score per procedure;
 //                            the agent loop credits procedures whose steps
 //                            appear (in order) in a successful run.
-//   recordReasoningConfig()— persist a retrieval/reasoning configuration that
-//                            worked (source 'reasoning-config').
 //
 // Persistence: the `procedures` table (migration 0011). The sequence-mining
 // core is exported pure for the hermetic selfcheck; every DB method is
@@ -359,34 +357,3 @@ export function creditMatchingProcedures(executedActionIds: ReadonlyArray<string
   }
 }
 
-/** Persist a reasoning/retrieval configuration that worked (or didn't). */
-export function recordReasoningConfig(label: string, config: Record<string, unknown>, ok: boolean): void {
-  try {
-    const id = `proc-${createHash("sha1").update(`config:${label}`).digest("hex").slice(0, 12)}`;
-    const db = openDb();
-    const row = db.prepare("SELECT success_count, failure_count FROM procedures WHERE id = ?").get(id) as
-      | { success_count: number; failure_count: number }
-      | undefined;
-    if (row) {
-      recordOutcome(id, ok);
-      return;
-    }
-    db.prepare(
-      `INSERT INTO procedures (id, title, trigger_class, steps_json, source,
-         success_count, failure_count, score, last_used_at, created_at)
-       VALUES (?, ?, ?, ?, 'reasoning-config', ?, ?, ?, ?, ?)`,
-    ).run(
-      id,
-      label.slice(0, 120),
-      "reasoning",
-      JSON.stringify([JSON.stringify(config).slice(0, 600)]),
-      ok ? 1 : 0,
-      ok ? 0 : 1,
-      laplaceScore(ok ? 1 : 0, ok ? 0 : 1),
-      nowIso(),
-      nowIso(),
-    );
-  } catch (err) {
-    surfaceError("procedural.recordConfig", err);
-  }
-}
