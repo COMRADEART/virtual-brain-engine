@@ -21,6 +21,7 @@ import { currentStage, stageAllows } from "../core/stages.js";
 import { getBeliefEngine } from "../core/beliefs.js";
 import { listProcedures } from "../memory/procedural.js";
 import { getSpine } from "../spine/cord.js";
+import { autoPursuitTick, notePursuitActivity } from "../reasoning/goalPursuit.js";
 import { getMcpHub } from "../mcp/hub.js";
 import { runWorkspaceCycle, requestWorkspaceCycle } from "../core/workspace.js";
 import { runCreativeCycle, creativityStats } from "../core/creativity.js";
@@ -308,6 +309,11 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
         broadcast({ type: "cognition", event: cog, timestamp: cog.at });
       }
     }
+    // A1 — real-work events reset the goal-pursuit quiet clock (the same
+    // activity kinds the IdleAgent treats as "the system is busy").
+    if (event.kind === "file-changed" || event.kind === "activity-observed" || event.kind === "summary-created") {
+      notePursuitActivity();
+    }
     // A new summary changes the memory count the StatusBar shows; refresh it.
     if (event.kind === "summary-created") {
       try {
@@ -469,6 +475,16 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   }, SPINE_TICK_MS);
   if (typeof spineTick.unref === "function") spineTick.unref();
 
+  // A1 — autonomous goal pursuit. The tick itself never throws and returns a
+  // no-go reason on every gate miss (quiet / rate / stage / energy / flag), so
+  // a minute-cadence check is cheap; an actual pursuit fires at most once per
+  // GOAL_PURSUIT_INTERVAL_MIN and runs the agent loop SAFE-ONLY.
+  const PURSUIT_TICK_MS = 60_000;
+  const pursuitTick = setInterval(() => {
+    void autoPursuitTick().catch(() => {});
+  }, PURSUIT_TICK_MS);
+  if (typeof pursuitTick.unref === "function") pursuitTick.unref();
+
   // Observability spine (C1) — sample the brain's own vitals into the
   // brain_vitals time-series every minute (metrics registry snapshot + a few
   // subsystem gauges), and prune old telemetry. Every read is failure-isolated
@@ -627,6 +643,12 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   });
   kernel.registerModule("spinal-cord", () => getSpine().health());
   kernel.registerModule("mcp-hub", () => getMcpHub().health());
+  kernel.registerModule("goal-pursuit", () => ({
+    ok: true,
+    detail: CONFIG.goalPursuitAuto
+      ? `auto (safe-only, ≥${CONFIG.goalPursuitIntervalMin}min apart)`
+      : "manual-only",
+  }));
   const stopStageCycle = kernel.startStageCycle();
 
   console.log(
@@ -655,6 +677,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       kernel.stop();
       clearInterval(brainStateTick);
       clearInterval(spineTick);
+      clearInterval(pursuitTick);
       if (workspaceTick) clearInterval(workspaceTick);
       if (vitalsTick) clearInterval(vitalsTick);
       await runtime.stop();

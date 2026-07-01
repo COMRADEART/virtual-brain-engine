@@ -99,7 +99,11 @@ export type GatedFeature =
   | "belief-bids"
   | "goal-decomposition"
   | "curiosity-bids"
-  | "exploration";
+  | "exploration"
+  // A1 — autonomous goal pursuit (safe-only agent runs on the brain's own
+  // goal leaves). Same stage as exploration: acting on its own agenda is
+  // earned alongside idle exploration.
+  | "goal-pursuit";
 
 /** Feature → the developmental stage at which it unlocks. NOTE: a feature
  *  that GROWS a stage metric must unlock BEFORE the stage that requires the
@@ -110,6 +114,7 @@ export const FEATURE_STAGE: Record<GatedFeature, number> = {
   "goal-decomposition": 3,
   "curiosity-bids": 5,
   exploration: 5,
+  "goal-pursuit": 5,
 };
 
 const META_KEY = "developmental-stage-v1";

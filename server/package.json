@@ -50,6 +50,7 @@
     "episodes:selfcheck": "tsx scripts/episodes-selfcheck.ts",
     "beliefs:selfcheck": "tsx scripts/beliefs-selfcheck.ts",
     "goals:selfcheck": "tsx scripts/goals-selfcheck.ts",
+    "pursuit:selfcheck": "tsx scripts/pursuit-selfcheck.ts",
     "procedural:selfcheck": "tsx scripts/procedural-selfcheck.ts",
     "stages:selfcheck": "tsx scripts/stages-selfcheck.ts",
     "fastpath:selfcheck": "tsx scripts/fastpath-selfcheck.ts",

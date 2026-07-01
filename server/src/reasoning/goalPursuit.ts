@@ -16,7 +16,10 @@
 // it can later close (the workspace/idle curiosity bidders pick that up). A
 // completed pursuit emits goal-progress instead. Both are failure-isolated.
 
+import { CONFIG } from "../config.js";
 import { getGoalManager } from "../core/goalManager.js";
+import { stageAllows } from "../core/stages.js";
+import { currentEnergyBudget } from "../core/energyBudget.js";
 import { startAgentRun, runAgentLoop } from "./agentLoop.js";
 import { getEventBus, nowIso } from "../core/eventBus.js";
 import { regionsFor, type CognitionKind } from "../../../shared/cognition.js";
@@ -88,4 +91,82 @@ export async function pursueNextGoal(): Promise<GoalPursuitReport> {
     );
   }
   return { pursued: true, goalId: leaf.goal.id, title: leaf.goal.title, status: status ?? "incomplete" };
+}
+
+// -----------------------------------------------------------------------------
+// A1 — the autonomous schedule. brainCore ticks autoPursuitTick() every minute;
+// the PURE autoPursuitDecision() decides whether a pursuit actually fires, so
+// the gate logic is selfcheck-exercisable without timers or an agent run.
+// -----------------------------------------------------------------------------
+
+/** Mirror of IdleAgent's quiet threshold — pursue only when the system is idle. */
+export const PURSUIT_QUIET_MS = 90_000;
+
+let lastActivityAt = Date.now();
+let lastPursuitAt = 0;
+let pursuitInFlight = false;
+
+/** brainCore's bus bridge calls this on real-work events (IdleAgent's kinds). */
+export function notePursuitActivity(now = Date.now()): void {
+  lastActivityAt = now;
+}
+
+export interface AutoPursuitGates {
+  enabled: boolean;
+  quietMs: number;
+  sinceLastPursuitMs: number;
+  intervalMs: number;
+  stageOk: boolean;
+  energyOk: boolean;
+  inFlight: boolean;
+}
+
+/** PURE go/no-go over the assembled gates. Every no-go carries its reason. */
+export function autoPursuitDecision(g: AutoPursuitGates): { go: boolean; reason: string } {
+  if (!g.enabled) return { go: false, reason: "disabled (GOAL_PURSUIT_AUTO=false)" };
+  if (g.inFlight) return { go: false, reason: "a pursuit is already running" };
+  if (g.quietMs < PURSUIT_QUIET_MS) return { go: false, reason: "system not quiet long enough" };
+  if (g.sinceLastPursuitMs < g.intervalMs) return { go: false, reason: "rate-limited" };
+  if (!g.stageOk) return { go: false, reason: "developmental stage below goal-pursuit gate" };
+  if (!g.energyOk) return { go: false, reason: "energy budget too low for optional work" };
+  return { go: true, reason: "all gates pass" };
+}
+
+/**
+ * The scheduled tick. Assembles gates from live CONFIG/stage/energy, and only
+ * a full pass reaches pursueNextGoal() (itself safe-only + never-throws). A
+ * successful pursuit burns the rate budget; a "no actionable goal" probe does
+ * not. Never throws — brainCore can `void` it.
+ */
+export async function autoPursuitTick(now = Date.now()): Promise<GoalPursuitReport> {
+  try {
+    const decision = autoPursuitDecision({
+      enabled: CONFIG.goalPursuitAuto,
+      quietMs: now - lastActivityAt,
+      sinceLastPursuitMs: now - lastPursuitAt,
+      intervalMs: CONFIG.goalPursuitIntervalMin * 60_000,
+      stageOk: stageAllows("goal-pursuit"),
+      energyOk: currentEnergyBudget().mayRunOptional,
+      inFlight: pursuitInFlight,
+    });
+    if (!decision.go) return { pursued: false, reason: decision.reason };
+    pursuitInFlight = true;
+    try {
+      const report = await pursueNextGoal();
+      if (report.pursued) lastPursuitAt = now;
+      return report;
+    } finally {
+      pursuitInFlight = false;
+    }
+  } catch (err) {
+    surfaceError("goalPursuit.auto", err);
+    return { pursued: false, reason: "tick failed" };
+  }
+}
+
+/** Selfcheck-only: reset the module clock state. */
+export function __resetAutoPursuitForTests(now = Date.now()): void {
+  lastActivityAt = now - PURSUIT_QUIET_MS - 1;
+  lastPursuitAt = 0;
+  pursuitInFlight = false;
 }

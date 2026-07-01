@@ -76,6 +76,7 @@ const steps = [
   { label: "episodes selfcheck", args: ["--prefix", "server", "run", "episodes:selfcheck"] },
   { label: "beliefs selfcheck", args: ["--prefix", "server", "run", "beliefs:selfcheck"] },
   { label: "goals selfcheck", args: ["--prefix", "server", "run", "goals:selfcheck"] },
+  { label: "pursuit selfcheck", args: ["--prefix", "server", "run", "pursuit:selfcheck"] },
   { label: "procedural selfcheck", args: ["--prefix", "server", "run", "procedural:selfcheck"] },
   { label: "stages selfcheck", args: ["--prefix", "server", "run", "stages:selfcheck"] },
   { label: "mind selfcheck", args: ["--prefix", "server", "run", "mind:selfcheck"] },
