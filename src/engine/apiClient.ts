@@ -41,6 +41,124 @@ export interface ModelUsageEntry {
   error: string | null;
   createdAt: string;
 }
+
+// ── Mind panel view types — structural mirrors of the server response shapes
+// (routes/brain.ts). Local interfaces per the ModelUsageEntry precedent: the
+// server modules aren't importable from the browser bundle.
+export interface BeliefView {
+  id: string;
+  statement: string;
+  confidence: number;
+  domain: string | null;
+  status: "active" | "contested" | "weakening" | "retired";
+  evidenceCount: number;
+  lastUpdated: string;
+}
+
+export interface BeliefStatsView {
+  total: number;
+  active: number;
+  contested: number;
+  weakening: number;
+  retired: number;
+  avgConfidence: number;
+}
+
+export interface BrainBeliefsView {
+  stats: BeliefStatsView;
+  beliefs: BeliefView[];
+}
+
+export interface GoalNodeView {
+  goal: {
+    id: string;
+    title: string;
+    status: string;
+    progress: number;
+    priority: number;
+  };
+  depth: number;
+  level: string;
+  children: GoalNodeView[];
+}
+
+export interface BrainGoalTreeView {
+  depth: number;
+  tree: GoalNodeView[];
+}
+
+export interface GoalPursuitReportView {
+  pursued: boolean;
+  goalId?: string;
+  title?: string;
+  status?: string;
+  reason?: string;
+}
+
+export interface ProcedureView {
+  id: string;
+  title: string;
+  steps: string[];
+  successCount: number;
+  failureCount: number;
+  score: number;
+  lastUsedAt: string | null;
+}
+
+export interface EpisodeView {
+  id: string;
+  startedAt: string;
+  endedAt: string;
+  title: string;
+  itemCount: number;
+}
+
+export interface ModulatorStatusView {
+  levels: Record<string, number>;
+  baseline: Record<string, number>;
+  learningRateScale: number;
+  underStress: boolean;
+  pulses: number;
+}
+
+export interface MaturationFeatureView {
+  feature: string;
+  active: boolean;
+  staticFlag: boolean;
+  requiredStage: number;
+  matured: boolean;
+  expensive: boolean;
+  reason: string;
+}
+
+export interface MaturationStatusView {
+  enabled: boolean;
+  stage: number;
+  features: MaturationFeatureView[];
+}
+
+export interface SelfRepresentationView {
+  name: string;
+  identity: string;
+  doing: string;
+  why: string;
+  becoming: string;
+  character: string;
+  emotion: { name: string; value: number };
+  stage: { stage: number; name: string };
+  goals: string[];
+  beliefs: string[];
+  strongestSkill: string | null;
+  weakestSkill: string | null;
+}
+
+export interface NarrativeView {
+  identity: string;
+  arc: string;
+  values: string[];
+  pursuits: string[];
+  updatedAt: string;
+}
 import type {
   CaptionRequest,
   CaptionResult,
@@ -631,6 +749,43 @@ export const apiClient = {
   // probe + the developmental stage (1-7) + recent bus activity.
   brainKernel(): Promise<KernelStatusInfo> {
     return json<KernelStatusInfo>(`/api/brain/kernel`);
+  },
+
+  // ── Mind panel introspection (read surfaces of routes/brain.ts) ────────────
+  brainBeliefs(status?: "active" | "contested" | "weakening" | "retired"): Promise<BrainBeliefsView> {
+    return json<BrainBeliefsView>(`/api/brain/beliefs${status ? `?status=${status}` : ""}`);
+  },
+
+  brainGoalTree(): Promise<BrainGoalTreeView> {
+    return json<BrainGoalTreeView>(`/api/brain/goals/tree`);
+  },
+
+  brainGoalsPursue(): Promise<GoalPursuitReportView> {
+    return json<GoalPursuitReportView>(`/api/brain/goals/pursue`, { method: "POST" });
+  },
+
+  brainProcedures(): Promise<{ procedures: ProcedureView[] }> {
+    return json(`/api/brain/procedures`);
+  },
+
+  brainEpisodes(): Promise<{ episodes: EpisodeView[] }> {
+    return json(`/api/brain/episodes`);
+  },
+
+  brainModulators(): Promise<ModulatorStatusView> {
+    return json<ModulatorStatusView>(`/api/brain/modulators`);
+  },
+
+  brainMaturation(): Promise<MaturationStatusView> {
+    return json<MaturationStatusView>(`/api/brain/maturation`);
+  },
+
+  brainSelf(): Promise<SelfRepresentationView> {
+    return json<SelfRepresentationView>(`/api/brain/self`);
+  },
+
+  brainNarrative(): Promise<{ narrative: NarrativeView | null }> {
+    return json(`/api/brain/narrative`);
   },
 
   // Self-Consciousness engine: the brain's model of itself — self-model,

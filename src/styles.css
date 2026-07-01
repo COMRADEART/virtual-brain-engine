@@ -8124,3 +8124,112 @@ h1, h2, h3 {
   color: #7a8aa0;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Mind panel (cognitive-organism introspection) ─────────────────────────── */
+.mind-panel {
+  position: absolute;
+  right: 16px;
+  bottom: 430px;
+  z-index: 6;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(56vh, 560px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(27, 28, 38, 0.92), rgba(12, 13, 18, 0.9));
+  color: #cfe9f4;
+  font-size: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(10px);
+}
+[data-theme="light"] .mind-panel {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--text);
+}
+.mind-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.mind-head > span { flex: 1; }
+.mind-badge {
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: #9fb4c9;
+}
+.mind-toggle {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+}
+.mind-body { padding: 8px 11px 11px; display: flex; flex-direction: column; gap: 8px; }
+.mind-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.mind-tab {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: none;
+  color: #9fb4c9;
+  cursor: pointer;
+}
+.mind-tab.on { color: var(--accent, #8b7cff); border-color: var(--accent, #8b7cff); }
+.mind-section { display: flex; flex-direction: column; gap: 6px; }
+.mind-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.mind-empty, .mind-note { color: #8b98ab; font-size: 11px; margin: 2px 0; }
+.mind-err { color: var(--amber, #ffce6b); font-size: 11px; margin: 2px 0; }
+.mind-belief-row { display: flex; align-items: baseline; gap: 7px; }
+.mind-conf { font-variant-numeric: tabular-nums; font-weight: 600; }
+.mind-conf.hi { color: var(--green, #5fcf8a); }
+.mind-conf.mid { color: #cfe9f4; }
+.mind-conf.lo { color: var(--amber, #ffce6b); }
+.mind-belief-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mind-stance { font-size: 10px; color: #8b98ab; }
+.mind-stance.st-contested { color: var(--amber, #ffce6b); }
+.mind-stance.st-weakening { color: #c88ba0; }
+.mind-actions-row { display: flex; align-items: center; gap: 8px; }
+.mind-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.mind-btn:disabled { opacity: 0.55; cursor: default; }
+.mind-pursuit-note { color: #8b98ab; }
+.mind-goal-row { display: flex; align-items: center; gap: 7px; }
+.mind-goal-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mind-goal-status { font-size: 10px; color: #8b98ab; }
+.mind-goal-status.st-completed { color: var(--green, #5fcf8a); }
+.mind-goal-track { flex: 0 0 52px; height: 4px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.mind-goal-fill { display: block; height: 100%; background: var(--accent, #8b7cff); }
+.mind-proc-row { display: flex; align-items: baseline; gap: 7px; }
+.mind-proc-score { font-variant-numeric: tabular-nums; font-weight: 600; }
+.mind-proc-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mind-proc-tally { color: #8b98ab; }
+.mind-episode-row { display: flex; flex-direction: column; gap: 1px; }
+.mind-episode-meta { color: #8b98ab; }
+.mind-mod-row { display: flex; align-items: center; gap: 7px; }
+.mind-mod-name { flex: 0 0 96px; }
+.mind-mod-track { position: relative; flex: 1; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.mind-mod-fill { display: block; height: 100%; background: var(--accent, #8b7cff); }
+.mind-mod-baseline { position: absolute; top: -1px; bottom: -1px; width: 1px; background: #8b98ab; }
+.mind-mod-val { font-variant-numeric: tabular-nums; }
+.mind-self { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+.mind-self dt { color: #8b98ab; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.mind-self dd { margin: 0; }
+/* The embedded SystemStatusPanel renders a flow-layout .brain-os-section — no
+   position overrides needed; this hook exists for spacing only. */
+.mind-system { padding-top: 2px; }

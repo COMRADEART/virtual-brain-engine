@@ -13,6 +13,7 @@ import { DigitalTwinPanel } from "./components/DigitalTwinPanel";
 import { PerceptionPanel } from "./components/PerceptionPanel";
 import { LearningLabPanel } from "./components/LearningLabPanel";
 import { BrainStatePanel } from "./components/BrainStatePanel";
+import { MindPanel } from "./components/mind/MindPanel";
 import { MemoryInspectorPanel } from "./components/MemoryInspectorPanel";
 import { SelfConsciousnessPanel } from "./components/SelfConsciousnessPanel";
 import { CognitionStreamPanel } from "./components/cognition/CognitionStreamPanel";
@@ -77,6 +78,7 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
   // via the CommandPalette / tab icons; the previous default buried the scene.
   const [digitalTwinCollapsed, setDigitalTwinCollapsed] = useLocalStorage<boolean>("brain-twin-collapsed", true);
   const [cognitionCollapsed, setCognitionCollapsed] = useLocalStorage<boolean>("brain-cognition-collapsed", true);
+  const [mindCollapsed, setMindCollapsed] = useLocalStorage<boolean>("brain-mind-collapsed", true);
   const [spineCollapsed, setSpineCollapsed] = useLocalStorage<boolean>("brain-spine-collapsed", true);
   const [deepResearchCollapsed, setDeepResearchCollapsed] = useLocalStorage<boolean>("brain-dresearch-collapsed", true);
   const [unifiedTab, setUnifiedTab] = useLocalStorage<"ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism">("brain-unified-tab", "ask");
@@ -121,6 +123,11 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
   const toggleCognitionStream = useCallback((collapsed?: boolean) => {
     setMode("full");
     setCognitionCollapsed((c) => (collapsed !== undefined ? collapsed : !c));
+  }, [setMode]);
+
+  const toggleMind = useCallback((collapsed?: boolean) => {
+    setMode("full");
+    setMindCollapsed((c) => (collapsed !== undefined ? collapsed : !c));
   }, [setMode]);
 
   const toggleSpine = useCallback((collapsed?: boolean) => {
@@ -491,6 +498,7 @@ useEffect(() => {
           <PerceptionPanel />
           <LearningLabPanel />
           <BrainStatePanel />
+          <MindPanel collapsed={mindCollapsed} onCollapsedChange={setMindCollapsed} />
           <MemoryInspectorPanel />
           <SelfConsciousnessPanel />
           <CognitionStreamPanel
@@ -549,6 +557,7 @@ useEffect(() => {
         onFullMode={() => setMode("full")}
         onToggleDigitalTwin={toggleDigitalTwin}
         onToggleCognitionStream={toggleCognitionStream}
+        onToggleMind={toggleMind}
         onToggleSpine={toggleSpine}
         onToggleDeepResearch={toggleDeepResearch}
         onOpenUnifiedTab={openUnifiedTab}

@@ -30,6 +30,7 @@ interface CommandPaletteProps {
   // Phase 2 panel controls
   onToggleDigitalTwin: (collapsed?: boolean) => void;
   onToggleCognitionStream: (collapsed?: boolean) => void;
+  onToggleMind: (collapsed?: boolean) => void;
   onToggleSpine: (collapsed?: boolean) => void;
   onToggleDeepResearch: (collapsed?: boolean) => void;
   onOpenUnifiedTab: (tab: "ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism") => void;
@@ -50,7 +51,7 @@ const CATEGORY_LABELS: Record<Command["category"], string> = {
 export function CommandPalette({
   isOpen, onClose, currentLayout, currentPerfMode,
   onLayoutChange, onCyclePreset, onFocusMode, onCompactMode, onFullMode,
-  onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onToggleDeepResearch, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
+  onToggleDigitalTwin, onToggleCognitionStream, onToggleMind, onToggleSpine, onToggleDeepResearch, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub,
   onOpenSettings, onScreenshot,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
@@ -146,6 +147,14 @@ export function CommandPalette({
       action: () => { onToggleCognitionStream(); onClose(); },
     },
     {
+      id: "toggle-mind",
+      label: "Toggle Mind Panel",
+      description: "Introspect the cognitive organism: beliefs, goal tree (+ pursue now), procedures, episodes, neuromodulators + maturation, self, system status",
+      category: "panels",
+      icon: <Sparkles size={16} />,
+      action: () => { onToggleMind(); onClose(); },
+    },
+    {
       id: "toggle-spine",
       label: "Toggle Spinal Cord",
       description: "The brain↔body conduit: reflex / motor-program / deliberate tracts, motor-pool personas, and the live motor-command feed",
@@ -235,7 +244,7 @@ export function CommandPalette({
     },
   ], [
     currentLayout, currentPerfMode, onLayoutChange, onCompactMode, onFullMode, onFocusMode, onCyclePreset, onClose,
-    onToggleDigitalTwin, onToggleCognitionStream, onToggleSpine, onToggleDeepResearch, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
+    onToggleDigitalTwin, onToggleCognitionStream, onToggleMind, onToggleSpine, onToggleDeepResearch, onOpenUnifiedTab, onToggleUnifiedPanel, onOpenModelHub, onOpenSettings, onScreenshot
   ]);
 
   const filtered = useMemo(() => {
