@@ -206,6 +206,18 @@ export interface ServerConfig {
   // Soft hint surfaced in the coding prompt for how many verify→fix cycles to aim
   // for before giving up. The HARD termination bound stays agentMaxRounds.
   codingMaxVerifyRounds: number;
+  // --- Voice (governed text-to-speech) ---------------------------------------
+  // Master switch for the brain's voice (opt-in, default OFF). The speak path is
+  // governed by server/src/voice/speechPolicy.ts and degrades to the browser's
+  // Web Speech API when the Bark worker is down.
+  voiceEnabled: boolean;
+  // WHEN it speaks: off | manual (only on explicit request) | answers (completed
+  // answers + errors + manual) | proactive (also unprompted idle-thoughts).
+  voiceMode: "off" | "manual" | "answers" | "proactive";
+  // Spoken-length cap (chars) after sanitization — keeps it from monologuing.
+  voiceMaxChars: number;
+  // Default Bark voice preset when no persona maps a voice.
+  voicePreset: string;
   // --- Dynamic plain-code skills (security) ----------------------------------
   // Whether the executor will RUN a dynamic skill's plain JavaScript handlerCode
   // (the repo→skills / external-skill path). DEFAULT OFF. A handler runs via
@@ -568,6 +580,10 @@ export const CONFIG: ServerConfig = {
   shellTimeoutMs: Math.min(600_000, Math.max(1_000, num("SHELL_TIMEOUT_MS", 120_000))),
   codingVerifyRequired: bool("CODING_VERIFY_REQUIRED", true),
   codingMaxVerifyRounds: Math.min(20, Math.max(1, num("CODING_MAX_VERIFY_ROUNDS", 6))),
+  voiceEnabled: bool("VOICE_ENABLED", false),
+  voiceMode: oneOf("VOICE_MODE", ["off", "manual", "answers", "proactive"] as const, "answers"),
+  voiceMaxChars: Math.min(5000, Math.max(80, num("VOICE_MAX_CHARS", 600))),
+  voicePreset: str("VOICE_PRESET", "v2/en_speaker_6"),
   allowDynamicCode: bool("ALLOW_DYNAMIC_CODE", false),
   mcpEnabled: bool("MCP_ENABLED", false),
   mcpServersRaw: str("MCP_SERVERS", ""),

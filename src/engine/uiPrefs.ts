@@ -88,6 +88,19 @@ export interface UiPrefs {
    * (BrainScene.effectiveFieldCount).
    */
   neuronFieldCount: number;
+  /**
+   * Per-device voice preference. This is the LOCAL toggle ("do I want spoken
+   * output on this machine"); the brain ALSO gates speech server-side via
+   * voiceEnabled + voiceMode (see the runtime Settings catalog). Both must be on
+   * to hear anything.
+   */
+  voiceEnabled: boolean;
+  /** Browser-fallback speech rate (0.5–2). Only affects the Web Speech path. */
+  voiceRate: number;
+  /** Browser-fallback speech pitch (0–2). Only affects the Web Speech path. */
+  voicePitch: number;
+  /** Preferred browser voice (SpeechSynthesisVoice.voiceURI); "" = system default. */
+  voiceURI: string;
 }
 
 export const DEFAULT_UI_PREFS: UiPrefs = {
@@ -99,6 +112,10 @@ export const DEFAULT_UI_PREFS: UiPrefs = {
   motion: "full",
   bloomStrength: 0.45,
   neuronFieldCount: 500_000,
+  voiceEnabled: false,
+  voiceRate: 1,
+  voicePitch: 1,
+  voiceURI: "",
 };
 
 const STORAGE_KEY = "brain-ui-prefs";

@@ -8,6 +8,7 @@ import {
   Settings2,
   Sparkles,
   Sun,
+  Volume2,
   X,
 } from "lucide-react";
 import { useThemeMode, type ThemeMode } from "../engine/useApiCall";
@@ -89,6 +90,17 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps): JSX.Elemen
   const { keymap, rebind, reset: resetKeys } = useKeymapEditor();
   // Action currently waiting for a key press, if any.
   const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
+  // Browser TTS voices for the fallback-voice picker. They load asynchronously,
+  // so we also listen for `voiceschanged`. Empty when the platform has none.
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  useEffect(() => {
+    const synth = typeof window !== "undefined" ? window.speechSynthesis : undefined;
+    if (!synth) return;
+    const load = (): void => setVoices(synth.getVoices());
+    load();
+    synth.addEventListener("voiceschanged", load);
+    return () => synth.removeEventListener("voiceschanged", load);
+  }, []);
 
   // Capture the next keydown while rebinding. Escape cancels.
   useEffect(() => {
@@ -320,6 +332,97 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps): JSX.Elemen
               ))}
             </div>
           </div>
+        </section>
+
+        <section>
+          <h3>
+            <Volume2 size={13} /> Voice
+          </h3>
+          <div className="setting-row">
+            <span>
+              Speak answers
+              <small className="setting-hint">
+                this device. The brain also gates speech server-side (Brain settings → Voice)
+              </small>
+            </span>
+            <div className="settings-segmented" role="radiogroup" aria-label="Speak answers">
+              {[
+                { on: true, label: "On" },
+                { on: false, label: "Off" },
+              ].map(({ on, label }) => (
+                <button
+                  key={label}
+                  type="button"
+                  role="radio"
+                  aria-checked={prefs.voiceEnabled === on}
+                  className={prefs.voiceEnabled === on ? "active" : ""}
+                  onClick={() => update({ voiceEnabled: on })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="setting-row">
+            <span>
+              Rate
+              <small className="setting-hint">browser-voice speed (when the worker is down)</small>
+            </span>
+            <div className="settings-slider">
+              <input
+                type="range"
+                min={0.5}
+                max={2}
+                step={0.1}
+                value={prefs.voiceRate}
+                aria-label="Speech rate"
+                onChange={(e) => update({ voiceRate: Number(e.target.value) })}
+              />
+              <span className="settings-slider-value">{prefs.voiceRate.toFixed(1)}×</span>
+            </div>
+          </div>
+
+          <div className="setting-row">
+            <span>
+              Pitch
+              <small className="setting-hint">browser-voice pitch</small>
+            </span>
+            <div className="settings-slider">
+              <input
+                type="range"
+                min={0}
+                max={2}
+                step={0.1}
+                value={prefs.voicePitch}
+                aria-label="Speech pitch"
+                onChange={(e) => update({ voicePitch: Number(e.target.value) })}
+              />
+              <span className="settings-slider-value">{prefs.voicePitch.toFixed(1)}</span>
+            </div>
+          </div>
+
+          {voices.length > 0 ? (
+            <div className="setting-row">
+              <span>
+                Browser voice
+                <small className="setting-hint">used when the neural (Bark) worker is down</small>
+              </span>
+              <select
+                className="settings-select"
+                value={prefs.voiceURI}
+                aria-label="Browser voice"
+                onChange={(e) => update({ voiceURI: e.target.value })}
+              >
+                <option value="">System default</option>
+                {voices.map((v) => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </section>
 
         <FileIngestSection />

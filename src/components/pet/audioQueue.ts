@@ -132,14 +132,3 @@ export class SerialAudioPlayer {
     }
   }
 }
-
-// Module singleton used by the pet. One window = one voice.
-const petPlayer = new SerialAudioPlayer();
-
-export function playPetAudio(base64: string, mime = "audio/wav"): Promise<void> {
-  return petPlayer.play(base64, mime);
-}
-
-export function stopPetAudio(): void {
-  petPlayer.stop();
-}

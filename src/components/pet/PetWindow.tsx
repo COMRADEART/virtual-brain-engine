@@ -10,7 +10,7 @@ import { Activity, Brain, Maximize2, MessageCircle, Mic, Send, ShieldCheck, Squa
 import { subscribeBrainBus } from "../../engine/brainBus";
 import { apiClient } from "../../engine/apiClient";
 import { MOOD_COLOR, MOOD_LABEL, moodFor, type Mood } from "./petMood";
-import { playPetAudio, stopPetAudio } from "./audioQueue";
+import { speak as voiceSpeak, stopSpeaking } from "../../engine/voicePlayer";
 import { appendExchange, updateLastAnswer, type Exchange } from "./chatHistory";
 import { confirmScope } from "./confirmSummary";
 import { usePushToTalk } from "./usePushToTalk";
@@ -163,12 +163,9 @@ export function PetWindow(): JSX.Element {
       if (message.type === "idle-thought") {
         setSubtitle(`⊕ ${message.preview}`);
         if (voiceOnRef.current && message.preview) {
-          void apiClient
-            .voiceSpeak(message.preview.slice(0, 600))
-            .then((r) => {
-              if (r.audioBase64) void playPetAudio(r.audioBase64);
-            })
-            .catch(() => {});
+          // The server's speech policy decides if an idle-thought is spoken
+          // (only in voiceMode "proactive") and caps/redacts the text.
+          void voiceSpeak(message.preview, { kind: "idle-thought" });
         }
         return;
       }
@@ -270,17 +267,10 @@ export function PetWindow(): JSX.Element {
             case "final":
               answer = frame.text ?? answer;
               render();
-              // Skip TTS if the user already pressed Stop — voiceSpeak isn't
-              // cancellable, so awaiting it would defer the loop's cleanup.
+              // Skip TTS if the user already pressed Stop. The server policy
+              // sanitizes/redacts/caps the answer; don't await (best-effort).
               if (voiceOnRef.current && answer && !controller.signal.aborted) {
-                try {
-                  const result = await apiClient.voiceSpeak(answer.slice(0, 1500));
-                  if (result.audioBase64) {
-                    void playPetAudio(result.audioBase64);
-                  }
-                } catch {
-                  /* best effort */
-                }
+                void voiceSpeak(answer, { kind: "answer" });
               }
               break;
             case "error":
@@ -314,7 +304,7 @@ export function PetWindow(): JSX.Element {
       if (!expanded) applyExpanded(true);
       setInput("");
       setPendingConfirm(null);
-      stopPetAudio(); // barge-in: a new question silences any in-flight voice
+      stopSpeaking(); // barge-in: a new question silences any in-flight voice
       setExchanges((list) => appendExchange(list, { question: text, answer: "…" }));
       setAsking(true);
       try {
@@ -382,7 +372,7 @@ export function PetWindow(): JSX.Element {
   const stop = useCallback(() => {
     askAbort.current?.abort();
     askAbort.current = null;
-    stopPetAudio(); // silence any clip already playing / mid-synthesis
+    stopSpeaking(); // silence any clip already playing / mid-synthesis
     setPendingConfirm(null);
     setAsking(false);
     setSubtitle("stopped");
@@ -586,7 +576,7 @@ export function PetWindow(): JSX.Element {
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() =>
             setVoiceOn((v) => {
-              if (v) stopPetAudio(); // muting silences in-flight speech
+              if (v) stopSpeaking(); // muting silences in-flight speech
               return !v;
             })
           }

@@ -93,6 +93,80 @@ check(
   computeLocality([{ enabled: false, isLocal: false }]) === "local",
 );
 
+// -----------------------------------------------------------------------------
+// (E) speechPolicy — the governed "with rules" layer (PURE: no DB, no network).
+//     Decides WHEN/WHAT the brain speaks; the route applies it at the single
+//     /api/voice/speak choke point.
+// -----------------------------------------------------------------------------
+const { sanitizeForSpeech, capAtSentence, presetForPersona, decideSpeech } = await import(
+  "../src/voice/speechPolicy.js"
+);
+
+{
+  const dirty = "Known memory:\n- **bold** see [m:ab12] and `code` and [link](http://x.test/p)";
+  const clean = sanitizeForSpeech(dirty);
+  check("sanitizeForSpeech strips [m:id] citation markers", !clean.includes("[m:"));
+  check("sanitizeForSpeech strips the section headers", !clean.includes("Known memory:"));
+  check("sanitizeForSpeech strips markdown emphasis + backticks", !clean.includes("**") && !clean.includes("`"));
+  check("sanitizeForSpeech keeps a link label, drops the URL", clean.includes("link") && !clean.includes("http"));
+}
+
+{
+  // A planted secret must never reach spoken text (safety backstop, always on).
+  const d = decideSpeech({
+    text: "the key is sk-proj-ABCDEFGHIJKLMNOP12345 ok",
+    kind: "manual",
+    enabled: true,
+    mode: "manual",
+    maxChars: 600,
+    defaultPreset: "v2/en_speaker_6",
+  });
+  check(
+    "decideSpeech redacts secrets before speaking",
+    d.speak === true && !d.text.includes("sk-proj-") && d.redactions >= 1,
+    JSON.stringify({ text: d.text, redactions: d.redactions }),
+  );
+}
+
+{
+  const long = "One sentence here. Two sentence here. Three sentence here. " + "x".repeat(50);
+  const capped = capAtSentence(long, 40);
+  check("capAtSentence never exceeds the cap (sentence/word boundary)", capped.length <= 41, `len=${capped.length}`);
+}
+
+{
+  const base = { text: "hello world", enabled: true, maxChars: 600, defaultPreset: "v2/en_speaker_6" };
+  check("mode 'off' never speaks", decideSpeech({ ...base, mode: "off", kind: "answer" }).speak === false);
+  check(
+    "mode 'manual' speaks only a manual request",
+    decideSpeech({ ...base, mode: "manual", kind: "manual" }).speak === true &&
+      decideSpeech({ ...base, mode: "manual", kind: "answer" }).speak === false,
+  );
+  check(
+    "mode 'answers' speaks answer/error but not idle-thought",
+    decideSpeech({ ...base, mode: "answers", kind: "answer" }).speak === true &&
+      decideSpeech({ ...base, mode: "answers", kind: "error" }).speak === true &&
+      decideSpeech({ ...base, mode: "answers", kind: "idle-thought" }).speak === false,
+  );
+  check(
+    "mode 'proactive' speaks an idle-thought",
+    decideSpeech({ ...base, mode: "proactive", kind: "idle-thought" }).speak === true,
+  );
+  check(
+    "a manual request bypasses the mode gate (the click IS consent)",
+    decideSpeech({ ...base, mode: "answers", kind: "manual" }).speak === true,
+  );
+  check(
+    "voice disabled never speaks regardless of mode",
+    decideSpeech({ ...base, enabled: false, mode: "proactive", kind: "answer" }).speak === false,
+  );
+}
+
+{
+  check("presetForPersona maps a known persona", presetForPersona("scholar", "fallback") !== "fallback");
+  check("presetForPersona falls back for an absent persona", presetForPersona(undefined, "v2/en_speaker_6") === "v2/en_speaker_6");
+}
+
 const result = failures === 0 ? "PASS" : "FAIL";
 console.log(JSON.stringify({ failures, result }, null, 2));
 process.exit(failures === 0 ? 0 : 1);

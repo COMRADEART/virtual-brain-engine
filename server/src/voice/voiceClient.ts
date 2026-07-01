@@ -31,12 +31,6 @@ export interface VoiceStatus {
   error?: string;
 }
 
-export interface SpeakRequest {
-  text: string;
-  voice?: string;
-  preset?: string;
-}
-
 export interface SpeakResult {
   audioBase64: string;
   mimeType: string;
@@ -91,7 +85,14 @@ async function fetchJson<T>(
   }
 }
 
-export async function speak(req: SpeakRequest): Promise<SpeakWorkerResult> {
+// Raw worker call — the route has already run the speech policy; this only needs
+// the worker's fields (text / voice / preset). The governed SpeakRequest (with
+// kind/persona) lives in shared/voice.ts and is consumed by the route.
+export async function speak(req: {
+  text: string;
+  voice?: string;
+  preset?: string;
+}): Promise<SpeakWorkerResult> {
   const result = await fetchJson<SpeakResult>(
     "/voice/speak",
     { method: "POST", body: JSON.stringify(req) },

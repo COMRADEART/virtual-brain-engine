@@ -50,6 +50,7 @@ const STATIC_GET_PATHS = [
   "/organism",
   "/vision/memories", "/vision/workflows", "/vision/stats", "/vision/monitors", "/vision/config",
   "/perceive/status",
+  "/voice/status",
   "/phase2/status", "/phase2/workflows", "/phase2/pet", "/phase2/autonomous/due",
   "/civilization/status", "/civilization/peers", "/civilization/graph", "/civilization/trust",
   "/civilization/map", "/civilization/goals", "/civilization/groups",
