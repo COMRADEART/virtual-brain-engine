@@ -19,46 +19,52 @@
 //     the legacy 4-term formula (only the absolute scores shift slightly
 //     because the weights were rebalanced to keep their sum at 1.0).
 //
-// The five signals:
+// The six signals:
 //
-//   novelty       — how DIFFERENT this memory is from the rest of the recall
-//                   set. Storage-time novelty (from noveltyDetector) is a
-//                   one-shot signal; retrieval-time novelty is diversity
-//                   within the candidates and is what the user actually
-//                   cares about ("don't dump 10 near-duplicates on me").
-//                   We approximate with a position-decayed similarity to the
-//                   other hits, computed by the caller (cheap word-overlap).
+//   novelty         — how DIFFERENT this memory is from the rest of the recall
+//                     set. Storage-time novelty (from noveltyDetector) is a
+//                     one-shot signal; retrieval-time novelty is diversity
+//                     within the candidates and is what the user actually
+//                     cares about ("don't dump 10 near-duplicates on me").
+//                     We approximate with a position-decayed similarity to the
+//                     other hits, computed by the caller (cheap word-overlap).
 //
-//   goalRelevance — token-overlap between the memory content and the user's
-//                   active organism goals. O(L * G) per memory, G usually
-//                   small (<=8). When the user has no active goals, this
-//                   degenerates to 0 — that's intentional (no prior).
+//   goalRelevance   — token-overlap between the memory content and the user's
+//                     active organism goals. O(L * G) per memory, G usually
+//                     small (<=8). When the user has no active goals, this
+//                     degenerates to 0 — that's intentional (no prior).
 //
-//   emotion       — memory.importance is already calibrated by the
-//                   importance scorer (valence, urgency, emotional weight)
-//                   and persisted on every memory. We pass it through as
-//                   the emotion signal rather than reinventing it.
+//   emotion         — memory.importance is already calibrated by the
+//                     importance scorer (valence, urgency, emotional weight)
+//                     and persisted on every memory. We pass it through as
+//                     the emotion signal rather than reinventing it.
 //
-//   survival      — organism health gates this. When health is high, the
-//                   system has slack and survival adds nothing. When health
-//                   is low (<0.5), memories whose content contains
-//                   recovery/health/maintenance terms get a boost — the
-//                   system literally pays more attention to what could
-//                   restore it. This is small by design (max +0.2 on a
-//                   [0,1] score) so it doesn't dominate goal-relevance.
+//   survival        — organism health gates this. When health is high, the
+//                     system has slack and survival adds nothing. When health
+//                     is low (<0.5), memories whose content contains
+//                     recovery/health/maintenance terms get a boost — the
+//                     system literally pays more attention to what could
+//                     restore it. This is small by design (max +0.2 on a
+//                     [0,1] score) so it doesn't dominate goal-relevance.
 //
-//   uncertainty   — the brief's 5th term (§18.2). System-wide or per-memory
-//                   "epistemic value": memories that would most reduce the
-//                   system's current uncertainty deserve attention. The
-//                   primary source is HybridCognitiveCore.computeUncertainty
-//                   (engine-side, free-energy / RPE-volatility / criticality
-//                   drift / arousal) carried into the server via the bus or
-//                   set explicitly on the context. The caller may also pass
-//                   a per-memory uncertaintyById map (e.g. low-coverage
-//                   clusters from semanticCluster, or fresh-but-rarely-cited
-//                   memories) which overrides the context-level scalar.
-//                   When neither is provided the term contributes 0 — that's
-//                   the backward-compat path.
+//   uncertainty     — system-wide or per-memory "epistemic value": memories
+//                     that would most reduce the system's current uncertainty
+//                     deserve attention. When omitted → contributes 0.
+//
+//   beliefRelevance — token-overlap between the memory content and the
+//                     brain's unsettled beliefs (contested / weakening /
+//                     active with confidence < 1). Weighted by (1-confidence)
+//                     so uncertain beliefs exert more pull than settled ones.
+//                     When activeBeliefs is absent → contributes 0 (backward
+//                     compat). This closes the beliefs→retrieval loop without
+//                     adding a new pipeline call site.
+
+export interface SaliencyBelief {
+  /** The belief statement text — used for token overlap. */
+  statement: string;
+  /** Confidence in [0,1]. Lower confidence → more pull (we want evidence). */
+  confidence: number;
+}
 
 export interface SaliencyContext {
   /** The user query. Used for token-overlap against memory content. */
@@ -88,6 +94,13 @@ export interface SaliencyContext {
    * cluster).
    */
   uncertaintyById?: Map<string, number>;
+  /**
+   * Unsettled beliefs the brain holds. Omit → beliefRelevance term is 0.
+   * The caller (buildSaliencyContext) loads non-retired beliefs; low-
+   * confidence ones exert more pull so the retrieval blend surfaces memories
+   * that could update an uncertain stance.
+   */
+  activeBeliefs?: ReadonlyArray<SaliencyBelief>;
 }
 
 export interface SaliencyBreakdown {
@@ -96,6 +109,7 @@ export interface SaliencyBreakdown {
   emotion: number;
   survival: number;
   uncertainty: number;
+  beliefRelevance: number;
   /** Weighted blend in [0,1]. */
   score: number;
 }
@@ -112,18 +126,16 @@ export interface SaliencyMemory {
   importance: number;
 }
 
-// Blend weights. Sum to 1 so `score` stays in [0,1]. Tuned by the blueprint's
-// own §15 / §18.2 commentary: goal-relevance dominates because the system is
-// goal-directed; novelty is a tiebreaker; emotion is the calibrated prior;
-// survival is a small but real gate that the rest of the modules can't
-// express; uncertainty is the epistemic-value gate added in §18.2 — small by
-// design so it never overrides a strong goal/emotion signal, but large enough
-// to break ties in favour of memories that would resolve open questions.
+// Blend weights. Sum to 1 so `score` stays in [0,1].
+// W_GOAL reduced 0.35→0.30 to make room for W_BELIEF; the two signals are
+// complementary (goals = what we pursue, beliefs = what we doubt), so the
+// combined weight on brain-directed attention stays the same.
 const W_NOVELTY = 0.20;
-const W_GOAL = 0.35;
+const W_GOAL = 0.30;
 const W_EMOTION = 0.25;
 const W_SURVIVAL = 0.10;
 const W_UNCERTAINTY = 0.10;
+const W_BELIEF = 0.05;
 
 // Health threshold below which survival kicks in. Mirrors the
 // `lifecycle: "recovering"` cutoff in organism.ts (0.42 / 0.45 area).
@@ -225,6 +237,22 @@ function survivalFor(memory: SaliencyMemory, ctx: SaliencyContext): number {
   return clamp01(urgency * Math.min(1, hits / 3));
 }
 
+function beliefRelevanceFor(memory: SaliencyMemory, ctx: SaliencyContext): number {
+  if (!ctx.activeBeliefs || ctx.activeBeliefs.length === 0) return 0;
+  const memTokens = tokens(memory.content);
+  if (memTokens.length === 0) return 0;
+  let best = 0;
+  for (const belief of ctx.activeBeliefs) {
+    const beliefTokens = tokens(belief.statement);
+    const sim = jaccard(beliefTokens, memTokens);
+    // Uncertain beliefs (low confidence) exert more pull — we want evidence
+    // to resolve them. Settled beliefs (high confidence) contribute little.
+    const weighted = sim * (1 - clamp01(belief.confidence));
+    if (weighted > best) best = weighted;
+  }
+  return clamp01(best);
+}
+
 function uncertaintyFor(memory: SaliencyMemory, ctx: SaliencyContext): number {
   // Per-memory override wins when set — that's the per-cluster epistemic-
   // value channel. Falls back to the system-wide scalar. When NEITHER is
@@ -252,16 +280,18 @@ export function computeSaliency(memory: SaliencyMemory, ctx: SaliencyContext): S
   const emotion = emotionFor(memory);
   const survival = survivalFor(memory, ctx);
   const uncertainty = uncertaintyFor(memory, ctx);
+  const beliefRelevance = beliefRelevanceFor(memory, ctx);
   const score = clamp01(
     W_NOVELTY * novelty +
       W_GOAL * goalRelevance +
       W_EMOTION * emotion +
       W_SURVIVAL * survival +
-      W_UNCERTAINTY * uncertainty,
+      W_UNCERTAINTY * uncertainty +
+      W_BELIEF * beliefRelevance,
   );
-  return { novelty, goalRelevance, emotion, survival, uncertainty, score };
+  return { novelty, goalRelevance, emotion, survival, uncertainty, beliefRelevance, score };
 }
 
 /** Selfcheck helper — sum of weights, so the test can assert closure. */
 export const SALIENCY_WEIGHT_SUM =
-  W_NOVELTY + W_GOAL + W_EMOTION + W_SURVIVAL + W_UNCERTAINTY;
+  W_NOVELTY + W_GOAL + W_EMOTION + W_SURVIVAL + W_UNCERTAINTY + W_BELIEF;

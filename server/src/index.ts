@@ -242,7 +242,11 @@ async function main(): Promise<void> {
   app.use("/api", organismRouter);
   app.use("/api", visionRouter);
   app.use("/api", perceptionRouter);
-  app.use("/api", voiceRouter);
+  // Mounted at /api/voice so the router's /speak + /status become /api/voice/speak
+  // + /api/voice/status — the paths apiClient.voiceSpeak() and the status probe
+  // actually call. (Previously mounted at /api, so the served path was /api/speak
+  // and every client call 404'd — voice was wired but unreachable.)
+  app.use("/api/voice", voiceRouter);
   app.use("/api", settingsRouter);
   app.use("/api", spineRouter);
   app.use("/api", mcpRouter);

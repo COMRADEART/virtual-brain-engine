@@ -55,6 +55,7 @@ function defaultEnv(): AudioEnv {
 export class SerialAudioPlayer {
   private current: AudioLike | null = null;
   private currentUrl: string | null = null;
+  private idleWaiters: Array<() => void> = [];
   private readonly env: AudioEnv;
 
   constructor(env?: AudioEnv) {
@@ -64,6 +65,24 @@ export class SerialAudioPlayer {
   /** True while a clip is loaded/playing. */
   get playing(): boolean {
     return this.current !== null;
+  }
+
+  private notifyIdle(): void {
+    const waiters = this.idleWaiters;
+    this.idleWaiters = [];
+    for (const w of waiters) w();
+  }
+
+  /**
+   * Resolves once the CURRENT clip has finished (ended, errored, or was
+   * interrupted by stop()/a newer play()). Resolves immediately if nothing is
+   * playing. This is what lets callers sequence multiple play() calls back-to-
+   * back (a streaming-speech queue) instead of each one cutting the last off —
+   * `play()` itself still resolves as soon as playback STARTS, unchanged.
+   */
+  waitForIdle(): Promise<void> {
+    if (!this.current) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.push(resolve));
   }
 
   /** Stop and fully release the current clip (barge-in). Idempotent. */
@@ -86,6 +105,7 @@ export class SerialAudioPlayer {
       }
       this.currentUrl = null;
     }
+    this.notifyIdle();
   }
 
   /**
@@ -122,6 +142,7 @@ export class SerialAudioPlayer {
         }
         this.currentUrl = null;
       }
+      this.notifyIdle();
     };
     audio.onended = release;
     audio.onerror = release;
@@ -131,15 +152,4 @@ export class SerialAudioPlayer {
       release(); // autoplay blocked / play rejected — clean up
     }
   }
-}
-
-// Module singleton used by the pet. One window = one voice.
-const petPlayer = new SerialAudioPlayer();
-
-export function playPetAudio(base64: string, mime = "audio/wav"): Promise<void> {
-  return petPlayer.play(base64, mime);
-}
-
-export function stopPetAudio(): void {
-  petPlayer.stop();
 }

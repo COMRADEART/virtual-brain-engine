@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, Brain, HelpCircle, Loader2, Send, Sparkles, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { BookOpen, Brain, HelpCircle, Loader2, Send, Sparkles, Square, ThumbsDown, ThumbsUp, Volume2, VolumeX } from "lucide-react";
 import { apiClient, ApiError } from "../engine/apiClient";
+import { stopSpeaking } from "../engine/voicePlayer";
+import { StreamingSpeaker } from "../engine/streamingSpeech";
+import { useUiPrefs } from "../engine/uiPrefs";
 import { RichText } from "./RichText";
 import type { PipelineEvent } from "../../shared/pipeline";
 
@@ -71,6 +74,7 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const citationsRef = useRef<HTMLUListElement | null>(null);
+  const { prefs: uiPrefs, update: updateUi } = useUiPrefs();
 
   useEffect(() => {
     return () => abortRef.current?.abort();
@@ -86,6 +90,7 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
         setPrompt(overridePrompt);
       }
       abortRef.current?.abort();
+      stopSpeaking(); // barge-in: a new question cuts off any in-flight speech
       const controller = new AbortController();
       abortRef.current = controller;
       setRunning(true);
@@ -98,6 +103,11 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
       setFeedbackSent(null);
 
       let streamed = "";
+      // Speaks completed sentences as they stream in, instead of waiting for
+      // the full answer — the brain starts talking seconds earlier on a long
+      // response. Reads voiceEnabled live on every push()/flush(), same as
+      // the rest of the app's voice gating.
+      const speaker = new StreamingSpeaker({ kind: "answer" });
       // Coalesce token updates to ONE React state write per animation frame.
       // Writing setPending on every tokensDelta re-renders the answer tree (and
       // re-runs its full-text regex parse) per token — O(n²) over a long answer
@@ -135,11 +145,16 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
           if (event.step === "response" && event.status === "progress" && event.tokensDelta) {
             streamed += event.tokensDelta;
             scheduleFlush();
+            speaker.push(streamed);
           }
           if (event.step === "learning" && event.status === "complete" && event.finalAnswer) {
             cancelFlush();
             setAnswer(event.finalAnswer);
             setPending("");
+            // Speak whatever the streaming pass hasn't already queued (the
+            // trailing partial sentence, or the whole answer if no progress
+            // events fired). Server governs whether/what — sanitize/redact/cap.
+            speaker.flush(event.finalAnswer);
           }
           if (event.status === "error") {
             setError(event.detail ?? "Pipeline error");
@@ -242,6 +257,19 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
             }
           }}
         />
+        <button
+          className="ai-voice-toggle"
+          type="button"
+          aria-pressed={uiPrefs.voiceEnabled}
+          title={uiPrefs.voiceEnabled ? "Voice on — click to mute" : "Voice off — click to have the brain speak answers"}
+          onClick={() => {
+            const next = !uiPrefs.voiceEnabled;
+            updateUi({ voiceEnabled: next });
+            if (!next) stopSpeaking();
+          }}
+        >
+          {uiPrefs.voiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+        </button>
         {running ? (
           <button className="ai-cancel" type="button" onClick={cancel}>
             <Square size={14} /> Stop

@@ -38,6 +38,7 @@ export interface AttentionFocus {
     emotion: number; // [0,1]
     survival: number; // [0,1]
     uncertainty: number; // [0,1]
+    beliefRelevance: number; // [0,1] — 0 on cold/retired-belief brain
   };
 }
 

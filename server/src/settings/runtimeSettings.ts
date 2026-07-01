@@ -199,7 +199,7 @@ export const SETTINGS_CATALOG: SettingSpec[] = [
   {
     key: "adaptiveController",
     label: "RL adaptive controller",
-    description: "A contextual bandit that learns the augment / retrieval-k / multi-query decisions from citation usage. Opt-in.",
+    description: "A contextual bandit that learns augment / retrieval-k / multi-query decisions from citation usage. Safe on a cold brain — returns the heuristic baseline until enough observations accrue.",
     group: "Retrieval",
     type: "boolean",
     envVar: "ADAPTIVE_CONTROLLER",
@@ -703,6 +703,60 @@ export const SETTINGS_CATALOG: SettingSpec[] = [
     min: 1,
     max: 365,
     step: 1,
+  },
+
+  // ── Voice (text-to-speech) ───────────────────────────────────────────────
+  {
+    key: "voiceEnabled",
+    label: "Voice (speak answers)",
+    description:
+      "Master switch for the brain's voice. When ON it can speak — neural Bark TTS via the worker, or the browser's built-in voice when the worker is down. Off by default; you also need the per-device voice toggle in the chat/pet.",
+    group: "Voice",
+    type: "boolean",
+    envVar: "VOICE_ENABLED",
+  },
+  {
+    key: "voiceMode",
+    label: "When to speak",
+    description:
+      "off = never; manual = only when you click speak; answers = completed answers + errors; proactive = also unprompted idle-thoughts (rate-limited).",
+    group: "Voice",
+    type: "enum",
+    envVar: "VOICE_MODE",
+    options: ["off", "manual", "answers", "proactive"],
+  },
+  {
+    key: "voiceMaxChars",
+    label: "Spoken length cap",
+    description:
+      "Maximum characters spoken in one utterance (after stripping citations/markup), truncated at a sentence boundary so the brain doesn't monologue.",
+    group: "Voice",
+    type: "number",
+    envVar: "VOICE_MAX_CHARS",
+    min: 80,
+    max: 5000,
+    step: 20,
+  },
+  {
+    key: "voicePreset",
+    label: "Default voice (Bark)",
+    description:
+      "Default Bark speaker preset, used when no persona maps a voice. Only affects the worker/Bark path — set the browser-fallback voice in the chat/pet panel.",
+    group: "Voice",
+    type: "enum",
+    envVar: "VOICE_PRESET",
+    options: [
+      "v2/en_speaker_0",
+      "v2/en_speaker_1",
+      "v2/en_speaker_2",
+      "v2/en_speaker_3",
+      "v2/en_speaker_4",
+      "v2/en_speaker_5",
+      "v2/en_speaker_6",
+      "v2/en_speaker_7",
+      "v2/en_speaker_8",
+      "v2/en_speaker_9",
+    ],
   },
 ];
 

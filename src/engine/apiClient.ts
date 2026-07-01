@@ -56,6 +56,7 @@ import type { LearningStatus, LlmTrainerStatus } from "../../shared/learning";
 import type { ActionLogEntry, ActionResolveResult, ActionResult, ActionRiskTier, ActionSpec } from "../../shared/actions";
 import type { AgentConfirmDecision, AgentConfirmMode, AgentStreamFrame } from "../../shared/agent";
 import type { SpineSnapshot, SpineEvent, SpinalPersonaId } from "../../shared/spine";
+import type { SpeakResponse, SpeechKind } from "../../shared/voice";
 
 // A frame on the /api/spine/dispatch SSE stream: a spine-event envelope, or any
 // agent-loop / pipeline frame (the deliberate tract reuses the agent loop).
@@ -1028,18 +1029,18 @@ export const apiClient = {
     return sseStream<SpineStreamFrame>("/api/spine/dispatch", input, signal);
   },
 
-  async voiceSpeak(text: string, voice?: string): Promise<{
-    audioBase64: string;
-    mimeType: string;
-    sampleRate: number;
-    durationSec: number;
-    latencyMs: number;
-    model: string;
-    voice: string;
-  }> {
+  // The governed speak request. The SERVER applies the speech policy (enabled/
+  // mode gate, sanitize, redact secrets, length cap) and returns either Bark
+  // audio, governed text for the browser-TTS fallback, or a declined no-op.
+  async voiceSpeak(req: {
+    text: string;
+    kind?: SpeechKind;
+    persona?: SpinalPersonaId;
+    voice?: string;
+  }): Promise<SpeakResponse> {
     return json(`/api/voice/speak`, {
       method: "POST",
-      body: JSON.stringify({ text, voice }),
+      body: JSON.stringify(req),
     });
   },
 };

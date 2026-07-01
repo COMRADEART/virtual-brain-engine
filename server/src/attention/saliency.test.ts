@@ -167,11 +167,44 @@ test("novelty fallback: identical query and content => low novelty (high overlap
   approx(computeSaliency(mem({ content: "deploy kubernetes cluster" }), ctx).novelty, 0);
 });
 
+// ---- beliefRelevance term ---------------------------------------------------
+
+test("beliefRelevance: zero when activeBeliefs is absent or empty (legacy path)", () => {
+  assert.equal(computeSaliency(mem(), baseCtx()).beliefRelevance, 0);
+  assert.equal(computeSaliency(mem(), baseCtx({ activeBeliefs: [] })).beliefRelevance, 0);
+});
+
+test("beliefRelevance: full overlap + zero confidence saturates to 1", () => {
+  const content = "deploy kubernetes cluster";
+  const m = mem({ content });
+  const ctx = baseCtx({ activeBeliefs: [{ statement: content, confidence: 0 }] });
+  approx(computeSaliency(m, ctx).beliefRelevance, 1);
+});
+
+test("beliefRelevance: a settled belief (confidence 1) contributes nothing even with full overlap", () => {
+  const content = "deploy kubernetes cluster";
+  const m = mem({ content });
+  const ctx = baseCtx({ activeBeliefs: [{ statement: content, confidence: 1 }] });
+  approx(computeSaliency(m, ctx).beliefRelevance, 0);
+});
+
+test("beliefRelevance: max over multiple beliefs wins, not sum", () => {
+  const m = mem({ content: "deploy kubernetes cluster" });
+  const ctx = baseCtx({
+    activeBeliefs: [
+      { statement: "totally unrelated topic", confidence: 0 },
+      { statement: "deploy kubernetes cluster", confidence: 0.5 },
+    ],
+  });
+  // Best match: sim=1 * (1-0.5) = 0.5 — not clamped by the unrelated belief.
+  approx(computeSaliency(m, ctx).beliefRelevance, 0.5);
+});
+
 // ---- blended score --------------------------------------------------------
 
 test("score: weighted blend matches the documented weights", () => {
-  // novelty 1, goal 1, emotion 1, survival 0 (health high), uncertainty 1
-  // => 0.20 + 0.35 + 0.25 + 0 + 0.10 = 0.90
+  // novelty 1, goal 1, emotion 1, survival 0 (health high), uncertainty 1,
+  // belief 0 (no activeBeliefs) => 0.20 + 0.30 + 0.25 + 0 + 0.10 + 0 = 0.85
   const m = mem({ content: "deploy kubernetes cluster", importance: 1 });
   const ctx = baseCtx({
     activeGoals: ["deploy kubernetes cluster"],
@@ -179,10 +212,10 @@ test("score: weighted blend matches the documented weights", () => {
     uncertainty: 1,
     storedNoveltyById: new Map([["m1", 1]]),
   });
-  approx(computeSaliency(m, ctx).score, 0.9);
+  approx(computeSaliency(m, ctx).score, 0.85);
 });
 
-test("score: all five terms maxed (incl. survival) reaches 1.0", () => {
+test("score: all six terms maxed (incl. survival + belief) reaches 1.0", () => {
   const content = "health recovery fix deploy kubernetes cluster";
   const m = mem({ content, importance: 1 });
   const ctx = baseCtx({
@@ -190,6 +223,8 @@ test("score: all five terms maxed (incl. survival) reaches 1.0", () => {
     organismHealth: 0, // urgency 1, 3+ survival terms -> survival 1
     uncertainty: 1,
     storedNoveltyById: new Map([["m1", 1]]),
+    // full token overlap + confidence 0 -> weighted sim*(1-conf) = 1
+    activeBeliefs: [{ statement: content, confidence: 0 }],
   });
   approx(computeSaliency(m, ctx).score, 1);
 });

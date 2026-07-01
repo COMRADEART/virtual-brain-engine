@@ -13,6 +13,7 @@ import { Connector } from "../connectors/Connector.js";
 import { listConnectorInstances } from "../connectors/registry.js";
 import { type VectorSearchHit } from "../db/repositories/memory.js";
 import { getPersistentOrganism } from "../core/organism.js";
+import { getBeliefEngine } from "../core/beliefs.js";
 import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
 import { PROJECT_RERANK_SYSTEM } from "./prompts.js";
 import { validateMarkers } from "./citations.js";
@@ -26,10 +27,17 @@ import { surfaceError } from "../util/diagnostics.js";
 export function buildSaliencyContext(query: string): SaliencyContext | null {
   try {
     const org = getPersistentOrganism();
+    // Load non-retired beliefs (cap 20 — belief relevance is per-token; more
+    // than ~20 beliefs doesn't improve recall and adds O(n*m) jaccard cost).
+    const beliefs = getBeliefEngine()
+      .listBeliefs({ limit: 20 })
+      .filter((b) => b.status !== "retired")
+      .map((b) => ({ statement: b.statement, confidence: b.confidence }));
     return {
       query,
       activeGoals: org.getActiveGoalTitles(8),
       organismHealth: org.getHealthScore(),
+      activeBeliefs: beliefs,
     };
   } catch (err) {
     surfaceError("pipeline.buildSaliencyContext", err);
@@ -47,7 +55,7 @@ export function buildAttentionFocuses(
   ctx: SaliencyContext | null,
   limit = 8,
 ): AttentionFocus[] {
-  const zero = { novelty: 0, goalRelevance: 0, emotion: 0, survival: 0, uncertainty: 0 };
+  const zero = { novelty: 0, goalRelevance: 0, emotion: 0, survival: 0, uncertainty: 0, beliefRelevance: 0 };
   return hits.slice(0, limit).map((hit) => {
     const label = hit.memory.content.trim().slice(0, 80);
     if (!ctx) {
@@ -64,6 +72,7 @@ export function buildAttentionFocuses(
         emotion: b.emotion,
         survival: b.survival,
         uncertainty: b.uncertainty,
+        beliefRelevance: b.beliefRelevance,
       },
     };
   });
