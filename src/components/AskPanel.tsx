@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, Brain, HelpCircle, Loader2, Send, Sparkles, Square, ThumbsDown, ThumbsUp, Volume2, VolumeX } from "lucide-react";
 import { apiClient, ApiError } from "../engine/apiClient";
-import { speak as speakVoice, stopSpeaking } from "../engine/voicePlayer";
-import { getUiPrefs, useUiPrefs } from "../engine/uiPrefs";
+import { stopSpeaking } from "../engine/voicePlayer";
+import { StreamingSpeaker } from "../engine/streamingSpeech";
+import { useUiPrefs } from "../engine/uiPrefs";
 import { RichText } from "./RichText";
 import type { PipelineEvent } from "../../shared/pipeline";
 
@@ -102,6 +103,11 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
       setFeedbackSent(null);
 
       let streamed = "";
+      // Speaks completed sentences as they stream in, instead of waiting for
+      // the full answer — the brain starts talking seconds earlier on a long
+      // response. Reads voiceEnabled live on every push()/flush(), same as
+      // the rest of the app's voice gating.
+      const speaker = new StreamingSpeaker({ kind: "answer" });
       // Coalesce token updates to ONE React state write per animation frame.
       // Writing setPending on every tokensDelta re-renders the answer tree (and
       // re-runs its full-text regex parse) per token — O(n²) over a long answer
@@ -139,16 +145,16 @@ export function AskPanel({ onConversationChange }: AskPanelProps): JSX.Element {
           if (event.step === "response" && event.status === "progress" && event.tokensDelta) {
             streamed += event.tokensDelta;
             scheduleFlush();
+            speaker.push(streamed);
           }
           if (event.step === "learning" && event.status === "complete" && event.finalAnswer) {
             cancelFlush();
             setAnswer(event.finalAnswer);
             setPending("");
-            // Speak the answer (server governs whether/what — read live, not the
-            // closure-captured prefs). The server strips markers/redacts/caps.
-            if (getUiPrefs().voiceEnabled) {
-              void speakVoice(event.finalAnswer, { kind: "answer" });
-            }
+            // Speak whatever the streaming pass hasn't already queued (the
+            // trailing partial sentence, or the whole answer if no progress
+            // events fired). Server governs whether/what — sanitize/redact/cap.
+            speaker.flush(event.finalAnswer);
           }
           if (event.status === "error") {
             setError(event.detail ?? "Pipeline error");

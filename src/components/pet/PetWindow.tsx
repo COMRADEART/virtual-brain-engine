@@ -11,6 +11,7 @@ import { subscribeBrainBus } from "../../engine/brainBus";
 import { apiClient } from "../../engine/apiClient";
 import { MOOD_COLOR, MOOD_LABEL, moodFor, type Mood } from "./petMood";
 import { speak as voiceSpeak, stopSpeaking } from "../../engine/voicePlayer";
+import { StreamingSpeaker } from "../../engine/streamingSpeech";
 import { appendExchange, updateLastAnswer, type Exchange } from "./chatHistory";
 import { confirmScope } from "./confirmSummary";
 import { usePushToTalk } from "./usePushToTalk";
@@ -209,6 +210,11 @@ export function PetWindow(): JSX.Element {
       askAbort.current = controller;
       let answer = "";
       const tools: string[] = [];
+      // Speaks completed sentences as they stream in (delta frames), instead
+      // of waiting for the final frame — the pet starts talking seconds
+      // earlier on a long answer. Gated on the pet's own voiceOn toggle, not
+      // the shared uiPrefs one AskPanel uses.
+      const speaker = new StreamingSpeaker({ kind: "answer", isEnabled: () => voiceOnRef.current });
       const render = () => {
         const body = answer || tools.join("\n") || "thinking…";
         setExchanges((list) => updateLastAnswer(list, body));
@@ -263,14 +269,16 @@ export function PetWindow(): JSX.Element {
             case "delta":
               answer += frame.text ?? "";
               render();
+              speaker.push(answer);
               break;
             case "final":
               answer = frame.text ?? answer;
               render();
               // Skip TTS if the user already pressed Stop. The server policy
-              // sanitizes/redacts/caps the answer; don't await (best-effort).
-              if (voiceOnRef.current && answer && !controller.signal.aborted) {
-                void voiceSpeak(answer, { kind: "answer" });
+              // sanitizes/redacts/caps the answer; flush() speaks whatever the
+              // streaming pass hasn't already queued (best-effort, don't await).
+              if (answer && !controller.signal.aborted) {
+                speaker.flush(answer);
               }
               break;
             case "error":
