@@ -18,7 +18,7 @@
 
 import { CONFIG } from "../config.js";
 import { getGoalManager } from "../core/goalManager.js";
-import { stageAllows } from "../core/stages.js";
+import { FEATURE_STAGE, loadPersistedStageOrNull } from "../core/stages.js";
 import { currentEnergyBudget } from "../core/energyBudget.js";
 import { startAgentRun, runAgentLoop } from "./agentLoop.js";
 import { getEventBus, nowIso } from "../core/eventBus.js";
@@ -121,6 +121,21 @@ export interface AutoPursuitGates {
   inFlight: boolean;
 }
 
+/**
+ * Stage gate for AUTONOMOUS pursuit — fail-CLOSED, unlike stageAllows().
+ * stageAllows fail-opens so a broken tracker never locks out interactive
+ * features; pursuit is autonomous LLM spend, so a missing/unreadable stage row
+ * (a truly fresh brain persists no row until its first advance) must mean NO.
+ */
+function pursuitStageOk(): boolean {
+  try {
+    const persisted = loadPersistedStageOrNull();
+    return persisted !== null && persisted.stage >= FEATURE_STAGE["goal-pursuit"];
+  } catch {
+    return false;
+  }
+}
+
 /** PURE go/no-go over the assembled gates. Every no-go carries its reason. */
 export function autoPursuitDecision(g: AutoPursuitGates): { go: boolean; reason: string } {
   if (!g.enabled) return { go: false, reason: "disabled (GOAL_PURSUIT_AUTO=false)" };
@@ -145,7 +160,7 @@ export async function autoPursuitTick(now = Date.now()): Promise<GoalPursuitRepo
       quietMs: now - lastActivityAt,
       sinceLastPursuitMs: now - lastPursuitAt,
       intervalMs: CONFIG.goalPursuitIntervalMin * 60_000,
-      stageOk: stageAllows("goal-pursuit"),
+      stageOk: pursuitStageOk(),
       energyOk: currentEnergyBudget().mayRunOptional,
       inFlight: pursuitInFlight,
     });

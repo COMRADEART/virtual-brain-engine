@@ -96,10 +96,23 @@ check(
 );
 
 // -----------------------------------------------------------------------------
-// (B) Stage gate over the temp DB — a persisted YOUNG brain is genuinely gated.
+// (B) Stage gate over the temp DB. The pursuit stage gate is fail-CLOSED
+// (unlike stageAllows): a truly fresh brain persists NO stage row until its
+// first advance, and an autonomous LLM-spending feature must read that as NO —
+// otherwise pursuit fires ~90s after every fresh boot (the organism seeds
+// goals). Then: a persisted YOUNG brain is genuinely gated too.
 // -----------------------------------------------------------------------------
 
 CONFIG.goalPursuitAuto = true;
+__resetAutoPursuitForTests();
+{
+  const report = await autoPursuitTick();
+  check(
+    "(B) fresh brain with NO persisted stage row skips (fail-closed)",
+    report.pursued === false && /stage/i.test(report.reason ?? ""),
+    report.reason ?? "",
+  );
+}
 setStage(1);
 __resetAutoPursuitForTests();
 {
