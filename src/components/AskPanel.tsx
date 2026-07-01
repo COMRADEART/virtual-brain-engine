@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, Brain, HelpCircle, Loader2, Send, Sparkles, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { apiClient, ApiError } from "../engine/apiClient";
 import { RichText } from "./RichText";
-import type { PipelineEvent } from "../../shared/pipeline";
 
 interface Citation {
   memoryId: string;

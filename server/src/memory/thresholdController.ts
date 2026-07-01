@@ -27,7 +27,6 @@ const DEFAULT_THRESHOLDS: AdaptiveThresholds = {
 
 const ADAPTATION_RATE = 0.02;
 const MIN_ADAPTATION_INTERVAL_MS = 5 * 60 * 1000;
-const MEMORY_PRESSURE_WINDOW = 500;
 
 let lastAdaptationTime = 0;
 let adaptationHistory: number[] = [];
@@ -158,8 +157,6 @@ function computeRecentGrowth(db: ReturnType<typeof openDb>): number {
 }
 
 function computePressureFactor(m: MemoryMetrics): number {
-  const targetHigh = 0.3;
-  const targetMedium = 0.4;
   const pressure =
     (m.lowImportance / Math.max(1, m.totalMemories)) * 0.4 +
     (m.veryLowImportance / Math.max(1, m.totalMemories)) * 0.3 +

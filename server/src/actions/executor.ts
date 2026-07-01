@@ -18,7 +18,7 @@ import { promises as fs } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import os from "node:os";
 import { CONFIG } from "../config.js";
-import { getActionDef, isAllowlisted, validateArgs } from "./registry.js";
+import { getActionDef, validateArgs } from "./registry.js";
 import { consumeConfirmToken } from "./confirmTokens.js";
 import { insertActionLog } from "../db/repositories/actions.js";
 import { keywordSearch, listRecentMemories, upsertMemoryPoint, vectorSearch } from "../db/repositories/memory.js";
@@ -48,7 +48,6 @@ import {
 import {
   isDynamicAction,
   getDynamicAction,
-  getDynamicHandler,
   executeDynamicHandler,
 } from "./dynamicRegistry.js";
 import { callMcpTool, getMcpHub } from "../mcp/hub.js";

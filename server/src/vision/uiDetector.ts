@@ -1,4 +1,4 @@
-import type { UIState, UIStateType, VisualRegion } from "../../../shared/vision.js";
+import type { UIState, VisualRegion } from "../../../shared/vision.js";
 import type { UIDetectionResult, DetectedUIRegion, UIElementType } from "./types.js";
 
 const TERMINAL_KEYWORDS = [

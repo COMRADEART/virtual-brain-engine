@@ -8,14 +8,6 @@ export interface AccessEvent {
   context?: string;
 }
 
-interface AccessPatternRow {
-  memory_a: string;
-  memory_b: string;
-  coaccess_count: number;
-  last_coaccess: string;
-  total_activation_b: number;
-}
-
 const SPREADING_DECAY = 0.85;
 const MIN_COACCESS_COUNT = 2;
 const ACTIVATION_BOOST_PER_HOP = 0.15;

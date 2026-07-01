@@ -20,10 +20,7 @@ import { Router, json } from "express";
 import { broadcast } from "../ws/brainBus.js";
 import { caption, parseFrame, probeWorker, transcribe } from "./workerClient.js";
 import { getVisionConfig } from "../vision/capture.js";
-import {
-  ingestPerceptionMemory,
-  type PerceptionIngestResult,
-} from "../vision/perceptionMemory.js";
+import { ingestPerceptionMemory } from "../vision/perceptionMemory.js";
 import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
 import type { Connector } from "../connectors/Connector.js";
 import { CONFIG } from "../config.js";

@@ -155,8 +155,7 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
     mode: "overview",
     sequence: 0,
   });
-const [aiPick, setAiPick] = useState<AiPickEvent | null>(null);
-const aiPickSequence = useRef(0);
+const [aiPick] = useState<AiPickEvent | null>(null);
 const [anatomyProgress, setAnatomyProgress] = useState<AnatomyLoadProgress>({
   loaded: 0,
   total: 0,

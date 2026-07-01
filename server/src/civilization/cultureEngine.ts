@@ -1,10 +1,8 @@
 import { ulid } from "ulid";
 import type {
-  BrainPeer,
   CultureType,
   CulturePractice,
   CultureEvolution,
-  BrainRole,
 } from "../../../shared/civilization.js";
 import { BrainNetwork } from "./brainNetwork.js";
 

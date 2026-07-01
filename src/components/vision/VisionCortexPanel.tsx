@@ -39,12 +39,6 @@ function formatTimestamp(ts: number): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
-}
-
 export function VisionCortexPanel(): JSX.Element | null {
   const [enabled, setEnabled] = useState(() => {
     return localStorage.getItem(STORAGE_KEY_VISION_ENABLED) === "true";

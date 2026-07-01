@@ -39,7 +39,6 @@ const {
   synthesizeNarrative,
   getNarrative,
   PREAMBLE_MAX_LEN,
-  NARRATIVE_KEY,
 } = await import("../src/core/narrative.js");
 
 import type { Connector } from "../src/connectors/Connector.js";

@@ -7,7 +7,7 @@ import type {
   VisualSearchQuery,
   VisualSearchResult,
 } from "../../../shared/vision.js";
-import type { UIDetectionResult, DetectedUIRegion } from "./types.js";
+import type { DetectedUIRegion } from "./types.js";
 import { randomUUID } from "crypto";
 
 const VISUAL_DIR = "visual";

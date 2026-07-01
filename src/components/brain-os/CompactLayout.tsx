@@ -1,7 +1,7 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback } from "react";
 import {
-  ChevronLeft, ChevronRight, Settings2, Activity, Brain,
-  Maximize2, Minimize2, Focus
+  ChevronLeft, ChevronRight, Activity, Brain,
+  Maximize2
 } from "lucide-react";
 import type { BrainMetrics, BrainRegionId, RegionVisibility, BrainActionId, CameraPresetRequest } from "../../engine/types";
 import type { PerfPreset, PerfMode } from "../../engine/performancePresets";
@@ -63,14 +63,12 @@ const QuickActions = [
 ] as const;
 
 export function CompactLayout({
-  running, selectedActionId, shellTransparent, signalSpeed, neuronDensity,
+  running, selectedActionId, signalSpeed, neuronDensity,
   anatomyVisible, anatomyOpacity, audioEnabled, regionVisibility, selectedRegionId,
-  onRunningChange, onActionChange, onShellTransparentChange, onSignalSpeedChange,
-  onNeuronDensityChange, onAnatomyVisibleChange, onAnatomyOpacityChange,
-  onAudioEnabledChange, onRegionSelect, onRegionVisibilityChange, onCameraPreset,
+  onActionChange, onRegionSelect, onRegionVisibilityChange,
   shellOpacity, perfPreset, perfMode, effectiveTier, aiPick,
   onAnatomyLoadProgress, onMetricsChange, cameraPreset, metrics,
-  currentLayout, onLayoutChange, onCycleLayout, onCyclePreset,
+  currentLayout, onCycleLayout, onCyclePreset,
   modelName = "Local Ollama",
 }: CompactLayoutProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);

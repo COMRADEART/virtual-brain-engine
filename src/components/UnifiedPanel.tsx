@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain, BrainCircuit, Database, MessageSquare, Search, X, Send, Square, Loader2,
-  RefreshCw, Activity, Zap, ChevronDown, GitBranch, Sparkles, Trash2, Network, HeartPulse,
+  RefreshCw, Activity, Zap, GitBranch, Sparkles, Trash2, Network, HeartPulse,
 } from "lucide-react";
 import { apiClient, ApiError, type HealthResponse } from "../engine/apiClient";
 import { EvolutionPanel } from "./EvolutionPanel";
@@ -12,7 +12,6 @@ import { SwarmPanel } from "./SwarmPanel";
 import { subscribeBrainBus } from "../engine/brainBus";
 import { useDraggablePanel } from "../engine/useDraggablePanel";
 import type { MemoryPoint } from "../../shared/memory";
-import type { PipelineEvent } from "../../shared/pipeline";
 
 type Tab = "ask" | "search" | "memory" | "graph" | "cortex" | "swarm" | "imagine" | "evolve" | "organism";
 
@@ -160,7 +159,6 @@ function AskView({ onThinkMode }: { onThinkMode: (active: boolean) => void }): J
   }, [prompt, running, conversationId, answer, onThinkMode]);
 
   const sections = useMemo(() => parseSections(answer || pending), [answer, pending]);
-  const knownIds = useMemo(() => new Set(citations.map((c) => c.memoryId)), [citations]);
 
   return (
     <div className="unified-ask">
@@ -316,7 +314,7 @@ function GraphView(): JSX.Element {
   const loadGraph = useCallback(async () => {
     setLoading(true);
     try {
-      const [memRes, connRes] = await Promise.all([
+      const [memRes] = await Promise.all([
         apiClient.recentMemories(30),
         apiClient.getConversation("").catch(() => ({ conversations: [] })),
       ]);

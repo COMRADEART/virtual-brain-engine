@@ -4,7 +4,6 @@ import type {
   BrainRoleClaim,
   RoleEvidence,
   EmergentGroup,
-  GroupMember,
 } from "../../../shared/civilization.js";
 import { BrainNetwork } from "./brainNetwork.js";
 
@@ -114,7 +113,7 @@ export class RoleSpecialization {
     return false;
   }
 
-  disputeRole(brainId: string, disputedBy: string, reason?: string): void {
+  disputeRole(brainId: string, disputedBy: string, _reason?: string): void {
     const claim = this.roleClaims.get(brainId);
     if (!claim) return;
 

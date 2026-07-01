@@ -1,11 +1,8 @@
 import { ulid } from "ulid";
 import type {
-  BrainDescriptor,
-  BrainPeer,
   BrainRelationship,
   BrainRole,
   InterBrainMessage,
-  RelationshipType,
   SocialModel,
   PeerBrainModel,
   SocialNorm,
@@ -136,7 +133,6 @@ export class SocialCognitionEngine {
       relationship.failedInteractions++;
     }
 
-    const oldTrust = relationship.trust;
     relationship.trust = Math.max(0, Math.min(1, relationship.trust + trustDelta));
     relationship.lastInteractionAt = now;
 

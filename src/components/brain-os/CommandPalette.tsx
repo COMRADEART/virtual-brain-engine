@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Search, LayoutGrid, LayoutDashboard, Focus, Maximize2, Zap, Cpu, Brain,
-  Database, Sparkles, Settings2, ChevronRight, Command, Camera,
+  Sparkles, Settings2, ChevronRight, Command, Camera,
   Network, HeartPulse, BrainCircuit, Activity, GitBranch, MessageSquare, Telescope
 } from "lucide-react";
 import type { LayoutMode } from "../../engine/useLayoutMode";
@@ -384,7 +384,7 @@ export function CommandPalette({
   );
 }
 
-export function useCommandPalette(initialLayout: LayoutMode, initialPerf: string) {
+export function useCommandPalette(_initialLayout: LayoutMode, _initialPerf: string) {
   const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => {

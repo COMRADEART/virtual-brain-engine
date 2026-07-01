@@ -21,7 +21,6 @@ import {
   ChevronUp,
   Cpu,
   Database,
-  HardDrive,
 } from "lucide-react";
 import { subscribeBrainBus, subscribeConnection } from "../engine/brainBus";
 import { apiClient } from "../engine/apiClient";

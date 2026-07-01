@@ -36,7 +36,6 @@ process.env.BRAIN_DB_PATH = join(tmp, "test.sqlite");
 const {
   computeStage,
   emptyStageMetrics,
-  gatherStageMetrics,
   recomputeStage,
   loadPersistedStage,
   stageAllows,

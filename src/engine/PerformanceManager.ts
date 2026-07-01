@@ -1,5 +1,3 @@
-import type { BrainRegionId } from "./types";
-import type { NeuralGraph } from "./types";
 import type { NeuronNode } from "./types";
 import type { SynapticPathway } from "./types";
 import type { SignalPulse } from "./types";

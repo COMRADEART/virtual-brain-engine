@@ -37,7 +37,6 @@ import type {
   SelfAffectState,
   SelfAwarenessLevel,
   SelfConsciousnessState,
-  SelfModel,
   SelfPrediction,
 } from "../../shared/selfConsciousness";
 

@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import { CONFIG } from "../config.js";
-import type { ActionId, ActionRiskTier, ActionSpec } from "../../../shared/actions.js";
+import type { ActionId, ActionSpec } from "../../../shared/actions.js";
 
 export interface ActionDef extends ActionSpec {
   // Authoritative argument validator. `.strict()` rejects unknown keys so a

@@ -42,11 +42,6 @@ export const RETIRE_AFTER_DAYS = 30; // an untested/inconclusive hypothesis goes
 export const SLEEP_FORM_LIMIT = 3; // hypotheses formed per sleep
 export const SLEEP_TEST_LIMIT = 8; // hypotheses tested per sleep
 
-function clamp01(v: number): number {
-  if (!Number.isFinite(v)) return 0;
-  return v < 0 ? 0 : v > 1 ? 1 : v;
-}
-
 // -----------------------------------------------------------------------------
 // PURE math — the selfcheck drives these directly (no DB).
 // -----------------------------------------------------------------------------

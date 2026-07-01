@@ -190,7 +190,6 @@ export function RuntimePicker(): JSX.Element {
       {error ? <p className="ai-error">{error}</p> : null}
       <ul className="runtime-list">
         {rows.map((row) => {
-          const reachable = row.state !== "unreachable";
           const ready = row.state === "ok";
           const installMeta = KNOWN_RUNTIMES.find((k) => k.kind === row.kind)!;
           const isActive = activeId === `auto-${row.kind}`;

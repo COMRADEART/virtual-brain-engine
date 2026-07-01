@@ -9,11 +9,6 @@ export interface StrengthEvent {
   timestamp: string;
 }
 
-interface StrengthUpdate {
-  id: string;
-  importance: number;
-}
-
 const HEBBIAN_LEARNING_RATE = 0.08;
 // Kept as plain numeric literals: these are interpolated directly into the
 // clamp SQL in updateMemoryStrength/batchUpdateStrength. Safe only because

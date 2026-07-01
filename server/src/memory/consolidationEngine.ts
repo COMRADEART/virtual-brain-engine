@@ -1,11 +1,10 @@
 import { broadcast } from "../ws/brainBus.js";
 import { surfaceError } from "../util/diagnostics.js";
-import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
+import { getDefaultConnectorInstance } from "../connectors/registry.js";
 import { Connector } from "../connectors/Connector.js";
 import { openDb, type SqliteDatabase } from "../db/sqlite.js";
 import {
   applyDecay,
-  applyImportanceBoost,
   computeImportance,
   getImportanceTier,
   type ImportanceFactors,
@@ -30,7 +29,6 @@ import {
   applySpreadingActivation,
   buildAccessPattern,
   flushActivationCache,
-  getActivationLevel,
   getHotMemories,
   getRelatedMemories,
   recordAccess,
@@ -39,7 +37,6 @@ import {
   computeNgramOverlap,
   getAllClusters,
   getClusterStats,
-  getClustersForMemory,
   updateClusterForMemory,
 } from "./semanticCluster.js";
 import {
@@ -121,19 +118,6 @@ function makeEvent(detail: string, status: "start" | "complete" | "progress" = "
     status,
     timestamp: new Date().toISOString(),
   };
-}
-
-function getActiveEmbedder(): Connector | null {
-  const active = getDefaultConnectorInstance();
-  if (active?.embed) return active;
-  const fallback = listConnectorInstances().find(
-    (c) =>
-      c.descriptor.kind === "ollama" &&
-      c.descriptor.enabled &&
-      c.descriptor.state === "ok" &&
-      Boolean(c.embed),
-  );
-  return fallback ?? null;
 }
 
 function inferProjectRelevance(projectName: string | null | undefined): number {
@@ -570,7 +554,7 @@ export function applyMemoryRetrievalBoost(
 function runQuickDecay(): void {
   try {
     const db = openDb();
-    const t = getCurrentThresholds();
+    getCurrentThresholds();
     const rows = db
       .prepare<[], { id: string; importance: number; updated_at: string }>(
         `SELECT id, importance, updated_at FROM memory_points
@@ -592,7 +576,7 @@ function runQuickDecay(): void {
           sourceType: mem.sourceType,
           contentLength: mem.content.length,
         };
-        const { score } = computeImportance(factors);
+        computeImportance(factors);
         const halfLife = computeMemoryHalfLife(row.importance, 0, mem.citation_count);
         const effectiveDecay = Math.exp(-aDays / halfLife);
         const newImportance = row.importance * effectiveDecay;
@@ -650,7 +634,7 @@ export function scheduleDecayTick(): { spreadingActivation: NodeJS.Timeout; deca
               sourceType: mem.sourceType,
               contentLength: mem.content.length,
             };
-            const { score } = computeImportance(factors);
+            computeImportance(factors);
             const halfLife = computeMemoryHalfLife(row.importance, 0, mem.citation_count);
             const effectiveDecay = Math.exp(-aDays / halfLife);
             const newScore = row.importance * effectiveDecay;

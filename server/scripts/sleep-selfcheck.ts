@@ -83,8 +83,8 @@ function insertEpisode(content: string): string {
 }
 
 const e1 = insertEpisode("Q: how do I deploy the staging server A: run the deploy script with the staging flag");
-const e2 = insertEpisode("Q: the staging deploy failed A: the deploy script needs the staging env file present");
-const e3 = insertEpisode("Q: where does the staging deploy read config A: the deploy script reads config from the staging env file");
+insertEpisode("Q: the staging deploy failed A: the deploy script needs the staging env file present");
+insertEpisode("Q: where does the staging deploy read config A: the deploy script reads config from the staging env file");
 
 check("gatherEpisodes finds the un-distilled episodes", gatherEpisodes().length === 3);
 

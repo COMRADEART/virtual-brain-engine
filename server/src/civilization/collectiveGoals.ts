@@ -3,7 +3,6 @@ import type {
   CollectiveGoal,
   Subgoal,
   GoalStatus,
-  BrainPeer,
 } from "../../../shared/civilization.js";
 import { BrainNetwork } from "./brainNetwork.js";
 
