@@ -136,6 +136,50 @@ check("second cycle has nothing to do", second.distilled === 0 && Boolean(second
   check("episodes remain for the next cycle", gatherEpisodes().length === 3);
 }
 
+// -----------------------------------------------------------------------------
+// (F) A3 — workspace micro-thoughts re-enter cognition via sleep. Thoughts
+// (manual + kind "workspace-thought") join the gather pool; sleep's own
+// semantic facts stay OUT (no self-distillation loop).
+// -----------------------------------------------------------------------------
+
+{
+  const insertManual = (content: string, kind: string): string =>
+    upsertMemoryPoint({
+      sourceType: "manual",
+      content,
+      contentHash: createHash("sha1").update(content).digest("hex"),
+      importance: 0.55,
+      metadata: { kind },
+    }).id;
+  const t1 = insertManual("Thought: the ranker keeps favoring stale scan memories over fresh conversation memories", "workspace-thought");
+  const t2 = insertManual("Thought: stale scan memories outrank fresh memories because the ranker overweights importance", "workspace-thought");
+  const t3 = insertManual("Thought: the ranker should decay stale scan memories so fresh memories can surface", "workspace-thought");
+  const s1 = insertManual("The staging deploy script requires the staging env file.", "semantic");
+
+  // 3 backup episodes remain from (D) + the 3 thoughts; the semantic fact must stay out.
+  const gathered = gatherEpisodes();
+  const ids = new Set(gathered.map((g) => g.id));
+  check("(F) workspace-thoughts join the gather pool", ids.has(t1) && ids.has(t2) && ids.has(t3), `gathered=${gathered.length}`);
+  check("(F) sleep's own semantic facts stay out of the pool", !ids.has(s1));
+
+  // Own scripted connector with a DISTINCT fact — the (B) stub's fact already
+  // formed a belief, and statement-hash dedup would accrue (formed=0) on a repeat.
+  const thoughtStub = {
+    descriptor: { id: "stub-f", kind: "ollama" },
+    send: async () =>
+      '{"facts":["Stale scan memories outrank fresh memories because the ranker overweights importance."]}',
+  } as unknown as Connector;
+  const cycle = await runSleepCycle({ connector: thoughtStub });
+  check("(F) cycle distilled from the pool", cycle.distilled >= 1, JSON.stringify(cycle));
+  const thoughtProvenance = [t1, t2, t3].flatMap((id) =>
+    getRelationsFor(id).filter((r) => r.kind === "distilled-from"),
+  );
+  check("(F) distilled-from provenance reaches the thoughts", thoughtProvenance.length >= 1, `rels=${thoughtProvenance.length}`);
+  check("(F) thoughts demoted, not deleted", (getMemoryPoint(t1)?.importance ?? 1) < 0.55 && getMemoryPoint(t1) !== null);
+  check("(F) beliefs formed from thought-derived facts", cycle.beliefs.formed >= 1, `beliefs=${JSON.stringify(cycle.beliefs)}`);
+  check("(F) second cycle gathers nothing new", gatherEpisodes().length === 0);
+}
+
 // Failure isolation: drop the table; the cycle reports instead of throwing.
 db.exec("DROP TABLE IF EXISTS memory_relations");
 let threw = false;

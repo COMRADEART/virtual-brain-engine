@@ -31,6 +31,9 @@ import { currentEnergyBudget } from "./energyBudget.js";
 export type MaturationFeature =
   | "theory-of-mind"
   | "narrative-grounding"
+  // A2 — belief stances injected into the reasoning/response prompts. Earned
+  // the moment beliefs exist (stage 2); zero LLM cost, so not EXPENSIVE.
+  | "belief-grounding"
   | "imagination"
   | "creativity"
   | "adaptive-controller"
@@ -48,6 +51,7 @@ export type MaturationFeature =
 // narrate; goals → imagination; curiosity → creativity; self-improvement → the
 // learned controller + the evolution loop.
 export const MATURATION_STAGE: Record<MaturationFeature, number> = {
+  "belief-grounding": 2,
   imagination: 4,
   creativity: 5,
   "theory-of-mind": 6,
@@ -62,6 +66,7 @@ export const MATURATION_STAGE: Record<MaturationFeature, number> = {
 
 // The static env flag behind each feature (the hard override / off-switch).
 const STATIC_FLAG: Record<MaturationFeature, () => boolean> = {
+  "belief-grounding": () => CONFIG.beliefGrounding,
   imagination: () => CONFIG.enablePerRequestImagination,
   creativity: () => CONFIG.creativityEnabled,
   "theory-of-mind": () => CONFIG.theoryOfMind,

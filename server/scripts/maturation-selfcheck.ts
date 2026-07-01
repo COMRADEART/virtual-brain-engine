@@ -68,6 +68,10 @@ CONFIG.creativityEnabled = false;
 // =============================================================================
 // (C) developmental gate — static OFF, grown into by stage
 // =============================================================================
+setStage(1); // belief-grounding unlocks at 2 (the stage where beliefs exist)
+check("belief-grounding LOCKED below its stage (1 < 2)", isFeatureActive("belief-grounding") === false);
+setStage(2);
+check("belief-grounding ACTIVE once grown into (stage 2)", isFeatureActive("belief-grounding") === true);
 setStage(4); // creativity unlocks at 5
 check("creativity LOCKED below its stage (4 < 5)", isFeatureActive("creativity") === false);
 setStage(5);
@@ -104,7 +108,7 @@ check(
     !keys.includes("allow-shell"),
   `keys=[${keys.join(", ")}]`,
 );
-check("maturation map covers exactly the 8 dark cognitive features", keys.length === 8, `n=${keys.length}`);
+check("maturation map covers exactly the 9 dark cognitive features", keys.length === 9, `n=${keys.length}`);
 
 // =============================================================================
 // (E) maturationStatus shape + reasons

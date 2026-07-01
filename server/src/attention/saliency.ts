@@ -64,6 +64,12 @@ export interface SaliencyBelief {
   statement: string;
   /** Confidence in [0,1]. Lower confidence → more pull (we want evidence). */
   confidence: number;
+  /**
+   * Belief status (active/contested/weakening). Ignored by computeSaliency;
+   * carried so prompt-side consumers (buildBeliefStanceBlock) can tag
+   * non-active stances without a second DB read.
+   */
+  status?: string;
 }
 
 export interface SaliencyContext {
@@ -166,7 +172,7 @@ export function tokens(text: string): string[] {
 }
 
 /** Jaccard similarity over token sets. [0,1]. */
-function jaccard(a: ReadonlyArray<string>, b: ReadonlyArray<string>): number {
+export function jaccard(a: ReadonlyArray<string>, b: ReadonlyArray<string>): number {
   if (a.length === 0 || b.length === 0) return 0;
   const setA = new Set(a);
   const setB = new Set(b);

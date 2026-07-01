@@ -22,10 +22,11 @@
 //
 // Beliefs feed BACK into cognition through the global workspace: contested /
 // low-confidence beliefs bid for the micro-thought slot (core/workspace.ts),
-// so the brain literally re-examines its own beliefs in idle moments. They are
-// deliberately NOT injected into the /api/ask prompts (repo rule: no new
-// pipeline call sites) — that remains a documented follow-up via the existing
-// attend seam.
+// so the brain literally re-examines its own beliefs in idle moments. They
+// also reach /api/ask twice through the SAME loaded list (no new pipeline call
+// site): retrieval saliency (attention/saliency.ts beliefRelevance) and the
+// maturation-gated "Current stances" prompt block (A2 —
+// pipelineHelpers.buildBeliefStanceBlock, feature "belief-grounding").
 //
 // Persistence: the `beliefs` table (migration 0010). Every method is
 // failure-isolated (try/catch + surfaceError) — a belief fault must never

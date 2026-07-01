@@ -363,6 +363,17 @@ export interface ServerConfig {
   // ON by default; skipped quietly when no connector is configured.
   workspaceEnabled: boolean;
   workspaceIntervalMin: number;
+  // A1 — autonomous goal pursuit: work the next actionable goal leaf via the
+  // agent loop (SAFE-ONLY — an autonomous pursuit can never take a confirm-tier
+  // action) on a quiet-gated, rate-limited schedule. Default ON: it is inert
+  // until developmental stage 5 (the exploration gate) AND the goal tree has
+  // actionable leaves AND the system has been quiet ≥90s, so a young/empty
+  // brain is provably unchanged — the same "default ON, inert until earned"
+  // shape as MATURATION. Set GOAL_PURSUIT_AUTO=false for manual-only pursuit
+  // (POST /api/brain/goals/pursue).
+  goalPursuitAuto: boolean;
+  // Minimum minutes between autonomous pursuits (clamped ≥ 5).
+  goalPursuitIntervalMin: number;
   // Event-driven global workspace (H4): high-salience events (immune/safety
   // signals, a high-uncertainty cycle) can grab the single conscious slot off
   // the tonic timer, bounded by a refractory period + the energy gate. OFF by
@@ -465,6 +476,14 @@ export interface ServerConfig {
   // stay consistent with who the brain is. OFF by default — it changes hot-path
   // prompt content; opt in with NARRATIVE_GROUNDING=true.
   narrativeGrounding: boolean;
+  // A2 belief grounding — inject the top-3 query-relevant belief stances
+  // (confidence-tagged, from the SAME belief list the saliency scorer already
+  // loads — zero extra DB reads) into the reasoning + response prompts as a
+  // "Current stances" block. OFF by default — it changes hot-path prompt
+  // content (same posture as NARRATIVE_GROUNDING / THEORY_OF_MIND); it also
+  // matures ON at developmental stage 2 via H2 (core/maturation.ts), the stage
+  // where beliefs first exist. Opt in early with BELIEF_GROUNDING=true.
+  beliefGrounding: boolean;
   // Theory of Mind — model the PERSON (their recurring interests, sustained
   // domains, preferred answer style, current goals), learned passively from
   // /api/ask, and inject a compact third-person note into the reasoning +
@@ -617,6 +636,8 @@ export const CONFIG: ServerConfig = {
   sleepIntervalHours: Math.max(1, num("SLEEP_INTERVAL_HOURS", 24)),
   workspaceEnabled: bool("WORKSPACE", true),
   workspaceIntervalMin: Math.max(1, num("WORKSPACE_INTERVAL_MIN", 10)),
+  goalPursuitAuto: bool("GOAL_PURSUIT_AUTO", true),
+  goalPursuitIntervalMin: Math.max(5, num("GOAL_PURSUIT_INTERVAL_MIN", 60)),
   workspaceEventDriven: bool("WORKSPACE_EVENT_DRIVEN", false),
   creativityEnabled: bool("CREATIVITY", false),
   hypotheses: bool("HYPOTHESES", false),
@@ -636,6 +657,7 @@ export const CONFIG: ServerConfig = {
   selfNarrative: bool("SELF_NARRATIVE", true),
   innerMonologue: bool("INNER_MONOLOGUE", true),
   narrativeGrounding: bool("NARRATIVE_GROUNDING", false),
+  beliefGrounding: bool("BELIEF_GROUNDING", false),
   theoryOfMind: bool("THEORY_OF_MIND", false),
   memoryDna: bool("MEMORY_DNA", false),
   backupEnabled: bool("BACKUP_ENABLED", true),

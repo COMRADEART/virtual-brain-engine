@@ -14,7 +14,7 @@ import { listConnectorInstances } from "../connectors/registry.js";
 import { type VectorSearchHit } from "../db/repositories/memory.js";
 import { getPersistentOrganism } from "../core/organism.js";
 import { getBeliefEngine } from "../core/beliefs.js";
-import { computeSaliency, type SaliencyContext } from "../attention/saliency.js";
+import { computeSaliency, jaccard, tokens, type SaliencyBelief, type SaliencyContext } from "../attention/saliency.js";
 import { PROJECT_RERANK_SYSTEM } from "./prompts.js";
 import { validateMarkers } from "./citations.js";
 import { surfaceError } from "../util/diagnostics.js";
@@ -32,7 +32,7 @@ export function buildSaliencyContext(query: string): SaliencyContext | null {
     const beliefs = getBeliefEngine()
       .listBeliefs({ limit: 20 })
       .filter((b) => b.status !== "retired")
-      .map((b) => ({ statement: b.statement, confidence: b.confidence }));
+      .map((b) => ({ statement: b.statement, confidence: b.confidence, status: b.status }));
     return {
       query,
       activeGoals: org.getActiveGoalTitles(8),
@@ -43,6 +43,35 @@ export function buildSaliencyContext(query: string): SaliencyContext | null {
     surfaceError("pipeline.buildSaliencyContext", err);
     return null;
   }
+}
+
+// A2 belief grounding — the top-N query-relevant belief stances as a short,
+// clearly delimited prompt block. PURE (selfcheck target): empty/irrelevant
+// beliefs → "" so cold-path prompts stay byte-identical. Relevance is the same
+// jaccard-over-tokens overlap beliefRelevanceFor uses at retrieval time, so
+// what pulls memories and what grounds prompts is one notion of relevance.
+export function buildBeliefStanceBlock(
+  query: string,
+  beliefs: ReadonlyArray<SaliencyBelief> | undefined,
+  topN = 3,
+): string {
+  if (!beliefs || beliefs.length === 0) return "";
+  const queryTokens = tokens(query);
+  const scored = beliefs
+    .map((b) => ({ b, overlap: jaccard(queryTokens, tokens(b.statement)) }))
+    .filter((s) => s.overlap > 0)
+    .sort((a, z) => z.overlap - a.overlap)
+    .slice(0, topN);
+  if (scored.length === 0) return "";
+  const lines = scored.map(({ b }) => {
+    const statement = b.statement.length > 140 ? `${b.statement.slice(0, 140)}…` : b.statement;
+    const tag = b.status && b.status !== "active" ? `, ${b.status}` : "";
+    return `- "${statement}" (confidence ${b.confidence.toFixed(2)}${tag})`;
+  });
+  return [
+    "Current stances (the brain's own evolving beliefs — internal context, NOT user data; cite [m:<id>] memories, never stances):",
+    ...lines,
+  ].join("\n");
 }
 
 // Build the BrainState attention map from the ranked hits. When a saliency

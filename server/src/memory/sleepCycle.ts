@@ -144,14 +144,22 @@ export function parseFacts(text: string): string[] {
 // DB + orchestration.
 // -----------------------------------------------------------------------------
 
-/** Recent conversation episodes that no semantic fact has been distilled from yet. */
+/**
+ * Recent conversation episodes that no semantic fact has been distilled from
+ * yet. A3: workspace micro-thoughts (source_type 'manual' + metadata.kind
+ * 'workspace-thought') join the pool so the brain's own deliberate thoughts
+ * re-enter cognition (distill → beliefs) instead of being write-only. The
+ * kind predicate keeps sleep's own 'semantic' facts OUT — no self-distillation.
+ */
 export function gatherEpisodes(limit = SLEEP_SCAN_LIMIT): EpisodeForSleep[] {
   try {
     const rows = openDb()
       .prepare<[string, number], { id: string; content: string; project_name: string | null; importance: number }>(
         `SELECT mp.id, mp.content, mp.project_name, mp.importance
          FROM memory_points mp
-         WHERE mp.source_type = 'conversation'
+         WHERE (mp.source_type = 'conversation'
+                OR (mp.source_type = 'manual'
+                    AND json_extract(mp.metadata, '$.kind') = 'workspace-thought'))
            AND mp.importance >= 0.25
            AND datetime(mp.created_at) >= datetime('now', ?)
            AND NOT EXISTS (

@@ -74,6 +74,7 @@ import { expandQuery, reciprocalRankFusion } from "./queryExpansion.js";
 import {
   buildSaliencyContext,
   buildAttentionFocuses,
+  buildBeliefStanceBlock,
   sha1,
   snippetFor,
   ensureSections,
@@ -81,6 +82,7 @@ import {
   getEmbedder,
   inferProjectName,
 } from "./pipelineHelpers.js";
+import type { SaliencyBelief } from "../attention/saliency.js";
 import { applyReranker, trainReranker } from "./rerankerModel.js";
 import { loadRerankerState, saveRerankerState } from "../db/repositories/adaptive.js";
 import { DEFAULT_RETRIEVAL_K, RETRIEVAL_K_ARMS } from "../../../shared/adaptive.js";
@@ -301,6 +303,9 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   let multiQueryNote = "";
   let feedForwardNote = "";
   let hebbianNote = "";
+  // A2 belief grounding — the belief list the saliency context already loaded,
+  // carried to the prompt-assembly step (zero extra DB reads).
+  let promptBeliefs: ReadonlyArray<SaliencyBelief> = [];
   // Predictive processing: what the brain EXPECTED retrieval to do (set in the
   // memory step), compared against reality in the learning step.
   let prediction: RetrievalPrediction | null = null;
@@ -569,6 +574,7 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // UI/score signal (the behavioral feed-forward is the broaden gate above).
       if (saliencyCtx) {
         saliencyCtx.uncertainty = priorUncertainty;
+        promptBeliefs = saliencyCtx.activeBeliefs ?? [];
       }
       const r = rankHits(raw, saliencyCtx ?? undefined, graphCtx);
       // Lexical query-aware rerank of the top-K (ML). NO-OP until it has trained
@@ -696,6 +702,20 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       surfaceError("pipeline.narrativeGrounding", err);
     }
   }
+  // A2 — belief-grounded reasoning: the top-3 query-relevant belief stances,
+  // confidence-tagged, from the list the saliency context already loaded.
+  // Maturation-gated (earns on at stage 2 = beliefs exist; static override
+  // BELIEF_GROUNDING). Empty when no beliefs overlap the query, so cold-path
+  // prompts stay byte-identical. Failure-isolated like every cognition hook.
+  let beliefBlock = "";
+  if (isFeatureActive("belief-grounding")) {
+    try {
+      beliefBlock = buildBeliefStanceBlock(req.prompt, promptBeliefs);
+    } catch (err) {
+      surfaceError("pipeline.beliefBlock", err);
+    }
+  }
+  const promptPreamble = [beliefBlock, narrativeGroundingBlock].filter(Boolean).join("\n\n");
 
   // 3. REASONING
   // Flash the routed expert cortices (deduped with reasoning-cortex) instead of
@@ -765,8 +785,8 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     ]
       .filter(Boolean)
       .join("\n\n");
-    const reasoningSystem = narrativeGroundingBlock
-      ? `${narrativeGroundingBlock}\n\n${REASONING_SYSTEM}`
+    const reasoningSystem = promptPreamble
+      ? `${promptPreamble}\n\n${REASONING_SYSTEM}`
       : REASONING_SYSTEM;
     let parallelNote = "";
     try {
@@ -780,8 +800,8 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
       // the error step falls back to its own call — so this never regresses.
       if (CONFIG.combinedReasoningError) {
         type CombinedOut = ReasoningOut & Partial<ErrorOut>;
-        const combinedSystem = narrativeGroundingBlock
-          ? `${narrativeGroundingBlock}\n\n${COMBINED_REASONING_ERROR_SYSTEM}`
+        const combinedSystem = promptPreamble
+          ? `${promptPreamble}\n\n${COMBINED_REASONING_ERROR_SYSTEM}`
           : COMBINED_REASONING_ERROR_SYSTEM;
         const c = await chatJson<CombinedOut>(connector, combinedSystem, reasoningUser, routedModelName);
         if (c) {
@@ -937,8 +957,8 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   const knownIds = new Set(promptHits.map((hit) => hit.memory.id));
   const baseResponseSystem = buildResponseSystem(memoryHits.length > 0);
   // MYTHOS M3 — same identity preamble grounds the final answer's voice.
-  const responseSystem = narrativeGroundingBlock
-    ? `${narrativeGroundingBlock}\n\n${baseResponseSystem}`
+  const responseSystem = promptPreamble
+    ? `${promptPreamble}\n\n${baseResponseSystem}`
     : baseResponseSystem;
   const responsePrompt = [
     conversationBlock,

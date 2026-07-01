@@ -381,6 +381,45 @@ check("re-forming with NO fresh ids still gently reinforces",
   check("(F) collectBids survives a broken belief engine", bidsThrew === false);
 }
 
+// -----------------------------------------------------------------------------
+// (G) A2 prompt stance block — pure, bounded, empty-when-cold.
+// -----------------------------------------------------------------------------
+
+{
+  const { buildBeliefStanceBlock } = await import("../src/reasoning/pipelineHelpers.js");
+  check("(G) empty belief list → empty block", buildBeliefStanceBlock("deploy the staging server", []) === "");
+  check("(G) undefined belief list → empty block", buildBeliefStanceBlock("anything", undefined) === "");
+  check(
+    "(G) zero-overlap beliefs → empty block",
+    buildBeliefStanceBlock("deploy the staging server", [
+      { statement: "Cats enjoy warm windowsills in winter", confidence: 0.8 },
+    ]) === "",
+  );
+  const relevant = [
+    { statement: "The staging server needs the env file before deploy", confidence: 0.72 },
+    { statement: "Deploy to the staging server fails without migrations", confidence: 0.41, status: "contested" },
+    { statement: "The staging deploy pipeline uses docker", confidence: 0.9 },
+    { statement: "Staging deploy windows are Tuesday mornings", confidence: 0.65 },
+    { statement: "The deploy staging checklist lives in the wiki", confidence: 0.55 },
+  ];
+  const block = buildBeliefStanceBlock("how do I deploy to the staging server", relevant);
+  check("(G) block carries the delimiter header", block.startsWith("Current stances ("));
+  check("(G) topN bound: 5 relevant beliefs → 3 lines", block.split("\n").filter((l) => l.startsWith("- ")).length === 3);
+  check("(G) confidence is tagged to 2dp", block.includes("(confidence 0.72)"));
+  check(
+    "(G) non-active status is tagged, active is not",
+    /confidence 0\.41, contested\)/.test(block) && !/confidence 0\.72, /.test(block),
+  );
+  const long = [{ statement: `Deploy staging ${"x".repeat(300)}`, confidence: 0.5 }];
+  const longBlock = buildBeliefStanceBlock("deploy staging", long);
+  const longLine = longBlock.split("\n").find((l) => l.startsWith("- ")) ?? "";
+  check("(G) statements truncate at ~140 chars", longLine.includes("…") && longLine.length < 180);
+  check(
+    "(G) deterministic",
+    buildBeliefStanceBlock("how do I deploy to the staging server", relevant) === block,
+  );
+}
+
 const result = failures === 0 ? "PASS" : "FAIL";
 console.log(JSON.stringify({ failures, result }, null, 2));
 process.exit(failures === 0 ? 0 : 1);
