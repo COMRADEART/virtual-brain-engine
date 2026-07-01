@@ -8,7 +8,6 @@ import type {
   RegionVisibility,
   SignalPulse,
 } from "../engine/types";
-import { getActionColor } from "../data/regionDefinitions";
 import { PerformanceManager } from "../engine/PerformanceManager";
 
 const INVISIBLE_SCALE = new THREE.Vector3(0, 0, 0);

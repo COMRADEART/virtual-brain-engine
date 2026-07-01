@@ -210,7 +210,6 @@ export class ResourceEconomy {
     allocation.completedAt = new Date().toISOString();
 
     const offer = this.offers.get(allocation.offerId);
-    const request = this.requests.get(allocation.requestId);
 
     if (offer && this.config.enableBidirectional) {
       const price = this.prices.get(offer.resourceType) ?? 1;

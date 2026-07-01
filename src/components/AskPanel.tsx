@@ -5,7 +5,6 @@ import { stopSpeaking } from "../engine/voicePlayer";
 import { StreamingSpeaker } from "../engine/streamingSpeech";
 import { useUiPrefs } from "../engine/uiPrefs";
 import { RichText } from "./RichText";
-import type { PipelineEvent } from "../../shared/pipeline";
 
 interface Citation {
   memoryId: string;

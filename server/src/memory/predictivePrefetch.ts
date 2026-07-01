@@ -18,18 +18,6 @@ interface SequenceRow {
   confidence: number;
 }
 
-interface ProjectPatternRow {
-  project_name: string;
-  typical_sequence: string;
-  frequency: number;
-}
-
-interface TemporalRow {
-  hour_of_day: number;
-  day_of_week: number;
-  avg_accesses: number;
-}
-
 interface ConversationContext {
   lastN: string[];
   projectName: string | null;
@@ -38,11 +26,8 @@ interface ConversationContext {
 }
 
 const MAX_PREFETCH = 8;
-const MIN_CONFIDENCE = 0.3;
-const TEMPORAL_WINDOW_HOURS = 2;
 
 let conversationSequence: string[] = [];
-const lastPrefetchTime = 0;
 
 export function recordConversationSequence(
   memoryId: string,
@@ -58,7 +43,6 @@ export function recordConversationSequence(
 function saveSequencePattern(db: SqliteDatabase): void {
   if (conversationSequence.length < 2) return;
   try {
-    const pattern = conversationSequence.slice(-10).join("→");
     const nextId = conversationSequence[conversationSequence.length - 1];
     const prevIds = conversationSequence.slice(-10, -1);
     for (let i = 0; i < prevIds.length; i++) {
@@ -314,7 +298,6 @@ export function updateTemporalPattern(
   try {
     const now = new Date();
     const hour = now.getHours();
-    const dow = now.getDay();
     const existing = db
       .prepare<[string, number], { c: number }>(
         `SELECT COUNT(*) AS c FROM memory_temporal_patterns

@@ -1,4 +1,4 @@
-import type { MemoryPoint, MemorySourceType } from "../../../shared/memory.js";
+import type { MemorySourceType } from "../../../shared/memory.js";
 
 export interface ImportanceFactors {
   baseImportance: number;

@@ -1,9 +1,7 @@
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
-import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
-import { GammaCorrectionShader } from "three/examples/jsm/shaders/GammaCorrectionShader.js";
 import { REGION_BY_ID, REGION_INDEX } from "./brainRegions";
 import { PATHWAY_SEGMENTS } from "./neuralGraphGenerator";
 import { Pass } from "three/examples/jsm/postprocessing/Pass.js";
@@ -14,7 +12,6 @@ import type {
   BrainSimulation,
   NeuralGraph,
   RegionVisibility,
-  SignalPulse,
 } from "./types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,7 +190,7 @@ export class BrainVisualEffects {
   
   // ── Memory pathway highlighting ───────────────────────────────────────────
   // Highlights specific pathways used in memory replay/consolidation
-  highlightMemoryPathways(pathwayIndices: number[], intensity: number = 1.0): void {
+  highlightMemoryPathways(pathwayIndices: number[], _intensity: number = 1.0): void {
     // This would be implemented in NeuralGraphRenderer but we define the API here
     // The renderer can use this to modify pathway colors/appearance
   }
@@ -1192,7 +1189,6 @@ export class BrainVisualEffectsRenderer {
     const prevAutoClear = renderer.autoClearColor;
     renderer.autoClearColor = false;
 
-    const tmpRenderState = renderer.state;
     renderer.render(this.effects.group, mainCamera);
 
     renderer.autoClearColor = prevAutoClear;

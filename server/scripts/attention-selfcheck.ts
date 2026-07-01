@@ -340,8 +340,6 @@ import type { Agent, AgentContext, AgentLifecycleState } from "../src/agents/Age
 import type { BrainEvent } from "../src/core/eventBus.js";
 import type { MemoryPoint } from "../../shared/memory.js";
 
-type AgentClass = typeof IdleAgent;
-
 // Build a self-contained test rig. We drive the clock manually and capture
 // every event the agent emits.
 function makeRig(initialNow: number, pool: MemoryPoint[], salCtx: SaliencyContext | null = null) {

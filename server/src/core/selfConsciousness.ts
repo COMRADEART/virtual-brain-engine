@@ -17,7 +17,7 @@
 import { ulid } from "ulid";
 import { openDb } from "../db/sqlite.js";
 import { surfaceError } from "../util/diagnostics.js";
-import { getEventBus, nowIso, type BrainBus } from "./eventBus.js";
+import { nowIso, type BrainBus } from "./eventBus.js";
 import {
   type SelfAwarenessLevel,
   type SelfAffectValence,
@@ -47,11 +47,6 @@ const MAX_OPEN_QUESTIONS = 10;
 function clamp01(v: number): number {
   if (!Number.isFinite(v)) return 0.5;
   return v < 0 ? 0 : v > 1 ? 1 : v;
-}
-
-function clamp(v: number, min: number, max: number): number {
-  if (!Number.isFinite(v)) return min;
-  return v < min ? min : v > max ? max : v;
 }
 
 const DEFAULT_CONFIG: SelfConsciousnessConfig = {

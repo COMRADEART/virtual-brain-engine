@@ -61,6 +61,6 @@ export async function getVisionConfig(): Promise<VisionConfig | null> {
   return null;
 }
 
-export async function saveVisionConfig(config: VisionConfig): Promise<boolean> {
+export async function saveVisionConfig(_config: VisionConfig): Promise<boolean> {
   return false;
 }

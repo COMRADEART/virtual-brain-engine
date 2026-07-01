@@ -36,7 +36,7 @@
 // All weights live in one `Float32Array` shared by both indices, so STDP mutates
 // a single source of truth.
 
-import { REGION_BY_ID, REGION_CONNECTIONS, REGION_INDEX } from "./brainRegions";
+import { REGION_BY_ID, REGION_CONNECTIONS } from "./brainRegions";
 import type { BrainRegionId, NeuralGraph } from "./types";
 
 /** Hubs of the structural rich-club — the brain's high-traffic backbone. */

@@ -154,7 +154,7 @@ export class SignalSimulation {
    * Spawn a gamma replay pulse along the primary pathway for a memory.
    * Uses blue-ish color to distinguish from regular pulses.
    */
-  private spawnReplayPulse(memoryId: string): void {
+  private spawnReplayPulse(_memoryId: string): void {
     if (this.pulses.length >= this.maxPulses || this.eligiblePathways.length === 0) return;
 
     // In a real implementation, store memoryId → pathway mapping.

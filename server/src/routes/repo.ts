@@ -6,7 +6,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { generateSkillsFromRepo, analyzeRepo, type GeneratedSkill } from "../skills/generator.js";
+import { generateSkillsFromRepo, analyzeRepo } from "../skills/generator.js";
 import { registerSkill } from "../actions/dynamicRegistry.js";
 import { isExcludedPath } from "../ingest/governance.js";
 import { resolve } from "node:path";

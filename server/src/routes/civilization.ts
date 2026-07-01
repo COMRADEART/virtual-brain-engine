@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createCivilization, type CivilizationConfig } from "../civilization/index.js";
+import { createCivilization } from "../civilization/index.js";
 import { ulid } from "ulid";
 import type { BrainDescriptor } from "../../../shared/civilization.js";
 

@@ -12,7 +12,7 @@ import {
   getRecentWorkflows,
   getVisualMemoryStats,
 } from "./visualMemory.js";
-import { detectUIRegions, detectUIStateFromRegions, inferWindowTypeFromTitle } from "./uiDetector.js";
+import { detectUIRegions, detectUIStateFromRegions } from "./uiDetector.js";
 import type { VisualSearchQuery } from "../../../shared/vision.js";
 import { broadcast } from "../ws/brainBus.js";
 

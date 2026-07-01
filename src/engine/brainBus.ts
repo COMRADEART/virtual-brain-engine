@@ -160,7 +160,6 @@ export function isBrainBusConnected(): boolean {
 // wiring without a backend.
 declare global {
   // `var` is required for a global augmentation.
-  // eslint-disable-next-line no-var
   var __brainBus:
     | {
         emit(payload: Partial<PipelineEvent>): void;

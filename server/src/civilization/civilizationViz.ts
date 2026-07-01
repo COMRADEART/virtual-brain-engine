@@ -66,7 +66,6 @@ export class CivilizationVisualization {
   getSnapshot(): CivilizationSnapshot {
     const peers = this.network.getAllPeers();
     const goals = this.collectiveGoals.getAllGoals();
-    const roles = this.roleSpecialization.getAllRoleClaims();
 
     const peerHealth: Record<HealthStatus, number> = {
       healthy: 0,

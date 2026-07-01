@@ -4,7 +4,7 @@ import type { AiPickEvent } from "../AiPickOverlay";
 import type { AnatomyLoadProgress } from "../BrainScene";
 import { UnifiedPanel } from "../UnifiedPanel";
 import { BrainScene } from "../BrainScene";
-import { X, Brain, Activity, ChevronDown } from "lucide-react";
+import { X, Brain, Activity } from "lucide-react";
 
 interface FocusModeProps {
   running: boolean;
@@ -29,7 +29,7 @@ interface FocusModeProps {
 }
 
 export function FocusMode({
-  running, selectedActionId, shellTransparent, signalSpeed, neuronDensity,
+  running, selectedActionId, signalSpeed, neuronDensity,
   anatomyVisible, anatomyOpacity, audioEnabled, regionVisibility, selectedRegionId,
   shellOpacity, perfPreset, aiPick, onAnatomyLoadProgress, onMetricsChange,
   cameraPreset, onRegionSelect, onExitFocus, metrics,

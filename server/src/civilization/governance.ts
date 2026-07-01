@@ -1,6 +1,5 @@
 import { ulid } from "ulid";
 import type {
-  BrainPeer,
   GovernanceModel,
   GovernanceProposal,
   Vote,

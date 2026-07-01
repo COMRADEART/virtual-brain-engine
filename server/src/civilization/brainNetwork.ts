@@ -1,12 +1,10 @@
-import { createServer, type Server, type ServerOpts, Socket } from "node:net";
+import { createServer, type Server, Socket } from "node:net";
 import { ulid } from "ulid";
 import {
-  CIVILIZATION_PROTOCOL_VERSION,
   CIVILIZATION_DEFAULT_PORT,
   type BrainDescriptor,
   type InterBrainMessage,
   type BrainPeer,
-  type PeerConnection,
   type HealthStatus,
 } from "../../../shared/civilization.js";
 
@@ -98,7 +96,7 @@ export class BrainNetwork {
     this.stopHeartbeat();
 
     const disconnectPromises: Promise<void>[] = [];
-    for (const [peerId, peer] of this.peers) {
+    for (const [peerId] of this.peers) {
       disconnectPromises.push(this.disconnectPeer(peerId, "server_shutdown"));
     }
     await Promise.all(disconnectPromises);
@@ -184,7 +182,7 @@ export class BrainNetwork {
 
   broadcast(message: InterBrainMessage): void {
     const serialized = this.serializeMessage({ ...message, type: message.type });
-    for (const [peerId, peer] of this.peers) {
+    for (const [, peer] of this.peers) {
       if (peer.isWriter) {
         this.sendRaw(peer.socket, serialized);
       }

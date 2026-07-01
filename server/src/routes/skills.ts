@@ -6,7 +6,6 @@
 //   DELETE /api/skills/:id    unregister a skill
 
 import { Router } from "express";
-import { z } from "zod";
 import { listActionSpecs } from "../actions/registry.js";
 import {
   registerSkill,

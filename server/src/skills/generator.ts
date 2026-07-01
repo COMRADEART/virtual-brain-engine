@@ -11,7 +11,6 @@
 
 import { promises as fs } from "node:fs";
 import { join, resolve, relative } from "node:path";
-import { readRepoFile } from "../actions/git.js";
 import type { SkillDefinition } from "../actions/dynamicRegistry.js";
 
 interface FileInfo {
@@ -87,7 +86,6 @@ function parseModule(content: string): ParsedModule {
 // Read all relevant files from a repository.
 async function readRepoFiles(repoPath: string, maxFiles = 100): Promise<FileInfo[]> {
   const files: FileInfo[] = [];
-  const visited = new Set<string>();
 
   async function walk(dir: string): Promise<void> {
     if (files.length >= maxFiles) return;
@@ -141,7 +139,6 @@ function generateFromPackageJson(files: FileInfo[]): GeneratedSkill[] {
   try {
     const config = JSON.parse(pkg.content);
     const name = config.name || "unknown";
-    const description = config.description || "A Node.js package";
     const version = config.version || "0.0.0";
 
     // Generate skills from scripts

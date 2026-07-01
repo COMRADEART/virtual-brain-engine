@@ -957,7 +957,6 @@ export async function resumeAgentRun(decision: AgentConfirmDecision, emit: Agent
   if (!run || !run.pending) return false;
   const pending = run.pending;
   run.pending = undefined;
-  const started = run.createdAt;
 
   // Optionally widen the grant for the rest of the run (scope-style escalation).
   if (decision.grantScope && decision.grantScope.allow.length > 0) {

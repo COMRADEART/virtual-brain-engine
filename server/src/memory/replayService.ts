@@ -16,11 +16,8 @@ export interface ReplayStats {
 }
 
 // Neuroscience constants
-const THETA_FREQ = 6; // Hz — hippocampal theta rhythm
-const GAMMA_FREQ = 40; // Hz — neocortical gamma bursts
 const REPLAY_DURATION_MS = 1000; // Simulate 1s replay per cycle
 const REPLAY_INTERVAL_MS = 5 * 60 * 1000; // Every 5min during sleep
-const STDP_WINDOW_MS = 20; // Spike-timing window for plasticity
 
 let replayRunning = false;
 

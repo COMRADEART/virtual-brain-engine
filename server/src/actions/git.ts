@@ -12,7 +12,6 @@ import { isExcludedPath } from "../ingest/governance.js";
 
 // Sandbox directory for git clones — prevents cloning to arbitrary locations.
 const GIT_SANDBOX = join(os.tmpdir(), "star-brain-git");
-const MAX_CLONE_SIZE_MB = 500;
 const MAX_FILE_READ_BYTES = 256 * 1024;
 
 interface GitResult {

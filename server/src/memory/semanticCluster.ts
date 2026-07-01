@@ -31,10 +31,6 @@ interface TopicRow {
   last_updated: string;
 }
 
-function sha1(content: string): string {
-  return createHash("sha1").update(content).digest("hex");
-}
-
 function keywordsFromContent(content: string): string[] {
   const stopWords = new Set([
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",

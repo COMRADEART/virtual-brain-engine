@@ -12,7 +12,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { CONFIG } from "../config.js";
 import { openDb } from "../db/sqlite.js";
-import { getActionDef, isRegisteredId, listActionSpecs } from "./registry.js";
+import { isRegisteredId } from "./registry.js";
 import { insertActionLog } from "../db/repositories/actions.js";
 import type { ActionId, ActionRiskTier, ActionSurface, ActionSpec } from "../../../shared/actions.js";
 
@@ -58,7 +58,7 @@ export function loadDynamicActions(): void {
         ...def,
         schema: z.object(
           Object.fromEntries(
-            Object.entries(def.params).map(([k, v]) => [k, z.string()]),
+            Object.entries(def.params).map(([k, _v]) => [k, z.string()]),
           ),
         ).strict(),
       });

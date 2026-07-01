@@ -28,16 +28,6 @@ const NOVELTY_RELATED_COS = 0.58;       // related: just above the unrelated ban
 const NOVELTY_REINFORCE_COS = 0.65;     // near-duplicate: between related & paraphrase
 const NOVELTY_REDUNDANT_AVG_COS = 0.62; // avg-sim "redundant" gate
 
-function contentFingerprint(content: string): string {
-  const words = content
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
-  const unique = [...new Set(words)].sort();
-  return createHash("sha1").update(unique.join(" ")).digest("hex").slice(0, 12);
-}
-
 function hammingDistance(a: string, b: string): number {
   let dist = 0;
   for (let i = 0; i < Math.min(a.length, b.length); i++) {
@@ -173,7 +163,7 @@ export function detectContradictions(
 
   for (const row of rows) {
     const existingClaims = extractClaims(row.content);
-    const existingNegations = extractNegations(row.content);
+    extractNegations(row.content);
     let contradictions = 0;
     for (const nc of newClaims) {
       for (const ec of existingClaims) {

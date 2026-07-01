@@ -39,7 +39,7 @@ import { CivilizationSimulationEngine, createCivilizationSimulation } from "./ci
 import { CollectiveDreaming, createCollectiveDreaming, type CollectiveDreamingConfig, type CollectiveDreamingEventHandlers } from "./collectiveDreaming.js";
 import { EthicsSafetySystem, createEthicsSafety, type EthicsSafetyConfig, type EthicsSafetyEventHandlers } from "./ethicsSafety.js";
 import { MultiCivilizationSystem, createMultiCivilization, type MultiCivilizationConfig, type MultiCivilizationEventHandlers } from "./multiCivilization.js";
-import type { BrainDescriptor as SharedBrainDescriptor, CultureType, ResourceCapacity, ResourceUsage } from "../../../shared/civilization.js";
+import type { BrainDescriptor as SharedBrainDescriptor } from "../../../shared/civilization.js";
 
 export interface CivilizationConfig {
   brainNetwork: Partial<BrainNetworkConfig>;
@@ -185,7 +185,7 @@ export class CivilizationOrchestrator {
       onAllocationCreated: (allocation) => {
         this.visualization.recordActivity("resource", [], `Resource allocated: ${allocation.amount}`, 0.3);
       },
-      onPriceChanged: (type, newPrice) => {
+      onPriceChanged: (_type, _newPrice) => {
         // Could log price changes
       },
     };
@@ -458,20 +458,4 @@ export function createCivilization(config?: Partial<CivilizationConfig>): Civili
 
 export function getCivilization(): CivilizationOrchestrator | null {
   return orchestrator;
-}
-
-function createBrainNetworkWithDescriptor(
-  config: Partial<BrainNetworkConfig>,
-  handlers: NetworkEventHandlers,
-  descriptor: BrainDescriptor,
-) {
-  return new BrainNetwork(config, handlers);
-}
-
-function createPeerDiscoveryWithNetwork(
-  network: BrainNetwork,
-  config: Partial<PeerDiscoveryConfig>,
-  descriptor: BrainDescriptor,
-) {
-  return new PeerDiscovery(network, config);
 }

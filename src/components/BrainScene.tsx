@@ -928,49 +928,6 @@ const handlePointerClick = (event: PointerEvent) => {
       onRegionSelect(hit.object.userData.regionId as BrainRegionId);
     }
   };
-  
-  // Debug controls for testing visualizations
-  const handleDebugCommand = (key: string) => {
-    const visualEffects = visualEffectsRef.current;
-    if (!visualEffects) return;
-    
-    switch (key) {
-      case "1": // Test dopamine
-        visualEffects.setNeuromodulators({ dopamine: 0.8 });
-        break;
-      case "2": // Test acetylcholine
-        visualEffects.setNeuromodulators({ acetylcholine: 0.8 });
-        break;
-      case "3": // Test serotonin
-        visualEffects.setNeuromodulators({ serotonin: 0.7 });
-        break;
-      case "4": // Test norepinephrine
-        visualEffects.setNeuromodulators({ norepinephrine: 0.6 });
-        break;
-      case "5": // Test working memory
-        visualEffects.visualizeWorkingMemory([
-          "prefrontal-l", "prefrontal-r", 
-          "parietal-l", "parietal-r",
-          "temporal-l", "hippocampus-l"
-        ], 0.9);
-        break;
-      case "6": // Show EEG overlay
-        visualEffects.showEegOverlay(true);
-        break;
-      case "7": // Highlight rich-club hubs
-        visualEffects.highlightRichClubHubs([
-          "prefrontal-l", "prefrontal-r", 
-          "parietal-l", "parietal-r", 
-          "thalamus-l", "thalamus-r"
-        ], 1.0);
-        break;
-      case "0": // Reset visualizations
-        visualEffects.setNeuromodulators({});
-        visualEffects.visualizeWorkingMemory([]);
-        visualEffects.showEegOverlay(false);
-        break;
-    }
-  };
 
     renderer.domElement.addEventListener("click", handlePointerClick);
     renderFrame();

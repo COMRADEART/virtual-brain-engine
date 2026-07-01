@@ -1,5 +1,5 @@
-import { createSocket, type Socket } from "node:dgram";
-import { createServer, type Server as TcpServer, type Socket as TcpSocket } from "node:net";
+import { createSocket } from "node:dgram";
+import { type Server as TcpServer } from "node:net";
 import { ulid } from "ulid";
 import {
   CIVILIZATION_BROADCAST_PORT,
@@ -132,7 +132,6 @@ export class PeerDiscovery {
   }
 
   async findPeers(filter?: PeerFilter): Promise<BrainPeer[]> {
-    const now = Date.now();
     const allPeers = this.network.getAllPeers();
     const discovered = Array.from(this.discoveredPeers.values());
 
@@ -221,7 +220,7 @@ export class PeerDiscovery {
   }
 
   private async startBroadcastListener(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, _reject) => {
       this.udpSocket = createSocket({ type: "udp4", reuseAddr: true });
 
       this.udpSocket.on("error", (err) => {

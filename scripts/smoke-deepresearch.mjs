@@ -19,7 +19,6 @@ const PORT = process.env.SMOKE_PORT ?? "8803";
 const BASE = `http://127.0.0.1:${PORT}`;
 const WS_URL = `ws://127.0.0.1:${PORT}/ws/brain`;
 const READY_TIMEOUT_MS = 45_000;
-const RUN_TIMEOUT_MS = Number(process.env.DEEP_RESEARCH_TIMEOUT_MS ?? 300_000);
 const QUESTION = process.env.DEEP_RESEARCH_QUESTION ?? "How does the brain's memory retrieval pipeline work?";
 const IS_WINDOWS = process.platform === "win32";
 const NPM_CMD = IS_WINDOWS ? "npm.cmd" : "npm";
