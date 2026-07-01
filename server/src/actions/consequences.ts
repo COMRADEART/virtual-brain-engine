@@ -20,7 +20,7 @@
 // ledger fault never affects the action result), and synchronous-cheap.
 
 import { promises as fs } from "node:fs";
-import { recordObservation } from "../core/causalMap.js";
+import { recordObservation, MIN_USABLE_CONFIDENCE, type CausalLink } from "../core/causalMap.js";
 import { getMemoryCount } from "../db/repositories/memory.js";
 import { surfaceError } from "../util/diagnostics.js";
 
@@ -70,6 +70,34 @@ export async function probeState(actionId: string, args: Record<string, unknown>
 export function stateChanged(before: StateProbe | null, after: StateProbe | null): boolean | null {
   if (!before || !after || before.kind !== after.kind) return null;
   return before.fingerprint !== after.fingerprint;
+}
+
+/**
+ * H3 (advisory variant) — ONE bounded foresight line from the causal ledger,
+ * "" when uninformative. PURE (effects are passed in; zero LLM, zero DB): the
+ * agent loop shows the model what this action HISTORICALLY did before it acts.
+ * This module owns the `action:<id>` convention, so the formatter lives here.
+ */
+export function foresightLine(actionId: string, effects: ReadonlyArray<CausalLink>): string {
+  const usable = effects.filter((e) => e.confidence >= MIN_USABLE_CONFIDENCE).slice(0, 2);
+  if (usable.length === 0) return "";
+  const phrases = usable
+    .map((e) => {
+      const pct = `${Math.round(e.strength * 100)}%`;
+      switch (e.effectClass) {
+        case "success":
+          return `historically succeeds ${pct} (n=${e.observations})`;
+        case "failure":
+          return `historically fails ${pct} (n=${e.observations})`;
+        case "state-changed":
+          return `changes system state ${pct}`;
+        default:
+          return `leads to ${e.effectClass} ${pct}`;
+      }
+    })
+    .filter(Boolean);
+  if (phrases.length === 0) return "";
+  return `Foresight: ${actionId} ${phrases.join(" and ")}.`.slice(0, 180);
 }
 
 /**

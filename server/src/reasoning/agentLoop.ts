@@ -41,6 +41,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { caption } from "../perception/workerClient.js";
 import { currentEnergyBudget } from "../core/energyBudget.js";
+import { isFeatureActive } from "../core/maturation.js";
+import { getEffectsForCause } from "../core/causalMap.js";
+import { foresightLine } from "../actions/consequences.js";
 import type { ActionRiskTier, ActionSpec } from "../../../shared/actions.js";
 import {
   assertVerified,
@@ -113,6 +116,8 @@ interface AgentRun {
   codingTrail: CodingTrailEntry[];
   /** "Known procedures" hint block computed once at run start ("" = none). */
   proceduresHint: string;
+  /** H3 advisory — action ids whose causal foresight line was already shown. */
+  foresightShown: Set<string>;
   /** Reference images for a creative objective; captioned into imageContext. */
   referenceImages?: { base64: string; mime?: string }[];
   /** Captioned reference-image descriptions, injected each round ("" = none). */
@@ -586,6 +591,7 @@ export function startAgentRun(input: StartAgentInput): AgentRun {
     createdAt: now,
     executedOk: [],
     codingTrail: [],
+    foresightShown: new Set<string>(),
     // Procedural memory: known tool sequences that worked for similar tasks
     // ride into every round's prompt as hints. Failure-isolated — an empty
     // block costs nothing and changes no behavior.
@@ -749,6 +755,23 @@ async function runTool(
     emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
     pushResult(run, action, args, false, `unknown tool "${action}" — not in the allowlist; pick a listed tool or finish.`);
     return "continued";
+  }
+
+  // H3 (advisory) — before acting, show the model what this action has
+  // HISTORICALLY done (the empirically-learned causal map). One line, once per
+  // action id per run, only when the "imagination informs live cognition"
+  // feature is active (maturation stage 4 / ENABLE_PER_REQUEST_IMAGINATION).
+  // Fail-open: an empty/missing map or any fault adds nothing.
+  if (!run.foresightShown.has(action)) {
+    run.foresightShown.add(action);
+    try {
+      if (isFeatureActive("imagination")) {
+        const line = foresightLine(action, getEffectsForCause(`action:${action}`));
+        if (line) run.transcript.push(`(${line})`);
+      }
+    } catch (err) {
+      surfaceError("agentLoop.foresight", err);
+    }
   }
 
   const risk: ActionRiskTier = def.risk;

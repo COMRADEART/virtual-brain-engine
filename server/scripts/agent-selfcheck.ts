@@ -384,6 +384,119 @@ check("triage: 'research X' → loop", triage("research quantum computing for me
   CONFIG.creativeAgent = false;
 }
 
+// ── H3 advisory foresight: the causal map informs the loop before it acts ────
+{
+  const { foresightLine } = await import("../src/actions/consequences.js");
+  const { recordObservation } = await import("../src/core/causalMap.js");
+
+  // Pure formatter.
+  check("foresight: empty effects → empty line", foresightLine("run-command", []) === "");
+  const link = (effectClass: string, strength: number, confidence: number, observations = 5) => ({
+    causeClass: "action:x",
+    effectClass,
+    observations,
+    occurrences: Math.round(strength * observations),
+    strength,
+    confidence,
+    lastObservedAt: "",
+    source: "t",
+  });
+  check(
+    "foresight: sub-confidence links filtered out",
+    foresightLine("x", [link("success", 0.9, 0.1)]) === "",
+  );
+  const multi = foresightLine("x", [
+    link("success", 0.82, 0.9, 17),
+    link("state-changed", 0.64, 0.8),
+    link("failure", 0.2, 0.7),
+  ]);
+  check("foresight: caps at top-2 effects", (multi.match(/%/g) ?? []).length === 2, multi);
+  check("foresight: single bounded line", !multi.includes("\n") && multi.length <= 180 && multi.startsWith("Foresight: x"));
+
+  // A prompt-capturing scripted connector — proves what the MODEL actually saw.
+  function scriptedCapture(responses: string[], prompts: string[]): Connector {
+    let i = 0;
+    return {
+      descriptor: {
+        id: "stub-capture",
+        name: "stub-capture",
+        kind: "ollama",
+        enabled: true,
+        state: "ok",
+        createdAt: "",
+        updatedAt: "",
+        isLocal: true,
+      },
+      async listModels() {
+        return [];
+      },
+      async send(prompt: string) {
+        prompts.push(prompt);
+        const r = responses[Math.min(i, responses.length - 1)] ?? "{}";
+        i++;
+        return r;
+      },
+      async *stream() {
+        yield "";
+      },
+      async test() {
+        return { ok: true };
+      },
+    } satisfies Connector;
+  }
+  const script = [
+    '{"thought":"check the system","tool":{"action":"system-info","args":{}},"final":""}',
+    '{"thought":"done","tool":null,"final":"System looks healthy."}',
+  ];
+
+  // Seed empirical history for system-info (confidence 1−e^(−3/5) ≈ 0.45 > 0.2).
+  for (let n = 0; n < 3; n++) {
+    recordObservation({ causeClass: "action:system-info", effectClass: "success", occurred: true, source: "selfcheck" });
+  }
+
+  // Feature OFF (static flag off + fresh young brain) → prompts are untouched.
+  {
+    const prompts: string[] = [];
+    __setAgentConnector(scriptedCapture(script, prompts));
+    const run = startAgentRun({ prompt: "how is the system doing", mode: "safe-only", scope: [] });
+    await runAgentLoop(run, collector().emit);
+    check("foresight: absent when the imagination feature is inactive", prompts.every((p) => !p.includes("Foresight:")));
+  }
+
+  // Feature ON → the round-2 prompt carries exactly one foresight line.
+  CONFIG.enablePerRequestImagination = true;
+  {
+    const prompts: string[] = [];
+    __setAgentConnector(scriptedCapture(script, prompts));
+    const run = startAgentRun({ prompt: "how is the system doing", mode: "safe-only", scope: [] });
+    await runAgentLoop(run, collector().emit);
+    const withLine = prompts.filter((p) => p.includes("Foresight: system-info"));
+    check("foresight: the model sees the advisory once history exists", withLine.length >= 1, `prompts=${prompts.length}`);
+    check(
+      "foresight: shown once per action per run",
+      (prompts[prompts.length - 1]?.match(/Foresight: system-info/g) ?? []).length === 1,
+    );
+  }
+
+  // Feature ON but NO causal history for the action → harmless no-op.
+  {
+    const prompts: string[] = [];
+    __setAgentConnector(
+      scriptedCapture(
+        [
+          '{"thought":"look","tool":{"action":"recent-memories","args":{}},"final":""}',
+          '{"thought":"done","tool":null,"final":"Nothing recent."}',
+        ],
+        prompts,
+      ),
+    );
+    const run = startAgentRun({ prompt: "anything new in memory", mode: "safe-only", scope: [] });
+    await runAgentLoop(run, collector().emit);
+    check("foresight: unseeded action stays untouched and the run completes", prompts.every((p) => !p.includes("Foresight:")));
+  }
+  CONFIG.enablePerRequestImagination = false;
+}
+
 __setAgentConnector(null);
 
 console.log(JSON.stringify({ failures, result: failures === 0 ? "PASS" : "FAIL" }));
