@@ -15,6 +15,8 @@ import { StreamingSpeaker } from "../../engine/streamingSpeech";
 import { appendExchange, updateLastAnswer, type Exchange } from "./chatHistory";
 import { confirmScope } from "./confirmSummary";
 import { usePushToTalk } from "./usePushToTalk";
+import { PersonListener } from "./PersonListener";
+import { useUiPrefs } from "../../engine/uiPrefs";
 import type { AgentRuntimeState } from "../../../shared/pipeline";
 import type { PersonalityState } from "../../../shared/phase2";
 import type { AgentConfirmMode, AgentConfirmRequest } from "../../../shared/agent";
@@ -331,6 +333,15 @@ export function PetWindow(): JSX.Element {
     (msg) => setSubtitle(msg),
   );
 
+  // Always-listener: when the user toggles "Listen for 'Brain'" in Settings
+  // (or via the tray menu), the pet holds the mic open in 3-second chunks
+  // and only submits when the transcript contains a hotword. Coexists with
+  // PTT — the hotword submit and the press-and-hold submit share the same
+  // `submit()` entry point. Rendered inside the JSX as a null-returning
+  // component (no DOM).
+  const { prefs } = useUiPrefs();
+  const personListenerEnabled = prefs.personListener.enabled;
+
   // Approve the paused confirm-tier action and resume the loop. The human just
   // approved THIS exact plan, so the server mints an honest, plan-bound confirm
   // token on resume.
@@ -395,6 +406,11 @@ export function PetWindow(): JSX.Element {
 
   return (
     <div className={`pet-root ${expanded ? "expanded" : ""}`}>
+      <PersonListener
+        enabled={personListenerEnabled}
+        onPrompt={(text) => void submit(text)}
+        onError={(msg) => setSubtitle(msg)}
+      />
       <style>{`
         html, body, #root { background: transparent !important; margin: 0; height: 100%; overflow: hidden; }
         .pet-root {

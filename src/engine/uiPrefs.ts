@@ -101,6 +101,25 @@ export interface UiPrefs {
   voicePitch: number;
   /** Preferred browser voice (SpeechSynthesisVoice.voiceURI); "" = system default. */
   voiceURI: string;
+  /**
+   * Always-listener config for the pet ("hey brain, …"). The toggle is
+   * OFF by default — opt-in only, never auto-listen on a fresh install.
+   * When `enabled`, the pet opens the mic, streams 3-second chunks to
+   * faster-whisper, and only submits a transcript when it contains one of
+   * `hotwords` (case-insensitive substring; see personListener.ts).
+   */
+  personListener: {
+    enabled: boolean;
+    hotwords: readonly string[];
+    /** Chunk duration in seconds. 3s = ~15x realtime on CPU faster-whisper. */
+    chunkSeconds: number;
+    /**
+     * If true, transcripts WITHOUT a hotword are still kept (for
+     * diagnostics in the Mind panel's "what I heard" buffer). NEVER store
+     * raw audio.
+     */
+    storeAmbient: boolean;
+  };
 }
 
 export const DEFAULT_UI_PREFS: UiPrefs = {
@@ -116,6 +135,12 @@ export const DEFAULT_UI_PREFS: UiPrefs = {
   voiceRate: 1,
   voicePitch: 1,
   voiceURI: "",
+  personListener: {
+    enabled: false,
+    hotwords: ["brain", "friday", "hey brain", "ok brain"],
+    chunkSeconds: 3,
+    storeAmbient: false,
+  },
 };
 
 const STORAGE_KEY = "brain-ui-prefs";
