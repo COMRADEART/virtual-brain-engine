@@ -103,6 +103,7 @@ const steps = [
   { label: "energybudget selfcheck", args: ["--prefix", "server", "run", "energybudget:selfcheck"] },
   { label: "maturation selfcheck", args: ["--prefix", "server", "run", "maturation:selfcheck"] },
   { label: "eventworkspace selfcheck", args: ["--prefix", "server", "run", "eventworkspace:selfcheck"] },
+  { label: "person selfcheck", args: ["--prefix", "server", "run", "person:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Server unit tests (tsx --test "src/**/*.test.ts" — memory + route tests).
   // Hermetic: each test points openDb() at its own temp BRAIN_DB_PATH; no LLM,
@@ -130,6 +131,7 @@ if (process.env.GATE_ASK_SMOKE === "1") {
   steps.push({ label: "web smoke (egress gate + live fetch)", args: ["run", "web:smoke"] });
   steps.push({ label: "websearch smoke (egress gate + live search)", args: ["run", "websearch:smoke"] });
   steps.push({ label: "github smoke (egress gate + live discovery)", args: ["run", "github:smoke"] });
+  steps.push({ label: "person smoke (live watch daemon + executeAction round-trip)", args: ["run", "person:smoke"] });
 }
 
 if (!existsSync(resolve(repoRoot, "package.json"))) {
