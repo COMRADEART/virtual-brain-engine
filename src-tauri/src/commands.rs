@@ -323,3 +323,44 @@ pub fn pet_set_size(window: tauri::Window, width: f64, height: f64) -> Result<()
         .set_size(tauri::LogicalSize::new(width, height))
         .map_err(|e| e.to_string())
 }
+
+// ─── "Person on the computer" presence layer (Slice 1) ────────────────
+//
+// Three thin Tauri command wrappers. The actual policy (when to show,
+// what the hotkey does, default-on autostart) lives in `lib.rs` setup + the
+// `person-summoned` / `daemon-fired` bus events — commands just give the
+// renderer a knob.
+
+/// Send a desktop notification. Called by the server's `/api/notify` route
+/// when a long-running daemon task fires (e.g. a watch matched a file).
+#[tauri::command]
+pub fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
+}
+
+/// Enable / disable OS-level autostart-on-login. Default ON for the
+/// personal-brain promise; users can opt out from Settings.
+#[tauri::command]
+pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())?;
+    } else {
+        manager.disable().map_err(|e| e.to_string())?;
+    }
+    manager.is_enabled().map_err(|e| e.to_string())
+}
+
+/// Read current autostart state — used by Settings to render the toggle.
+#[tauri::command]
+pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}

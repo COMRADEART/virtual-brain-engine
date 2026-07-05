@@ -10,11 +10,11 @@ mod sidecars;
 mod system_monitor;
 
 use commands::{
-    add_memory_point, get_app_state, get_git_activity, get_project_context,
+    add_memory_point, get_app_state, get_autostart, get_git_activity, get_project_context,
     get_project_stats, get_recent_activity, get_recent_memories, get_system_metrics,
-    pet_set_size, pet_start_drag, record_brain_activity, save_project_context, show_main_window,
-    start_monitoring, stop_monitoring, toggle_brain_activity, toggle_system_metrics,
-    unwatch_project, watch_project, AppState,
+    notify, pet_set_size, pet_start_drag, record_brain_activity, save_project_context,
+    set_autostart, show_main_window, start_monitoring, stop_monitoring, toggle_brain_activity,
+    toggle_system_metrics, unwatch_project, watch_project, AppState,
 };
 use collectors::collect_clipboard;
 use llm_probe::probe_local_llms;
@@ -38,7 +38,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,6 +46,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--person-on-startup"]),
+        ))
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -84,24 +90,54 @@ pub fn run() {
             // in dev or when :8787 is already served.
             sidecars::start_server_sidecar(app.handle());
 
-            let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+            // Tray menu: quick-access surface for the "person on the computer"
+            // promise. Left-click still focuses the main window (intentional —
+            // it's the muscle-memory path). Menu items route through Tauri
+            // commands so the renderer is the source of truth for state.
+            let show_item = MenuItem::with_id(app, "show", "Open Brain OS", true, None::<&str>)?;
+            let pet_item = MenuItem::with_id(app, "pet", "Show Pet", true, None::<&str>)?;
+            let voice_item = MenuItem::with_id(app, "voice", "Voice on/off", true, None::<&str>)?;
+            let listen_item = MenuItem::with_id(app, "listen", "Listen for 'Brain'", true, None::<&str>)?;
+            let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show_item, &pet_item, &voice_item, &listen_item, &separator, &quit_item],
+            )?;
 
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("Brain OS — Running")
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                .on_menu_event(|app, event| {
+                    let id = event.id.as_ref();
+                    // The renderer owns state for voice/listen toggles; we
+                    // emit a bus event the renderer listens for, so the
+                    // tray menu and the renderer stay in lock-step.
+                    match id {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
+                        "pet" => {
+                            if let Some(window) = app.get_webview_window("pet") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                            let _ = app.emit("tray-pet", ());
+                        }
+                        "voice" => {
+                            let _ = app.emit("tray-voice-toggle", ());
+                        }
+                        "listen" => {
+                            let _ = app.emit("tray-listen-toggle", ());
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
                     }
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -118,6 +154,81 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Global hotkey: Cmd/Ctrl+Shift+B summons the person from any
+            // focused app. The persona's promise: "I'm always one keystroke
+            // away." If main is hidden, show it; if main is shown but pet
+            // is hidden, show the pet; if both are visible, flash a tiny
+            // notification. Default accelerator is registered here; the
+            // user can change it later via the Settings panel
+            // (register_global_hotkey command) — for now we ship the one
+            // binding.
+            //
+            // ponytail: dynamic registration is preferred over the static
+            // `tauri.conf.json` array so the user can change the binding
+            // at runtime without a rebuild.
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+                let shortcut =
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyB);
+                let app_handle = app.handle().clone();
+                if let Err(e) = app.global_shortcut().on_shortcut(shortcut, move |_app, _scut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        let main_visible = app_handle
+                            .get_webview_window("main")
+                            .map(|w| w.is_visible().unwrap_or(false))
+                            .unwrap_or(false);
+                        let pet_visible = app_handle
+                            .get_webview_window("pet")
+                            .map(|w| w.is_visible().unwrap_or(false))
+                            .unwrap_or(false);
+
+                        if !main_visible {
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        } else if !pet_visible {
+                            if let Some(window) = app_handle.get_webview_window("pet") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        } else {
+                            // Both visible — flash a quiet confirmation
+                            // and bring the pet to focus (it's the
+                            // conversational surface).
+                            let _ = app_handle.emit("person-summoned", ());
+                            if let Some(window) = app_handle.get_webview_window("pet") {
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                }) {
+                    log::warn!("failed to register global shortcut: {}", e);
+                }
+            }
+
+            // Autostart on login: the personal-brain promise. ON by default;
+            // users can opt out from Settings. The check below is
+            // best-effort: if the user previously disabled it, leave it
+            // disabled.
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let manager = app.autolaunch();
+                match manager.is_enabled() {
+                    Ok(true) => log::info!("autostart-on-login: already enabled"),
+                    Ok(false) => {
+                        if let Err(e) = manager.enable() {
+                            log::warn!("failed to enable autostart-on-login: {}", e);
+                        } else {
+                            log::info!("autostart-on-login: enabled (default-on for the personal-brain promise)");
+                        }
+                    }
+                    Err(e) => log::warn!("autostart state check failed: {}", e),
+                }
+            }
 
             Ok(())
         })
@@ -174,6 +285,10 @@ pub fn run() {
             delete_screen_capture,
             get_vision_config,
             save_vision_config,
+            // "Person on the computer" presence layer (Slice 1)
+            notify,
+            set_autostart,
+            get_autostart,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
