@@ -33,6 +33,14 @@ import { discoverAndLearn, learnRepoRef } from "../github/index.js";
 import { getDefaultConnectorInstance, resolveEmbedFn } from "../connectors/registry.js";
 import { runScan, scanState } from "../scanner/indexer.js";
 import { surfaceError } from "../util/diagnostics.js";
+import {
+  createDaemon,
+  deleteDaemon,
+  getDaemon,
+  listDaemons,
+  setDaemonStatus,
+} from "../daemon/registry.js";
+import { reconcile as reconcileDaemon } from "../daemon/runner.js";
 import type { ActionAuthorization, ActionId, ActionResult, ActionRiskTier, OsDirective } from "../../../shared/actions.js";
 import { applyEdits, summarizeFailure, type BuildTestResult, type PatchEdit } from "../../../shared/coding.js";
 import {
@@ -728,6 +736,83 @@ const HANDLERS: Partial<Record<ActionId, Handler>> = {
     const r = await checkoutBranch(path, branch);
     if (!r.ok) throw new Error(r.error);
     return { summary: r.summary, data: r.data };
+  },
+  // --- Daemon registry (long-running watch / schedule / event) ---------------
+  // A daemon is just a (trigger, action) pair the runner evaluates on a tick.
+  // The handler CRUDs the registry; the runner owns the watcher/timer lifecycle.
+  "daemon-list": async () => {
+    const daemons = listDaemons();
+    return {
+      summary: `Listed ${daemons.length} daemon${daemons.length === 1 ? "" : "s"}`,
+      data: { daemons, count: daemons.length },
+    };
+  },
+  "daemon-create": async (args) => {
+    const a = args as {
+      title: string;
+      trigger: Parameters<typeof createDaemon>[0]["trigger"];
+      action: { id: string; args?: Record<string, unknown> };
+      autonomy?: "ask" | "scope" | "safe-only";
+      cooldownMs?: number;
+    };
+    const record = createDaemon({
+      title: a.title,
+      trigger: a.trigger,
+      action: { id: a.action.id, args: a.action.args ?? {} },
+      autonomy: a.autonomy,
+      cooldownMs: a.cooldownMs,
+    });
+    // Reconcile the runner so a watch/schedule daemon starts immediately.
+    try {
+      reconcileDaemon();
+    } catch (err) {
+      surfaceError("daemon.create.reconcile", err);
+    }
+    return {
+      summary: `Daemon "${record.title}" registered`,
+      data: { daemon: record },
+    };
+  },
+  "daemon-delete": async (args) => {
+    const id = String(args.id);
+    const existed = getDaemon(id);
+    deleteDaemon(id);
+    try {
+      reconcileDaemon();
+    } catch (err) {
+      surfaceError("daemon.delete.reconcile", err);
+    }
+    return {
+      summary: existed ? `Daemon "${existed.title}" deleted` : "Daemon not found (no-op)",
+      data: { id, removed: existed !== null },
+    };
+  },
+  "daemon-pause": async (args) => {
+    const id = String(args.id);
+    const updated = setDaemonStatus(id, "paused");
+    try {
+      reconcileDaemon();
+    } catch (err) {
+      surfaceError("daemon.pause.reconcile", err);
+    }
+    if (!updated) return { summary: `Daemon not found: ${id}` };
+    return { summary: `Paused daemon "${updated.title}"`, data: { daemon: updated } };
+  },
+  "daemon-resume": async (args) => {
+    const id = String(args.id);
+    const updated = setDaemonStatus(id, "running");
+    try {
+      reconcileDaemon();
+    } catch (err) {
+      surfaceError("daemon.resume.reconcile", err);
+    }
+    if (!updated) return { summary: `Daemon not found: ${id}` };
+    try {
+      reconcileDaemon();
+    } catch (err) {
+      surfaceError("daemon.resume.reconcile", err);
+    }
+    return { summary: `Resumed daemon "${updated.title}"`, data: { daemon: updated } };
   },
 };
 

@@ -85,7 +85,17 @@ export type ActionId =
   // mcp-market-add connects a discovered server (the spawn command is built from
   // a FIXED npx/uvx template, never caller-supplied). Both confirm-tier.
   | "mcp-market-search"
-  | "mcp-market-add";
+  | "mcp-market-add"
+  // Daemon registry — long-running watch / schedule / event triggers. The brain
+  // can register ONE allowlisted action to fire when a trigger evaluates true.
+  // Confirm-tier for create/delete/pause/resume; safe for the list. The runner
+  // re-derives the action's risk from the registry at fire-time, so a daemon
+  // is bounded by its autonomy (ask / scope / safe-only).
+  | "daemon-list"
+  | "daemon-create"
+  | "daemon-delete"
+  | "daemon-pause"
+  | "daemon-resume";
 
 export const ACTION_IDS: ActionId[] = [
   "search-memory",
@@ -120,6 +130,11 @@ export const ACTION_IDS: ActionId[] = [
   "git-checkout",
   "mcp-market-search",
   "mcp-market-add",
+  "daemon-list",
+  "daemon-create",
+  "daemon-delete",
+  "daemon-pause",
+  "daemon-resume",
 ];
 
 // Where an action actually executes. "server" actions run a handler in the Node

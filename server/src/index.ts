@@ -48,6 +48,9 @@ import { organismRouter } from "./routes/organism.js";
 import { visionRouter } from "./vision/index.js";
 import { perceptionRouter } from "./perception/index.js";
 import { civilizationRouter, civilization, createLocalDescriptor } from "./routes/civilization.js";
+import { daemonRouter } from "./routes/daemon.js";
+import { startDaemonSystem, stopDaemonSystem } from "./daemon/index.js";
+import { continuityRouter } from "./routes/continuity.js";
 import { phase2Router } from "./routes/phase2.js";
 import { voiceRouter } from "./routes/voice.js";
 import { settingsRouter } from "./routes/settings.js";
@@ -242,6 +245,8 @@ async function main(): Promise<void> {
   app.use("/api", organismRouter);
   app.use("/api", visionRouter);
   app.use("/api", perceptionRouter);
+  app.use("/api", daemonRouter);
+  app.use("/api", continuityRouter);
   // Mounted at /api/voice so the router's /speak + /status become /api/voice/speak
   // + /api/voice/status — the paths apiClient.voiceSpeak() and the status probe
   // actually call. (Previously mounted at /api, so the served path was /api/speak
@@ -271,6 +276,14 @@ async function main(): Promise<void> {
     console.error("[server] brain core failed to start:", err);
     return null;
   });
+
+  // Long-running daemon registry: the "person on the computer" substrate.
+  // Watches a folder, runs a schedule, fires on a bus event — each daemon
+  // is a (trigger, action) pair the runner evaluates. The action runs through
+  // the SAME permissioned executor as /api/agent (allowlist + zod + confirm
+  // gate + audit), so a daemon can only do what its creator could do in a
+  // one-shot run. Failure-isolated: a throw never blocks server boot.
+  startDaemonSystem();
 
   // Boot auto-train: the from-scratch brain LLM (default ON — "the brain grows
   // its own model when the app starts", progress on the llm-training bus event)
@@ -329,6 +342,7 @@ async function main(): Promise<void> {
       void civilization.stop();
     }
     if (CONFIG.mcpEnabled) void getMcpHub().stop();
+    stopDaemonSystem();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   };

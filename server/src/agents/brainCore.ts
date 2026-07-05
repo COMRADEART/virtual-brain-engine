@@ -22,6 +22,7 @@ import { getBeliefEngine } from "../core/beliefs.js";
 import { listProcedures } from "../memory/procedural.js";
 import { getSpine } from "../spine/cord.js";
 import { autoPursuitTick, notePursuitActivity } from "../reasoning/goalPursuit.js";
+import { daemonTick as daemonRegistryTick } from "../daemon/runner.js";
 import { getMcpHub } from "../mcp/hub.js";
 import { runWorkspaceCycle, requestWorkspaceCycle } from "../core/workspace.js";
 import { runCreativeCycle, creativityStats } from "../core/creativity.js";
@@ -38,7 +39,7 @@ import { initSelfConsciousness } from "../core/selfConsciousness.js";
 import { broadcast } from "../ws/brainBus.js";
 import { getMemoryCount } from "../db/repositories/memory.js";
 import { getNeuromodulators } from "../core/neuromodulators.js";
-import { getDiagnosticCounts } from "../util/diagnostics.js";
+import { getDiagnosticCounts, surfaceError } from "../util/diagnostics.js";
 import { recordVitals, pruneOldTelemetry } from "../observability/vitals.js";
 import { snapshot as metricsSnapshot } from "../observability/metrics.js";
 import { isFeatureActive } from "../core/maturation.js";
@@ -485,6 +486,20 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
   }, PURSUIT_TICK_MS);
   if (typeof pursuitTick.unref === "function") pursuitTick.unref();
 
+  // Daemon registry tick — 60s. Drives schedule-based daemons through their
+  // cooldown gate; chokidar watchers + event triggers run on their own
+  // (separate timer / event hook in the runner). The tick is idempotent +
+  // failure-isolated so a slow tick never compounds.
+  const DAEMON_TICK_MS = 60_000;
+  const daemonTickHandle = setInterval(() => {
+    try {
+      daemonRegistryTick();
+    } catch (err) {
+      surfaceError("brainCore.daemonTick", err);
+    }
+  }, DAEMON_TICK_MS);
+  if (typeof daemonTickHandle.unref === "function") daemonTickHandle.unref();
+
   // Observability spine (C1) — sample the brain's own vitals into the
   // brain_vitals time-series every minute (metrics registry snapshot + a few
   // subsystem gauges), and prune old telemetry. Every read is failure-isolated
@@ -678,6 +693,7 @@ export async function startBrainCore(): Promise<BrainCoreHandle> {
       clearInterval(brainStateTick);
       clearInterval(spineTick);
       clearInterval(pursuitTick);
+      clearInterval(daemonTickHandle);
       if (workspaceTick) clearInterval(workspaceTick);
       if (vitalsTick) clearInterval(vitalsTick);
       await runtime.stop();

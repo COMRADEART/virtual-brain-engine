@@ -550,6 +550,75 @@ const REGISTRY: Record<ActionId, ActionDef> = {
       })
       .strict(),
   },
+  // --- Long-running daemons (watch / schedule / event) -----------------------
+  // The brain can register an action to fire on a trigger. "Ask" autonomy
+  // means confirm-tier actions are REFUSED; "scope" pre-authorises them via
+  // the executor's sessionScope channel (audited as authorized_via=
+  // "session-scope"); "safe-only" only runs safe actions.
+  "daemon-list": {
+    id: "daemon-list",
+    title: "List daemons",
+    description: "List all long-running daemons (watches, schedules, event triggers) and their status.",
+    risk: "safe",
+    surface: "server",
+    params: {},
+    schema: z.object({}).strict(),
+  },
+  "daemon-create": {
+    id: "daemon-create",
+    title: "Create a daemon",
+    description:
+      "Register a long-running daemon. The trigger shape is a discriminated union by `kind`: 'watch' (file/dir + pattern), 'schedule' (everyMinutes), or 'event' (a bus event name). The action is ONE allowlisted action id + args. autonomy gates how confirm-tier actions are handled: 'ask' (refuse), 'scope' (sessionScope), 'safe-only' (safe only).",
+    risk: "confirm",
+    surface: "server",
+    params: {
+      title: "human-readable name",
+      trigger: "{ kind:'watch', path, pattern } | { kind:'schedule', everyMinutes } | { kind:'event', event }",
+      action: "{ id, args } — an allowlisted action id plus its args",
+      autonomy: "'ask' | 'scope' | 'safe-only' (default 'ask')",
+      cooldownMs: "minimum ms between fires (default 60000)",
+    },
+    schema: z
+      .object({
+        title: z.string().min(1).max(200),
+        trigger: z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("watch"), path: z.string().min(1).max(1024), pattern: z.enum(["any", "created", "modified", "deleted"]) }),
+          z.object({ kind: z.literal("schedule"), everyMinutes: z.number().int().min(1).max(60 * 24 * 7).optional(), runAt: z.string().datetime().optional() }),
+          z.object({ kind: z.literal("event"), event: z.string().min(1).max(128) }),
+        ]),
+        action: z.object({ id: z.string().min(1), args: z.record(z.unknown()).optional() }),
+        autonomy: z.enum(["ask", "scope", "safe-only"]).optional(),
+        cooldownMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
+      })
+      .strict(),
+  },
+  "daemon-delete": {
+    id: "daemon-delete",
+    title: "Delete a daemon",
+    description: "Remove a registered daemon. Idempotent — missing is fine.",
+    risk: "confirm",
+    surface: "server",
+    params: { id: "the daemon id (e.g. 'daemon-...')" },
+    schema: z.object({ id: z.string().min(1) }).strict(),
+  },
+  "daemon-pause": {
+    id: "daemon-pause",
+    title: "Pause a daemon",
+    description: "Pause a running daemon. Its watchers and timers are released; the record is kept.",
+    risk: "confirm",
+    surface: "server",
+    params: { id: "the daemon id" },
+    schema: z.object({ id: z.string().min(1) }).strict(),
+  },
+  "daemon-resume": {
+    id: "daemon-resume",
+    title: "Resume a daemon",
+    description: "Resume a paused daemon. Restarts its watcher / timer.",
+    risk: "confirm",
+    surface: "server",
+    params: { id: "the daemon id" },
+    schema: z.object({ id: z.string().min(1) }).strict(),
+  },
 };
 
 // The shell ("do any task") actions are gated behind CONFIG.allowShell. When the
