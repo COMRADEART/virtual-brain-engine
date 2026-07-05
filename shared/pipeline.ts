@@ -196,4 +196,18 @@ export type BrainBusMessage =
   // --- MCP client (shared/mcp.ts) ---------------------------------------------
   // One event per MCP lifecycle moment: a server connected/disconnected, a tool
   // registered, a tool call, or an error. Lets a tab reflect MCP activity live.
-  | { type: "mcp"; event: McpEvent; timestamp: string };
+  | { type: "mcp"; event: McpEvent; timestamp: string }
+  // --- Daemon (long-running watch / schedule / event) -------------------------
+  // Emitted each time a registered daemon fires an action. The Mind panel's
+  // "Watches" tab subscribes; the Tauri shell pipes `daemon-fired` to a desktop
+  // notification (the `notify` Tauri command). The action id + args are the
+  // SAME ones the executor audited; `ok=false` carries the refusal/error text.
+  | {
+      type: "daemon-fired";
+      daemonId: string;
+      daemonTitle: string;
+      actionId: string;
+      ok: boolean;
+      error: string | null;
+      at: string;
+    };
