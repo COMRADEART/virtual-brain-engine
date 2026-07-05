@@ -12,12 +12,15 @@
 //   * Errors render to the UI, never console.error.
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, Sparkles, User } from "lucide-react";
 import { subscribeConnection } from "../../engine/brainBus";
 import {
   apiClient,
   type BrainBeliefsView,
   type BrainGoalTreeView,
+  type ContinuityView,
+  type DaemonListView,
+  type DaemonView,
   type EpisodeView,
   type GoalPursuitReportView,
   type MaturationStatusView,
@@ -28,9 +31,10 @@ import {
 } from "../../engine/apiClient";
 import { beliefTone, flattenGoalTree, modulatorRows, stanceLabel } from "./mindFormat";
 import { SystemStatusPanel } from "../SystemStatusPanel";
+import { useUiPrefs } from "../../engine/uiPrefs";
 
 const POLL_MS = 6_000;
-const TABS = ["beliefs", "goals", "procedures", "episodes", "modulators", "self", "system"] as const;
+const TABS = ["beliefs", "goals", "procedures", "episodes", "modulators", "self", "person", "system"] as const;
 type MindTab = (typeof TABS)[number];
 
 function pct(v: number): string {
@@ -56,6 +60,12 @@ export function MindPanel({ collapsed, onCollapsedChange }: MindPanelProps): JSX
   const [narrative, setNarrative] = useState<NarrativeView | null>(null);
   const [pursuit, setPursuit] = useState<GoalPursuitReportView | null>(null);
   const [pursuing, setPursuing] = useState(false);
+  const [continuity, setContinuity] = useState<ContinuityView | null>(null);
+  const [daemons, setDaemons] = useState<DaemonListView | null>(null);
+
+  const { prefs } = useUiPrefs();
+  const listenerEnabled = prefs.personListener.enabled;
+  const personHotword = prefs.personListener.hotwords[0] ?? "brain";
 
   useEffect(() => subscribeConnection(setBusOk), []);
 
@@ -82,6 +92,10 @@ export function MindPanel({ collapsed, onCollapsedChange }: MindPanelProps): JSX
       case "self":
         apiClient.brainSelf().then((v) => { setSelf(v); ok(); }).catch(fail);
         apiClient.brainNarrative().then((v) => setNarrative(v.narrative)).catch(() => {});
+        break;
+      case "person":
+        apiClient.continuity("full").then((v) => { setContinuity(v); ok(); }).catch(fail);
+        apiClient.daemonList().then((v) => { setDaemons(v); ok(); }).catch(fail);
         break;
       case "system":
         break; // SystemStatusPanel polls itself.
@@ -269,6 +283,59 @@ export function MindPanel({ collapsed, onCollapsedChange }: MindPanelProps): JSX
               ) : (
                 <p className="mind-empty">No self-representation yet.</p>
               )}
+            </section>
+          )}
+
+          {tab === "person" && (
+            <section className="mind-section mind-person">
+              {continuity ? (
+                <div className="mind-person-block">
+                  <header className="mind-person-head">
+                    <strong>Since last time</strong>
+                    <small className="mind-person-meta">{continuity.greeting}</small>
+                  </header>
+                  <p className="mind-person-briefing">{continuity.briefing}</p>
+                </div>
+              ) : (
+                <p className="mind-empty">Loading continuity briefing…</p>
+              )}
+
+              <div className="mind-person-block">
+                <header className="mind-person-head">
+                  <strong>Watches</strong>
+                  {daemons ? (
+                    <small className="mind-person-meta">
+                      {daemons.counts.running}/{daemons.counts.total} running
+                    </small>
+                  ) : null}
+                </header>
+                {daemons && daemons.daemons.length > 0 ? (
+                  <ul className="mind-list">
+                    {daemons.daemons.slice(0, 5).map((d: DaemonView) => (
+                      <li key={d.id} className={`mind-daemon-row st-${d.status}`}>
+                        <span className="mind-daemon-title">{d.title}</span>
+                        <span className={`mind-daemon-status st-${d.status}`}>{d.status}</span>
+                        <small className="mind-daemon-tally">
+                          {d.runCount} run{d.runCount === 1 ? "" : "s"}
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mind-empty">No watches yet — ask the pet to "watch my downloads folder" or use an action.</p>
+                )}
+              </div>
+
+              <div className="mind-person-block">
+                <header className="mind-person-head">
+                  <strong>Listener</strong>
+                </header>
+                <p className="mind-person-note">
+                  {listenerEnabled
+                    ? `👂 listening for "${personHotword}"`
+                    : "Mic off — enable in Settings → Voice → Always listen."}
+                </p>
+              </div>
             </section>
           )}
 

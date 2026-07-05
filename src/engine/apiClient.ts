@@ -114,6 +114,57 @@ export interface EpisodeView {
   itemCount: number;
 }
 
+// ── Person-on-the-computer views (Slices 4 + 5) ────────────────────────────
+
+export interface ContinuityView {
+  generatedAt: string;
+  greeting: string;
+  /** The 3-5 sentence spoken prose. */
+  briefing: string;
+  episodesLast24h: { title: string; summary: string; at: string }[];
+  activeBeliefs: { statement: string; confidence: number }[];
+  activeGoals: { title: string; progress: number; paused?: boolean }[];
+  recentPeople: { name: string; lastSeen: string }[];
+  openQuestions: { text: string; from: string }[];
+  recentConversations: { title: string | null; at: string }[];
+}
+
+export interface DaemonView {
+  id: string;
+  title: string;
+  status: "running" | "paused" | "error" | "completed";
+  createdAt: string;
+  lastRunAt: string | null;
+  lastError: string | null;
+  runCount: number;
+  cooldownMs: number;
+  autonomy: "ask" | "scope" | "safe-only";
+  trigger:
+    | { kind: "watch"; path: string; pattern: "any" | "created" | "modified" | "deleted" }
+    | { kind: "schedule"; everyMinutes?: number; runAt?: string }
+    | { kind: "event"; event: string };
+  action: { id: string; args: Record<string, unknown> };
+}
+
+export interface DaemonListView {
+  daemons: DaemonView[];
+  counts: { total: number; running: number; paused: number; error: number };
+}
+
+export type DaemonTriggerRequest =
+  | { kind: "watch"; path: string; pattern: "any" | "created" | "modified" | "deleted" }
+  | { kind: "schedule"; everyMinutes?: number; runAt?: string }
+  | { kind: "event"; event: string };
+
+export interface DaemonCreateRequest {
+  title: string;
+  trigger: DaemonTriggerRequest;
+  action: { id: string; args?: Record<string, unknown> };
+  autonomy?: "ask" | "scope" | "safe-only";
+  cooldownMs?: number;
+  confirmToken?: string;
+}
+
 export interface ModulatorStatusView {
   levels: Record<string, number>;
   baseline: Record<string, number>;
@@ -799,6 +850,50 @@ export const apiClient = {
 
   brainNarrative(): Promise<{ narrative: NarrativeView | null }> {
     return json(`/api/brain/narrative`);
+  },
+
+  // ── Person-on-the-computer surfaces (Slice 4+5) ────────────────────────────
+  // The "since last time" briefing — full or spoken (greeting + 3-5 sentence
+  // prose ready for TTS).
+  continuity(format: "full" | "spoken" = "full"): Promise<ContinuityView> {
+    return json<ContinuityView>(`/api/continuity?format=${format}`);
+  },
+
+  // Daemon registry — long-running watch / schedule / event triggers.
+  daemonList(): Promise<DaemonListView> {
+    return json<DaemonListView>(`/api/daemon`);
+  },
+
+  daemonCreate(req: DaemonCreateRequest): Promise<{ ok: boolean; daemon?: DaemonView; error?: string }> {
+    return json(`/api/daemon/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+  },
+
+  daemonDelete(id: string): Promise<{ ok: boolean; error?: string }> {
+    return json(`/api/daemon/delete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+  },
+
+  daemonPause(id: string): Promise<{ ok: boolean; error?: string }> {
+    return json(`/api/daemon/pause`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+  },
+
+  daemonResume(id: string): Promise<{ ok: boolean; error?: string }> {
+    return json(`/api/daemon/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
   },
 
   // Self-Consciousness engine: the brain's model of itself — self-model,

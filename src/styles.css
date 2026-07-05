@@ -8233,3 +8233,12 @@ h1, h2, h3 {
 /* The embedded SystemStatusPanel renders a flow-layout .brain-os-section — no
    position overrides needed; this hook exists for spacing only. */
 .mind-system { padding-top: 2px; }
+.mind-person { display: flex; flex-direction: column; gap: 12px; }
+.mind-person-block { display: flex; flex-direction: column; gap: 4px; }
+.mind-person-head { display: flex; align-items: baseline; gap: 8px; }
+.mind-person-meta { color: #8b98ab; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.mind-person-briefing { margin: 0; color: #d9def0; font-size: 12px; line-height: 1.45; }
+.mind-person-note { margin: 0; color: #8b98ab; font-size: 11px; }
+.mind-daemon-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 4px; background: rgba(255,255,255,0.03); }
+.mind-daemon-title { flex: 1; font-size: 12px; }
+.mind-daemon-tally { color: #8b98ab; font-size: 10px; font-variant-numeric: tabular-nums; }
