@@ -9,8 +9,6 @@ import { createBrainShell, setBrainShellOpacity } from "./BrainShell";
 import { NeuralGraphRenderer } from "./NeuralGraph";
 import { NeuronField } from "./NeuronField";
 import { SpineColumn } from "./SpineColumn";
-import type { AiPickEvent } from "./AiPickOverlay";
-import { ACTION_BY_ID } from "../engine/brainRegions";
 import { createAmbientBus, type AmbientBus } from "../engine/audioBus";
 import { generateNeuralGraph } from "../engine/neuralGraphGenerator";
 import { SignalSimulation } from "../engine/signalSimulation";
@@ -106,7 +104,6 @@ interface BrainSceneProps {
   regionVisibility: RegionVisibility;
   selectedRegionId: BrainRegionId | null;
   cameraPreset: CameraPresetRequest;
-  aiPick: AiPickEvent | null;
   audioEnabled: boolean;
   perfPreset: PerfPreset;
   showEmergentControls?: boolean;
@@ -238,7 +235,6 @@ export function BrainScene({
   regionVisibility,
   selectedRegionId,
   cameraPreset,
-  aiPick,
   audioEnabled,
   perfPreset,
   showEmergentControls,
@@ -317,20 +313,6 @@ export function BrainScene({
   useEffect(() => {
     simulationRef.current?.setSpeed(signalSpeed);
   }, [signalSpeed]);
-
-  // When the AI picks an action, stamp a transient "flash" onto the regions in
-  // that action's network. The sequence field bumps on every pick so we re-flash
-  // even if the same action is picked twice in a row.
-  useEffect(() => {
-    if (!aiPick) {
-      return;
-    }
-    const action = ACTION_BY_ID[aiPick.action];
-    if (!action) {
-      return;
-    }
-    simulationRef.current?.flashRegions(action.activeRegions);
-  }, [aiPick]);
 
   // Server pipeline events flash logical cortices on the brain. Status === "start"
   // is the leading edge so flashes happen at the same moment the UI shows a step

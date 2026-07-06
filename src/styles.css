@@ -764,47 +764,6 @@ input[type="checkbox"] {
   50%      { transform: scale(1.1); opacity: 1; }
 }
 
-.ai-pick-overlay {
-  position: absolute;
-  top: 18px;
-  left: 50%;
-  z-index: 6;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border: 1px solid rgba(var(--accent-rgb), 0.45);
-  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.15), rgba(var(--green-rgb), 0.06));
-  color: var(--text);
-  box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.18), var(--elev-panel);
-  backdrop-filter: blur(12px);
-  font-size: var(--fs-sm);
-  letter-spacing: 0.02em;
-  opacity: 0;
-  transform: translate(-50%, -10px);
-  pointer-events: none;
-  transition: opacity var(--dur) var(--ease-out-quart), transform var(--dur) var(--ease-out-quart);
-  border-radius: var(--r-pill);
-}
-
-.ai-pick-overlay.visible {
-  opacity: 1;
-  transform: translate(-50%, 0);
-}
-
-.ai-pick-action {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.ai-pick-why {
-  color: var(--muted);
-  max-width: 460px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .ai-panel {
   position: absolute;
   bottom: 18px;
@@ -1666,7 +1625,7 @@ input[type="checkbox"] {
   transition: width 0.4s ease;
 }
 
-/* Pipeline overlay: top-center under AiPickOverlay. Compact, only visible during a run. */
+/* Pipeline overlay: top-center. Compact, only visible during a run. */
 .pipeline-overlay {
   position: absolute;
   top: 64px;

@@ -21,8 +21,8 @@ import { broadcast } from "../ws/brainBus.js";
 import { caption, parseFrame, probeWorker, transcribe } from "./workerClient.js";
 import { getVisionConfig } from "../vision/capture.js";
 import { ingestPerceptionMemory } from "../vision/perceptionMemory.js";
-import { getDefaultConnectorInstance, listConnectorInstances } from "../connectors/registry.js";
-import type { Connector } from "../connectors/Connector.js";
+import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import { getEmbedder } from "../reasoning/pipelineHelpers.js";
 import { CONFIG } from "../config.js";
 import type {
   CaptionRequest,
@@ -38,23 +38,6 @@ const PERCEPTION_BODY_LIMIT = "20mb";
 /** OCR excerpt cap kept on the retrievable content so one busy frame can't
  *  balloon the memory body. */
 const FRAME_CONTENT_MAX = 500;
-
-// Same embedder resolution as the pipeline / summaryAgent: prefer the default
-// connector, else any healthy local Ollama that can embed. Frame ingestion
-// degrades to a string-only (no-vector) store when none can embed.
-function getEmbedder(): Connector | null {
-  const active = getDefaultConnectorInstance();
-  if (active?.embed) return active;
-  return (
-    listConnectorInstances().find(
-      (c) =>
-        c.descriptor.kind === "ollama" &&
-        c.descriptor.enabled &&
-        c.descriptor.state === "ok" &&
-        Boolean(c.embed),
-    ) ?? null
-  );
-}
 
 // Build the retrievable text from the strongest element caption(s) + an OCR
 // excerpt, prefixed with the window title when present. Capped at
@@ -157,7 +140,7 @@ perceptionRouter.post("/perceive/frame", async (req, res) => {
   // degrades to a string-only store (still retrievable by keyword) rather than
   // failing the request.
   let embedding: number[] | undefined;
-  const embedder = getEmbedder();
+  const embedder = getEmbedder(getDefaultConnectorInstance());
   if (embedder?.embed && content.length > 0) {
     try {
       const vec = await embedder.embed(content);

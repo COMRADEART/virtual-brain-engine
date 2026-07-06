@@ -100,7 +100,6 @@ export function DashboardLayout({
             signalSpeed={1.3}
             neuronDensity={preset.density}
             cameraPreset={cameraPreset}
-            aiPick={null}
             audioEnabled={false}
             onMetricsChange={onMetricsChange}
           />

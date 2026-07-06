@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Settings2 } from "lucide-react";
-import { AiPickOverlay, type AiPickEvent } from "./components/AiPickOverlay";
 import { BrainScene, type AnatomyLoadProgress, type BrainSceneApi } from "./components/BrainScene";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ToastHost } from "./components/ToastHost";
@@ -162,7 +161,6 @@ const [showEmergentControls, setShowEmergentControls] = useLocalStorage<boolean>
     mode: "overview",
     sequence: 0,
   });
-const [aiPick] = useState<AiPickEvent | null>(null);
 const [anatomyProgress, setAnatomyProgress] = useState<AnatomyLoadProgress>({
   loaded: 0,
   total: 0,
@@ -387,7 +385,6 @@ useEffect(() => {
           perfPreset={preset}
           perfMode={perfMode}
           effectiveTier={effectivePresetId}
-          aiPick={aiPick}
           onAnatomyLoadProgress={setAnatomyProgress}
           onMetricsChange={setMetrics}
           cameraPreset={cameraPreset}
@@ -413,7 +410,6 @@ useEffect(() => {
           selectedRegionId={selectedRegionId}
           shellOpacity={shellOpacity}
           perfPreset={preset}
-          aiPick={aiPick}
           onAnatomyLoadProgress={setAnatomyProgress}
           onMetricsChange={setMetrics}
           cameraPreset={cameraPreset}
@@ -426,7 +422,6 @@ useEffect(() => {
       {layout === "full" && (
         <>
       <BrainScene
-        aiPick={aiPick}
         anatomyOpacity={anatomyOpacity}
         anatomyVisible={anatomyVisible}
         audioEnabled={false}
@@ -488,7 +483,6 @@ useEffect(() => {
             selectedActionId={selectedActionId}
             selectedRegionId={selectedRegionId}
           />
-          <AiPickOverlay pick={aiPick} />
           <PipelineOverlay />
           <LogicalRegionIndicator />
           <DigitalTwinPanel

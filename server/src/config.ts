@@ -651,7 +651,14 @@ export const CONFIG: ServerConfig = {
   fastSalvageScoreFloor: Math.min(1, Math.max(0, num("FAST_SALVAGE_SCORE_FLOOR", 0.25))),
   parallelReasoning: bool("PARALLEL_REASONING", false),
   parallelReasoningDrafts: Math.min(3, Math.max(2, num("PARALLEL_REASONING_DRAFTS", 2))),
-  combinedReasoningError: bool("COMBINED_REASONING_ERROR", false),
+  // ponytail: default ON — the combined reasoning+error pass is a strict
+  // no-worse-latency path (it falls back to the separate error call when the
+  // model omits the error fields, so it never ADDS a round-trip; it only SAVES
+  // one when the model cooperates). The one quality consideration is that the
+  // merged prompt asks the model to do two things at once — small models may
+  // produce a thinner plan. Runtime-verified by ask:smoke; revert to false if a
+  // model's combined-plan quality regresses.
+  combinedReasoningError: bool("COMBINED_REASONING_ERROR", true),
   adaptiveDepth: bool("ADAPTIVE_DEPTH", false),
   adaptiveDepthWarmAt: Math.max(1, num("ADAPTIVE_DEPTH_WARM_AT", 20)),
   selfNarrative: bool("SELF_NARRATIVE", true),

@@ -172,9 +172,10 @@ export async function chatJson<T>(
 // GPT4All HTTP, or an OpenAI-compatible runtime configured without an
 // embeddingModel), try any local Ollama instance the registry knows about.
 // If neither path works, return null and the memory step will skip retrieval
-// rather than fail the run.
-export function getEmbedder(active: Connector): Connector | null {
-  if (active.embed) {
+// rather than fail the run. `active` may be null (no default connector) — the
+// embed check is skipped and the Ollama fallback is searched directly.
+export function getEmbedder(active: Connector | null): Connector | null {
+  if (active?.embed) {
     return active;
   }
   const ollama = listConnectorInstances().find(

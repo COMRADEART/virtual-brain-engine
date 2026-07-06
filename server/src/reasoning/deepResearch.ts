@@ -376,6 +376,32 @@ async function synthesizeReport(
 // Run a full deep-research investigation. Streams DeepResearchEvent frames via
 // `emit` and returns the final report. Never throws — a partial report is the
 // worst case.
+// Order-preserving bounded-concurrency map. ponytail: gather+synthesize are
+// LLM/web-bound; running them breadth-wide in parallel cuts per-round wall-
+// clock to ~ceil(breadth/concurrency) sequential batches. Bounded (not full
+// Promise.all) so a small or rate-limited Ollama doesn't 429 the way N
+// concurrent generations would — 2 keeps the local LLM to 2 in-flight
+// synthesize calls. Upgrade path: raise RESEARCH_CONCURRENCY on a multi-GPU
+// box or wire it to a CONFIG knob when the backend is remote (NVIDIA NIM etc).
+const RESEARCH_CONCURRENCY = 2;
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return out;
+}
+
 export async function runDeepResearch(
   question: string,
   deps: DeepResearchDeps,
@@ -404,8 +430,12 @@ export async function runDeepResearch(
     if (subQs.length === 0) subQs = [q];
     emit({ type: "plan", round, subQuestions: subQs, timestamp: now() });
 
-    // GATHER + SYNTHESIZE per sub-question
-    for (const subQ of subQs) {
+    // GATHER + SYNTHESIZE per sub-question, bounded-concurrency. REFLECT stays
+    // serial (it consumes the full findings array). sourceById dedup is safe
+    // under concurrent writers — JS is single-threaded and Map ops happen
+    // between awaits. findOrder is preserved (mapWithConcurrency is order-keeping)
+    // so reflect + report see a deterministic finding order.
+    const roundFindings = await mapWithConcurrency(subQs, RESEARCH_CONCURRENCY, async (subQ) => {
       let g: GatherResult;
       try {
         g = await gather(subQ, round, deps, maxPages);
@@ -428,9 +458,10 @@ export async function runDeepResearch(
       });
 
       const finding = await synthesizeFinding(q, subQ, round, g.hits, deps);
-      findings.push(finding);
       emit({ type: "synthesize", round, finding, timestamp: now() });
-    }
+      return finding;
+    });
+    for (const f of roundFindings) findings.push(f);
 
     // REFLECT
     if (round < maxRounds) {

@@ -9,11 +9,8 @@
 
 import { createHash } from "node:crypto";
 import type { Agent, AgentContext } from "./Agent.js";
-import { Connector } from "../connectors/Connector.js";
-import {
-  getDefaultConnectorInstance,
-  listConnectorInstances,
-} from "../connectors/registry.js";
+import { getDefaultConnectorInstance } from "../connectors/registry.js";
+import { getEmbedder } from "../reasoning/pipelineHelpers.js";
 import { upsertMemoryPoint } from "../db/repositories/memory.js";
 import { CONFIG } from "../config.js";
 
@@ -23,22 +20,6 @@ const SUMMARY_MAX_TOKENS = 200;
 
 function sha1(content: string): string {
   return createHash("sha1").update(content).digest("hex");
-}
-
-// Mirrors getActiveEmbedder() in memory/consolidationEngine.ts: prefer the
-// default connector, else any healthy local Ollama that can embed.
-function getEmbedder(): Connector | null {
-  const active = getDefaultConnectorInstance();
-  if (active?.embed) return active;
-  return (
-    listConnectorInstances().find(
-      (c) =>
-        c.descriptor.kind === "ollama" &&
-        c.descriptor.enabled &&
-        c.descriptor.state === "ok" &&
-        Boolean(c.embed),
-    ) ?? null
-  );
 }
 
 export class SummaryAgent implements Agent {
@@ -82,7 +63,7 @@ export class SummaryAgent implements Agent {
     }
 
     const projects = [...this.pending.entries()].slice(0, MAX_PROJECTS_PER_CYCLE);
-    const embedder = getEmbedder();
+    const embedder = getEmbedder(getDefaultConnectorInstance());
 
     for (const [project, fileSet] of projects) {
       this.pending.delete(project);

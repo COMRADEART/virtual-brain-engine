@@ -5,12 +5,10 @@ import {
 } from "lucide-react";
 import type { BrainMetrics, BrainRegionId, RegionVisibility, BrainActionId, CameraPresetRequest } from "../../engine/types";
 import type { PerfPreset, PerfMode } from "../../engine/performancePresets";
-import type { AiPickEvent } from "../AiPickOverlay";
 import type { AnatomyLoadProgress } from "../BrainScene";
 import { UnifiedPanel } from "../UnifiedPanel";
 import { PipelineOverlay } from "../PipelineOverlay";
 import { LogicalRegionIndicator } from "../LogicalRegionIndicator";
-import { AiPickOverlay } from "../AiPickOverlay";
 import { BrainScene } from "../BrainScene";
 import type { LayoutMode } from "../../engine/useLayoutMode";
 
@@ -40,7 +38,6 @@ interface CompactLayoutProps {
   perfPreset: PerfPreset;
   perfMode: PerfMode;
   effectiveTier: "light" | "balanced" | "cinematic";
-  aiPick: AiPickEvent | null;
   onAnatomyLoadProgress: (p: AnatomyLoadProgress) => void;
   onMetricsChange: (m: BrainMetrics) => void;
   cameraPreset: CameraPresetRequest;
@@ -66,7 +63,7 @@ export function CompactLayout({
   running, selectedActionId, signalSpeed, neuronDensity,
   anatomyVisible, anatomyOpacity, audioEnabled, regionVisibility, selectedRegionId,
   onActionChange, onRegionSelect, onRegionVisibilityChange,
-  shellOpacity, perfPreset, perfMode, effectiveTier, aiPick,
+  shellOpacity, perfPreset, perfMode, effectiveTier,
   onAnatomyLoadProgress, onMetricsChange, cameraPreset, metrics,
   currentLayout, onCycleLayout, onCyclePreset,
   modelName = "Local Ollama",
@@ -179,7 +176,6 @@ export function CompactLayout({
         {/* Brain Viewer */}
         <div className="compact-brain-viewer">
           <BrainScene
-            aiPick={aiPick}
             anatomyOpacity={anatomyOpacity}
             anatomyVisible={anatomyVisible}
             audioEnabled={audioEnabled}
@@ -217,7 +213,6 @@ export function CompactLayout({
       </footer>
 
       {/* Overlays */}
-      <AiPickOverlay pick={aiPick} />
       <PipelineOverlay />
       <LogicalRegionIndicator />
     </div>

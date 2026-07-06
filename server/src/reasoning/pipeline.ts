@@ -644,9 +644,12 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
     }),
     emit,
   );
-  if (memoryHits.length > 0) {
-    applyMemoryRetrievalBoost(memoryHits.map((h) => h.memory.id));
-  }
+  // ponytail: applyMemoryRetrievalBoost deferred to the learning step — it only
+  // writes importance/strength for FUTURE ranking (recordAccess + spreading
+  // activation), so it cannot affect THIS response (memoryHits already in hand).
+  // Running it inline here blocked the memory-step complete on a per-hit DB
+  // storm (recordAccess + getRelatedMemories + strengthenPathway × N) before
+  // the first streamed token. Relocated below next to onConversationMessage.
   stepTimings.memory_ms = Date.now() - stepStart;
 
   // Per-cortex model routing (MoE). The controller's chosen profile when on, else
@@ -1446,6 +1449,16 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   }).catch((err) => {
     console.warn("[pipeline] background consolidation failed:", err);
   });
+  // Retrieval boost (deferred from the memory step — see comment there). Runs
+  // after the answer has streamed; isolated so a DB error here can never fail
+  // the request the way the inline call could have.
+  if (memoryHits.length > 0) {
+    try {
+      applyMemoryRetrievalBoost(memoryHits.map((h) => h.memory.id));
+    } catch (err) {
+      surfaceError("pipeline.applyMemoryRetrievalBoost", err);
+    }
+  }
   try {
     broadcast({ type: "memory-count", count: getMemoryCount() });
   } catch (err) {

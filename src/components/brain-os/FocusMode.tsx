@@ -1,6 +1,5 @@
 import type { BrainMetrics, BrainRegionId, RegionVisibility, BrainActionId, CameraPresetRequest } from "../../engine/types";
 import type { PerfPreset } from "../../engine/performancePresets";
-import type { AiPickEvent } from "../AiPickOverlay";
 import type { AnatomyLoadProgress } from "../BrainScene";
 import { UnifiedPanel } from "../UnifiedPanel";
 import { BrainScene } from "../BrainScene";
@@ -19,7 +18,6 @@ interface FocusModeProps {
   selectedRegionId: BrainRegionId | null;
   shellOpacity: number;
   perfPreset: PerfPreset;
-  aiPick: AiPickEvent | null;
   onAnatomyLoadProgress: (p: AnatomyLoadProgress) => void;
   onMetricsChange: (m: BrainMetrics) => void;
   cameraPreset: CameraPresetRequest;
@@ -31,7 +29,7 @@ interface FocusModeProps {
 export function FocusMode({
   running, selectedActionId, signalSpeed, neuronDensity,
   anatomyVisible, anatomyOpacity, audioEnabled, regionVisibility, selectedRegionId,
-  shellOpacity, perfPreset, aiPick, onAnatomyLoadProgress, onMetricsChange,
+  shellOpacity, perfPreset, onAnatomyLoadProgress, onMetricsChange,
   cameraPreset, onRegionSelect, onExitFocus, metrics,
 }: FocusModeProps) {
   return (
@@ -63,7 +61,6 @@ export function FocusMode({
       {/* Brain preview - bottom right corner */}
       <div className="focus-brain-preview" title="Brain activity preview">
         <BrainScene
-          aiPick={aiPick}
           anatomyOpacity={anatomyOpacity}
           anatomyVisible={anatomyVisible}
           audioEnabled={audioEnabled}

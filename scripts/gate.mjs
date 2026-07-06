@@ -132,6 +132,7 @@ if (process.env.GATE_ASK_SMOKE === "1") {
   steps.push({ label: "websearch smoke (egress gate + live search)", args: ["run", "websearch:smoke"] });
   steps.push({ label: "github smoke (egress gate + live discovery)", args: ["run", "github:smoke"] });
   steps.push({ label: "person smoke (live watch daemon + executeAction round-trip)", args: ["run", "person:smoke"] });
+  steps.push({ label: "deepresearch smoke (live /api/research/deep)", args: ["run", "deepresearch:smoke"] });
 }
 
 if (!existsSync(resolve(repoRoot, "package.json"))) {
