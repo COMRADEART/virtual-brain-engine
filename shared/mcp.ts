@@ -35,6 +35,8 @@ export interface McpServerConfig {
   url?: string;
   /** http/sse: extra request headers (auth tokens — sourced from env, NEVER persisted). */
   headers?: Record<string, string>;
+  /** stdio: extra environment variables forwarded to the spawned server. */
+  env?: Record<string, string | undefined>;
   /** Whether to connect this server on hub start. Presets ship disabled. */
   enabled?: boolean;
   /**

@@ -1320,152 +1320,164 @@ export async function runPipeline(req: AskRequest, emit: EmitFn): Promise<void> 
   } catch (err) {
     surfaceError("pipeline.selfConsciousness", err);
   }
-  try {
-    // Embed the learned Q+A best-effort so it (a) becomes visible to vector
-    // search and (b) can later use the cosine novelty/cluster path. embedder is
-    // declared at function scope (~line 272).
-    let learnedEmbedding: number[] | undefined;
-    if (embedder?.embed) {
-      try {
-        learnedEmbedding = await embedder.embed(`Q: ${req.prompt}\nA: ${finalAnswer}`);
-      } catch {
-        // best-effort; store without a vector (falls back to string similarity)
-      }
-    }
-    // Drop a wrong-dim vector rather than let upsertMemoryPoint's hard dim-check
-    // throw — that throw would escape to the outer catch and silently DROP the
-    // whole learned memory (no insert, no processNewMemory, no citation graph).
-    // Happens if the embed model is swapped or EMBEDDING_DIM is misconfigured.
-    if (learnedEmbedding && learnedEmbedding.length !== CONFIG.embeddingDim) {
-      learnedEmbedding = undefined;
-    }
-    const learned = upsertMemoryPoint({
-      sourceType: "conversation",
-      filePath: null,
-      projectName: projectName ?? "(conversation)",
-      title: req.prompt.slice(0, 80),
-      content: `Q: ${req.prompt}\nA: ${finalAnswer}`,
-      contentHash: sha1(`${req.prompt}|${finalAnswer}`),
-      importance: errorReport.confidence,
-      embedding: learnedEmbedding,
-      // MEMORY DNA — stamp the learned memory with affect + trust + verification
-      // (under metadata.dna). Always written (cheap metadata); the retrieval
-      // demotion that reads it is separately gated by CONFIG.memoryDna.
-      metadata: mergeDna(
-        { conversationId: cid, runId },
-        deriveDna({
-          source: "conversation",
-          confidence: calibratedConfidence,
-          citedCount: citedIds.size,
-          emotion: citedIds.size > 0 ? Math.min(1, 0.5 + 0.2 * calibratedConfidence) : 0.45,
-        }),
-      ),
-    });
-    const memoryContext = processNewMemory(
-      learned.content,
-      projectName ?? null,
-      learned.id,
-    );
-    if (memoryContext.noveltyCategory === "novel") {
-      updateMemoryImportance(learned.id, learned.importance + memoryContext.importanceBoost);
-    }
-    // "cites" now means cited, not retrieved — the relation graph stops lying.
-    const scoreById = new Map(
-      memoryHits.map((h) => [h.memory.id, h.score] as const),
-    );
-    for (const citedId of citedIds) {
-      try {
-        insertRelation(learned.id, citedId, "cites", scoreById.get(citedId) ?? 0.5);
-      } catch {
-        // ignore relation failures
-      }
-    }
-  } catch (err) {
-    // Learning is best-effort; surface but don't fail the run.
-    console.warn("[pipeline] learning persistence failed:", err);
-  }
-  // Persist the training snapshot (feature vectors + cited ids) keyed by runId
-  // so a later explicit 👍/👎 (POST /api/feedback) can retrain against the same
-  // features that produced this ranking. Best-effort — never break the run.
-  // Training signal uses faithfulCitedIds — citations the faithfulness check did
-  // NOT flag as unsupported (identical to citedIds when the flag is off / nothing
-  // flagged), so the ranker/reranker stop rewarding mere citation PRESENCE.
-  try {
-    recordRankTrainingLog(runId, rankFeatures, faithfulCitedIds);
-  } catch (err) {
-    console.warn("[pipeline] rank-training-log persist failed:", err);
-  }
-  // Online ranker update from this query's implicit feedback. Independent of
-  // persistence success; no-op when there were no citations.
-  trainFromCitations(rankFeatures, faithfulCitedIds);
-  // HEBBIAN — memories cited TOGETHER in this answer wire together
-  // ("associates" edges; faithfulness-filtered so unfaithful citations don't
-  // reinforce associations). Internally bounded + failure-isolated.
-  recordCoCitations([...faithfulCitedIds]);
-  // Online lexical-reranker update on the SAME dense citation signal (cited=1 /
-  // shown-but-not-cited=0). Best-effort; no-op when there were no citations.
-  if (CONFIG.rerankerEnabled) {
+  // Post-response bookkeeping runs fire-and-forget: it does not affect the
+  // streamed answer, so the SSE connection can close before embedding,
+  // training, and modulator updates finish. The conversation message is
+  // persisted above and the final answer is emitted below before this work
+  // starts. ponytail: a crash in this window loses recoverable bookkeeping
+  // (embedding, citation graph, ranker training); the conversation remains.
+  const runPostResponseBookkeeping = async (): Promise<void> => {
     try {
-      saveRerankerState(trainReranker(req.prompt, memoryHits, faithfulCitedIds, loadRerankerState()));
-    } catch (err) {
-      surfaceError("pipeline.trainReranker", err);
-    }
-  }
-  // RL controller reward — the DENSE citation signal (NOT scarce 👍/👎). Coverage
-  // is the fraction of the hits the LLM actually read that earned a citation;
-  // webCitationUsed sharpens the augment slot. Only when the controller decided
-  // this run (so it's a strict no-op when ADAPTIVE_CONTROLLER is off).
-  if (CONFIG.adaptiveController && controllerDecision && controllerCtx) {
-    applyControllerReward(
-      controllerDecision,
-      controllerCtx,
-      computeControllerOutcome(citedIds, promptHits.length, webHitIds),
-    );
-  }
-  // FABLE F3 — record this cycle's depth outcome so the adaptive-compute gate
-  // learns what's actually easy (warm-start floor keeps it a no-op until it has
-  // data). route.depth reflects any F1 escalation. Failure-isolated; strict
-  // no-op when ADAPTIVE_DEPTH is off.
-  if (CONFIG.adaptiveDepth) {
-    try {
-      saveAdaptiveDepthState(
-        observeDepthOutcome(loadAdaptiveDepthState(), {
-          depth: route.depth,
-          citedCount: citedIds.size,
-        }),
+      // Embed the learned Q+A best-effort so it (a) becomes visible to vector
+      // search and (b) can later use the cosine novelty/cluster path. embedder is
+      // declared at function scope (~line 272).
+      let learnedEmbedding: number[] | undefined;
+      if (embedder?.embed) {
+        try {
+          learnedEmbedding = await embedder.embed(`Q: ${req.prompt}\nA: ${finalAnswer}`);
+        } catch {
+          // best-effort; store without a vector (falls back to string similarity)
+        }
+      }
+      // Drop a wrong-dim vector rather than let upsertMemoryPoint's hard dim-check
+      // throw — that throw would escape to the outer catch and silently DROP the
+      // whole learned memory (no insert, no processNewMemory, no citation graph).
+      // Happens if the embed model is swapped or EMBEDDING_DIM is misconfigured.
+      if (learnedEmbedding && learnedEmbedding.length !== CONFIG.embeddingDim) {
+        learnedEmbedding = undefined;
+      }
+      const learned = upsertMemoryPoint({
+        sourceType: "conversation",
+        filePath: null,
+        projectName: projectName ?? "(conversation)",
+        title: req.prompt.slice(0, 80),
+        content: `Q: ${req.prompt}\nA: ${finalAnswer}`,
+        contentHash: sha1(`${req.prompt}|${finalAnswer}`),
+        importance: errorReport.confidence,
+        embedding: learnedEmbedding,
+        // MEMORY DNA — stamp the learned memory with affect + trust + verification
+        // (under metadata.dna). Always written (cheap metadata); the retrieval
+        // demotion that reads it is separately gated by CONFIG.memoryDna.
+        metadata: mergeDna(
+          { conversationId: cid, runId },
+          deriveDna({
+            source: "conversation",
+            confidence: calibratedConfidence,
+            citedCount: citedIds.size,
+            emotion: citedIds.size > 0 ? Math.min(1, 0.5 + 0.2 * calibratedConfidence) : 0.45,
+          }),
+        ),
+      });
+      const memoryContext = processNewMemory(
+        learned.content,
+        projectName ?? null,
+        learned.id,
       );
+      if (memoryContext.noveltyCategory === "novel") {
+        updateMemoryImportance(learned.id, learned.importance + memoryContext.importanceBoost);
+      }
+      // "cites" now means cited, not retrieved — the relation graph stops lying.
+      const scoreById = new Map(
+        memoryHits.map((h) => [h.memory.id, h.score] as const),
+      );
+      for (const citedId of citedIds) {
+        try {
+          insertRelation(learned.id, citedId, "cites", scoreById.get(citedId) ?? 0.5);
+        } catch {
+          // ignore relation failures
+        }
+      }
     } catch (err) {
-      surfaceError("pipeline.adaptiveDepthObserve", err);
+      // Learning is best-effort; surface but don't fail the run.
+      console.warn("[pipeline] learning persistence failed:", err);
     }
-  }
-  completePipelineRun(runId, finalAnswer);
-  // Background consolidation (replay, novelty, prefetch). Best-effort and runs
-  // after the answer has streamed, so float it with a .catch() — an error here
-  // must never reject into the request handler or crash the process.
-  void onConversationMessage({
-    lastMemories: Array.from(citedIds),
-    projectName: projectName ?? null,
-    query: req.prompt,
-  }).catch((err) => {
-    console.warn("[pipeline] background consolidation failed:", err);
-  });
-  // Retrieval boost (deferred from the memory step — see comment there). Runs
-  // after the answer has streamed; isolated so a DB error here can never fail
-  // the request the way the inline call could have.
-  if (memoryHits.length > 0) {
+    // Persist the training snapshot (feature vectors + cited ids) keyed by runId
+    // so a later explicit 👍/👎 (POST /api/feedback) can retrain against the same
+    // features that produced this ranking. Best-effort — never break the run.
+    // Training signal uses faithfulCitedIds — citations the faithfulness check did
+    // NOT flag as unsupported (identical to citedIds when the flag is off / nothing
+    // flagged), so the ranker/reranker stop rewarding mere citation PRESENCE.
     try {
-      applyMemoryRetrievalBoost(memoryHits.map((h) => h.memory.id));
+      recordRankTrainingLog(runId, rankFeatures, faithfulCitedIds);
     } catch (err) {
-      surfaceError("pipeline.applyMemoryRetrievalBoost", err);
+      console.warn("[pipeline] rank-training-log persist failed:", err);
     }
-  }
-  try {
-    broadcast({ type: "memory-count", count: getMemoryCount() });
-  } catch (err) {
-    // Best-effort broadcast — but a failing getMemoryCount() is the first sign
-    // the SQLite handle is in a bad state, so don't swallow it entirely.
-    console.warn("[pipeline] memory-count broadcast failed:", err);
-  }
+    // Online ranker update from this query's implicit feedback. Independent of
+    // persistence success; no-op when there were no citations.
+    trainFromCitations(rankFeatures, faithfulCitedIds);
+    // HEBBIAN — memories cited TOGETHER in this answer wire together
+    // ("associates" edges; faithfulness-filtered so unfaithful citations don't
+    // reinforce associations). Internally bounded + failure-isolated.
+    recordCoCitations([...faithfulCitedIds]);
+    // Online lexical-reranker update on the SAME dense citation signal (cited=1 /
+    // shown-but-not-cited=0). Best-effort; no-op when there were no citations.
+    if (CONFIG.rerankerEnabled) {
+      try {
+        saveRerankerState(trainReranker(req.prompt, memoryHits, faithfulCitedIds, loadRerankerState()));
+      } catch (err) {
+        surfaceError("pipeline.trainReranker", err);
+      }
+    }
+    // RL controller reward — the DENSE citation signal (NOT scarce 👍/👎). Coverage
+    // is the fraction of the hits the LLM actually read that earned a citation;
+    // webCitationUsed sharpens the augment slot. Only when the controller decided
+    // this run (so it's a strict no-op when ADAPTIVE_CONTROLLER is off).
+    if (CONFIG.adaptiveController && controllerDecision && controllerCtx) {
+      applyControllerReward(
+        controllerDecision,
+        controllerCtx,
+        computeControllerOutcome(citedIds, promptHits.length, webHitIds),
+      );
+    }
+    // FABLE F3 — record this cycle's depth outcome so the adaptive-compute gate
+    // learns what's actually easy (warm-start floor keeps it a no-op until it has
+    // data). route.depth reflects any F1 escalation. Failure-isolated; strict
+    // no-op when ADAPTIVE_DEPTH is off.
+    if (CONFIG.adaptiveDepth) {
+      try {
+        saveAdaptiveDepthState(
+          observeDepthOutcome(loadAdaptiveDepthState(), {
+            depth: route.depth,
+            citedCount: citedIds.size,
+          }),
+        );
+      } catch (err) {
+        surfaceError("pipeline.adaptiveDepthObserve", err);
+      }
+    }
+    completePipelineRun(runId, finalAnswer);
+    // Background consolidation (replay, novelty, prefetch). Best-effort and runs
+    // after the answer has streamed, so float it with a .catch() — an error here
+    // must never reject into the request handler or crash the process.
+    void onConversationMessage({
+      lastMemories: Array.from(citedIds),
+      projectName: projectName ?? null,
+      query: req.prompt,
+    }).catch((err) => {
+      console.warn("[pipeline] background consolidation failed:", err);
+    });
+    // Retrieval boost (deferred from the memory step — see comment there). Runs
+    // after the answer has streamed; isolated so a DB error here can never fail
+    // the request the way the inline call could have.
+    if (memoryHits.length > 0) {
+      try {
+        applyMemoryRetrievalBoost(memoryHits.map((h) => h.memory.id));
+      } catch (err) {
+        surfaceError("pipeline.applyMemoryRetrievalBoost", err);
+      }
+    }
+    try {
+      broadcast({ type: "memory-count", count: getMemoryCount() });
+    } catch (err) {
+      // Best-effort broadcast — but a failing getMemoryCount() is the first sign
+      // the SQLite handle is in a bad state, so don't swallow it entirely.
+      console.warn("[pipeline] memory-count broadcast failed:", err);
+    }
+  };
+  void runPostResponseBookkeeping().catch((err) =>
+    console.warn("[pipeline] post-response bookkeeping failed:", err),
+  );
+
   emitAll(
     makeEvent(cid, runId, "learning", "complete", {
       detail: "Stored conversation memory",

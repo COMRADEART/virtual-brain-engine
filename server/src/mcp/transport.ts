@@ -37,13 +37,60 @@ export interface McpTransport {
 export type FetchImpl = typeof fetch;
 
 interface JsonRpcResponse {
-  jsonrpc?: string;
-  id?: number | string | null;
+  jsonrpc: "2.0";
+  id: number | string | null;
   result?: unknown;
-  error?: { code?: number; message?: string };
+  error?: { code: number; message: string } | null;
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
+
+function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  if (v.jsonrpc !== undefined && v.jsonrpc !== "2.0") return false;
+  const idOk = v.id === undefined || typeof v.id === "number" || typeof v.id === "string" || v.id === null;
+  if (!idOk) return false;
+  const hasResult = "result" in v;
+  const hasError = "error" in v;
+  if (!hasResult && !hasError) return false;
+  if (hasError && v.error !== undefined && v.error !== null && (typeof v.error !== "object" || Array.isArray(v.error))) {
+    return false;
+  }
+  return true;
+}
+
+function validateJsonRpcResponse(value: unknown): JsonRpcResponse {
+  if (!isJsonRpcResponse(value)) {
+    throw new McpError("Malformed JSON-RPC response from MCP server");
+  }
+  return value;
+}
+
+// Minimal environment for stdio MCP servers. We do NOT pass the full parent
+// environment because that leaks every secret in .env / process.env to the
+// spawned server. Only platform essentials + any explicitly configured extras
+// are forwarded. ponytail: if a server needs an unusual env var, add it via
+// McpServerConfig.env; we intentionally do not blanket-inherit.
+function buildStdioEnv(config: McpServerConfig): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    "PATH", "PATHEXT",
+    "NODE_ENV", "NODE_PATH",
+    "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+    "TMPDIR", "TMP", "TEMP",
+    "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+    "TERM", "COLORTERM",
+  ]);
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && allowed.has(key)) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(config.env ?? {})) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
 
 // ── stdio ────────────────────────────────────────────────────────────────────
 function createStdioTransport(config: McpServerConfig): McpTransport {
@@ -65,11 +112,11 @@ function createStdioTransport(config: McpServerConfig): McpTransport {
     if (!trimmed) return;
     let msg: JsonRpcResponse;
     try {
-      msg = JSON.parse(trimmed) as JsonRpcResponse;
+      msg = validateJsonRpcResponse(JSON.parse(trimmed));
     } catch {
-      return; // ignore non-JSON (server log noise)
+      return; // ignore non-JSON or malformed lines (server log noise)
     }
-    if (typeof msg.id !== "number") return; // notification / unrelated
+    if (typeof msg.id !== "number") return; // notification / unrelated; client uses numeric ids
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
@@ -87,7 +134,7 @@ function createStdioTransport(config: McpServerConfig): McpTransport {
       child = spawn(config.command, config.args ?? [], {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
-        env: process.env,
+        env: buildStdioEnv(config),
       });
       child.on("error", (err) => fail(new McpError(`MCP server "${config.id}" spawn failed: ${err.message}`)));
       child.on("exit", (code) => fail(new McpError(`MCP server "${config.id}" exited (code ${code ?? "?"})`)));
@@ -180,10 +227,11 @@ function createHttpTransport(config: McpServerConfig, fetchImpl: FetchImpl): Mcp
         .map((l) => l.slice(5).trim());
       if (dataLines.length === 0) continue;
       try {
-        const msg = JSON.parse(dataLines.join("\n")) as JsonRpcResponse;
-        if (msg && (msg.result !== undefined || msg.error !== undefined)) last = msg;
+        const raw = JSON.parse(dataLines.join("\n"));
+        const msg = validateJsonRpcResponse(raw);
+        if (msg.result !== undefined || msg.error !== undefined) last = msg;
       } catch {
-        /* skip non-JSON event */
+        /* skip non-JSON / malformed event */
       }
     }
     return last;
@@ -224,8 +272,9 @@ function createHttpTransport(config: McpServerConfig, fetchImpl: FetchImpl): Mcp
     if (!expectReply) return null;
     const ct = res.headers.get("content-type") ?? "";
     const text = await res.text();
-    const msg = ct.includes("text/event-stream") ? parseSse(text) : (JSON.parse(text) as JsonRpcResponse);
-    return msg;
+    const raw = ct.includes("text/event-stream") ? parseSse(text) : JSON.parse(text);
+    if (raw === null) return null;
+    return validateJsonRpcResponse(raw);
   }
 
   return {
