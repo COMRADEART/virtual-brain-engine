@@ -52,6 +52,12 @@ export class NeuralGraphRenderer {
   // initialised to 1.0; written when visibility toggles or LOD recomputes.
   private aScaleArr: Float32Array | null = null;
   private aScaleAttr: THREE.InstancedBufferAttribute | null = null;
+  // Legacy-mode twin of aScale: the effective scale multiplier (visibility ×
+  // LOD) each instance matrix currently encodes. LOD is quantised to 4 levels,
+  // so with a still camera nothing crosses a threshold — the dirty check in
+  // updateNeuronMatricesLOD then skips every matrix write AND the full
+  // instanceMatrix re-upload, instead of rewriting N×16 floats per frame.
+  private lodScaleCache: Float32Array | null = null;
   // Reused constants/scratch for the per-frame update loops — hoisted out so the
   // hot paths (region/neuron color + LOD) don't allocate a Color/Vector3 per
   // element per frame (GC churn at 60 Hz with thousands of neurons).
@@ -73,6 +79,10 @@ export class NeuralGraphRenderer {
     this.graph = graph;
     this.performanceManager = performanceManager;
     this.colorMode = opts.colorMode ?? "legacy";
+    if (this.colorMode === "legacy") {
+      // Matrices are built at full scale (visible, no LOD) in createNeuronMesh.
+      this.lodScaleCache = new Float32Array(graph.nodes.length).fill(1);
+    }
     this.group.name = "NeuralGraph";
     this.baseRegionColors = graph.regionOrder.map((regionId) => new THREE.Color(REGION_BY_ID[regionId].color));
     this.signalRegionColors = this.baseRegionColors.map((color) => color.clone().lerp(new THREE.Color("#ffffff"), 0.36));
@@ -320,6 +330,9 @@ export class NeuralGraphRenderer {
       scale,
     );
     this.neuronMesh.setMatrixAt(index, this.matrix);
+    if (this.lodScaleCache) {
+      this.lodScaleCache[index] = visibilityScale * lodScale;
+    }
   }
 
   private updateRegionVolumes(
@@ -426,12 +439,17 @@ export class NeuralGraphRenderer {
 
   /**
    * Update neuron instance matrices for LOD scaling based on distance from camera.
-   * Called every frame if performanceManager is available.
+   * Called every frame if performanceManager is available. Positions are static,
+   * so only neurons whose effective scale (visibility × quantised LOD) changed
+   * since the last frame are rewritten — with a still camera this is a no-op
+   * and the instanceMatrix buffer is not re-uploaded at all.
    * @param visibility Current region visibility to combine with LOD
    */
   updateNeuronMatricesLOD(visibility: RegionVisibility): void {
     if (!this.performanceManager) return;
 
+    const cache = this.lodScaleCache;
+    let dirty = false;
     for (let index = 0; index < this.graph.nodes.length; index += 1) {
       const node = this.graph.nodes[index];
       const visible = visibility[node.regionId];
@@ -440,10 +458,17 @@ export class NeuralGraphRenderer {
           this.lodScratch.set(node.position[0], node.position[1], node.position[2])
         )
       );
+      const effective = visible ? lodScale : 0;
+      if (cache && cache[index] === effective) {
+        continue;
+      }
       this.writeNeuronMatrix(index, visible ? 1 : 0, lodScale);
+      dirty = true;
     }
 
-    this.neuronMesh.instanceMatrix.needsUpdate = true;
+    if (dirty) {
+      this.neuronMesh.instanceMatrix.needsUpdate = true;
+    }
   }
 
   private updatePathwayColors(pathwayIntensity: Float32Array, visibility: RegionVisibility): void {

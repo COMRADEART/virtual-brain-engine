@@ -863,13 +863,6 @@ const renderFrame = () => {
             serotonin: simulation.serotonin || 0.2,
             norepinephrine: simulation.norepinephrine || 0.1
           });
-          
-          // Highlight rich-club hubs (regions with high connectivity)
-          const hubRegionIds: BrainRegionId[] = [
-            "prefrontal-l", "prefrontal-r", "parietal-l", "parietal-r", 
-            "temporal-l", "temporal-r", "thalamus-l", "thalamus-r"
-          ];
-          visualEffects.highlightRichClubHubs(hubRegionIds, 0.8);
         }
       }
 
@@ -1093,6 +1086,16 @@ const adjustedDensity = performanceManager
 
       // Apply visual effects to the graph renderer
       applyVisualEffectsToGraph(graphRenderer, visualEffects);
+
+      // Mark rich-club hubs (regions with high connectivity) ONCE — the hub set
+      // is static, and updateRegionBreathing animates the gold pulse per frame.
+      visualEffects.highlightRichClubHubs(
+        [
+          "prefrontal-l", "prefrontal-r", "parietal-l", "parietal-r",
+          "temporal-l", "temporal-r", "thalamus-l", "thalamus-r",
+        ],
+        0.8,
+      );
 
       // For production, create a secondary composer for post-processing
       if (composerRef.current) {

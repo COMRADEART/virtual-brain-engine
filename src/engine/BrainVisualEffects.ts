@@ -21,6 +21,16 @@ const _v3a = new THREE.Vector3();
 const _v3b = new THREE.Vector3();
 const _color = new THREE.Color();
 
+// Bulk-copy src into dst (clamped to the shorter of the two) via the typed-array
+// fast path instead of an element loop — these run per frame over every neuron.
+function copyInto(dst: Float32Array, src: Float32Array): void {
+  if (src.length <= dst.length) {
+    dst.set(src);
+  } else {
+    dst.set(src.subarray(0, dst.length));
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GLSL: Neuron membrane-potential vertex shader
 // Reads per-instance attributes: membraneNorm, neuronType, burstStatus
@@ -79,6 +89,11 @@ export class BrainVisualEffects {
   private readonly regionMeshMap = new Map<BrainRegionId, THREE.Mesh>();
   private readonly regionMaterialMap = new Map<BrainRegionId, THREE.ShaderMaterial>();
   private readonly regionBreathePhase = new Float32Array(32);
+  // Rich-club hub state — set once via highlightRichClubHubs, consumed by
+  // updateRegionBreathing (the single per-frame writer of the breathing
+  // uniforms, so the two never fight over uRegionColor/uThetaGain).
+  private readonly richClubHubs = new Set<BrainRegionId>();
+  private richClubIntensity = 0;
 
   // scratch for trail geometry
   private trailPosBuffer!: Float32Array;
@@ -166,26 +181,16 @@ export class BrainVisualEffects {
   getPathwayMaterial(): THREE.ShaderMaterial { return this.pathwayMaterial; }
   
   // ── Rich-club hub highlighting ────────────────────────────────────────────
-  // Highlights highly connected hub regions for visualization
+  // Marks highly connected hub regions for a pulsing gold highlight. Call once
+  // (or on hub-set change), NOT per frame: this only records the hub set —
+  // updateRegionBreathing applies the highlight each frame with zero
+  // allocations. Pass an empty array to clear.
   highlightRichClubHubs(hubRegionIds: BrainRegionId[], intensity: number = 1.0): void {
-    // Check if we have region breathing volumes initialized
-    if (!this.regionBreatheGroup) return;
-    
+    this.richClubHubs.clear();
     for (const regionId of hubRegionIds) {
-      const mesh = this.regionMeshMap.get(regionId);
-      const mat = this.regionMaterialMap.get(regionId);
-      
-      if (mesh && mat) {
-        // Boost the intensity multiplier for rich-club hubs
-        mat.uniforms.uThetaGain.value = 1.2 + intensity * 0.6;
-        mat.uniforms.uGammaGain.value = 0.8 + intensity * 0.5;
-        
-        // Add a pulsing gold highlight
-        const goldIntensity = Math.sin(this.thetaPhase) * 0.3 + 0.7;
-        const goldColor = new THREE.Color(1.0, 0.75, 0.2);
-        mat.uniforms.uRegionColor.value = goldColor.multiplyScalar(intensity * goldIntensity * 0.5);
-      }
+      this.richClubHubs.add(regionId);
     }
+    this.richClubIntensity = intensity;
   }
   
   // ── Memory pathway highlighting ───────────────────────────────────────────
@@ -335,9 +340,7 @@ export class BrainVisualEffects {
     if (!membraneNorm) return;
     const attr = this.neuronAttrGeometry?.getAttribute("membraneNorm") as THREE.BufferAttribute | undefined;
     if (!attr) return;
-    const arr = attr.array as Float32Array;
-    const count = Math.min(arr.length, membraneNorm.length);
-    for (let i = 0; i < count; i++) arr[i] = membraneNorm[i];
+    copyInto(attr.array as Float32Array, membraneNorm);
     attr.needsUpdate = true;
   }
   
@@ -367,24 +370,16 @@ export class BrainVisualEffects {
     if (burstStatus) {
       const attr = this.neuronAttrGeometry?.getAttribute("burstStatus") as THREE.BufferAttribute | undefined;
       if (attr) {
-        const arr = attr.array as Float32Array;
-        const count = Math.min(arr.length, burstStatus.length);
-        for (let i = 0; i < count; i++) {
-          arr[i] = burstStatus[i];
-        }
+        copyInto(attr.array as Float32Array, burstStatus);
         attr.needsUpdate = true;
       }
     }
-    
+
     // Update memory trace
     if (memoryTrace) {
       const attr = this.neuronAttrGeometry?.getAttribute("memoryTrace") as THREE.BufferAttribute | undefined;
       if (attr) {
-        const arr = attr.array as Float32Array;
-        const count = Math.min(arr.length, memoryTrace.length);
-        for (let i = 0; i < count; i++) {
-          arr[i] = memoryTrace[i];
-        }
+        copyInto(attr.array as Float32Array, memoryTrace);
         attr.needsUpdate = true;
       }
     }
@@ -719,10 +714,22 @@ private updatePulseTrails(_elapsed: number): void {
       mat.uniforms.uTime.value = elapsed;
       mat.uniforms.uThetaPhase.value = localTheta + phaseOffset;
       mat.uniforms.uGammaPhase.value = localGamma + phaseOffset * 1.7;
-      mat.uniforms.uThetaGain.value = 0.6 + intensity * 0.8;
-      mat.uniforms.uGammaGain.value = 0.3 + intensity * 0.6;
+
+      if (this.richClubHubs.has(regionId)) {
+        // Rich-club hub: boosted gains + a theta-pulsed gold tint, written into
+        // the existing uniform Color (no per-frame allocation).
+        const hub = this.richClubIntensity;
+        const goldPulse = Math.sin(localTheta) * 0.3 + 0.7;
+        const k = hub * goldPulse * 0.5;
+        mat.uniforms.uThetaGain.value = 1.2 + hub * 0.6;
+        mat.uniforms.uGammaGain.value = 0.8 + hub * 0.5;
+        mat.uniforms.uRegionColor.value.setRGB(1.0 * k, 0.75 * k, 0.2 * k);
+      } else {
+        mat.uniforms.uThetaGain.value = 0.6 + intensity * 0.8;
+        mat.uniforms.uGammaGain.value = 0.3 + intensity * 0.6;
+        mat.uniforms.uRegionColor.value.set(REGION_BY_ID[regionId].color);
+      }
       mat.uniforms.uIntensity.value = intensity;
-      mat.uniforms.uRegionColor.value.set(REGION_BY_ID[regionId].color);
 
       mesh.visible = true;
     }
