@@ -104,7 +104,7 @@ check(
     !keys.includes("allow-shell"),
   `keys=[${keys.join(", ")}]`,
 );
-check("maturation map covers exactly the 8 dark cognitive features", keys.length === 8, `n=${keys.length}`);
+check("maturation map covers exactly the 9 dark cognitive features", keys.length === 9, `n=${keys.length}`);
 
 // =============================================================================
 // (E) maturationStatus shape + reasons

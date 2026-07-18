@@ -41,7 +41,10 @@ export type MaturationFeature =
   // on top of each feature's own cold=heuristic floor); a young brain is
   // provably unchanged.
   | "active-inference"
-  | "event-workspace";
+  | "event-workspace"
+  // H3: advisory foresight in the agent loop (imagination → decision). Its own
+  // cold floor is the causal ledger itself — no observed history, no advisory.
+  | "imaginative-planning";
 
 // The developmental stage at which each dark feature is EARNED. Chosen to match
 // the ladder's meaning: self-model maturity → ToM; autonomous growth → a self to
@@ -50,6 +53,9 @@ export type MaturationFeature =
 export const MATURATION_STAGE: Record<MaturationFeature, number> = {
   imagination: 4,
   creativity: 5,
+  // Foresight (look before you leap over one's OWN action history) is the
+  // self-model applied to decisions — it earns with self-model maturity.
+  "imaginative-planning": 6,
   "theory-of-mind": 6,
   // event-driven workspace (reactive consciousness) earns on with autonomous
   // growth; active inference (acting on its own predictions) needs metacognition.
@@ -70,6 +76,8 @@ const STATIC_FLAG: Record<MaturationFeature, () => boolean> = {
   "evolution-loop": () => CONFIG.enableEvolutionLoop,
   "active-inference": () => CONFIG.activeInference,
   "event-workspace": () => CONFIG.workspaceEventDriven,
+  // Not EXPENSIVE: foresight is one causal-ledger SELECT per tool call, no LLM.
+  "imaginative-planning": () => CONFIG.imaginativePlanning,
 };
 
 // LLM/compute-heavy features a depleted brain should REST (H1 composition).

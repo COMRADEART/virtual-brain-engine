@@ -153,6 +153,17 @@ export interface ServerConfig {
   // rides the same LOCAL_ONLY/hybrid egress gate (it can never reach the web on
   // its own). Pairs with PREDICTIVE_PROCESSING, whose prediction is its core input.
   activeInference: boolean;
+  // --- Imaginative planning (H3) ---------------------------------------------
+  // Imagination → decision coupling: before the agent loop runs a tool, consult
+  // the learned causal world model (imagination reflections + the embodiment
+  // layer's observed action outcomes) and, when that action's empirical failure
+  // rate is high AND well-observed, DEFER the call one round with a foresight
+  // warning so the model can revise its plan. Advisory, never a veto — an
+  // immediate repeat proceeds, and every execution still goes through the
+  // permissioned executor. OFF by default — opt in with IMAGINATIVE_PLANNING=
+  // true, or let the brain grow into it via maturation (stage 6). Cold-ledger
+  // floor: with no observed failure history the loop behaves exactly as today.
+  imaginativePlanning: boolean;
   // --- Agentic loop ("main thinking") ---------------------------------------
   // The Odysseus-style multi-round ReAct loop behind POST /api/agent. It runs
   // ALONGSIDE the 7-step pipeline (a triage router picks which a request hits)
@@ -572,6 +583,7 @@ export const CONFIG: ServerConfig = {
   adaptiveController: bool("ADAPTIVE_CONTROLLER", true),
   banditWarmAt: Math.max(1, num("BANDIT_WARM_AT", 30)),
   activeInference: bool("ACTIVE_INFERENCE", false),
+  imaginativePlanning: bool("IMAGINATIVE_PLANNING", false),
   agentMaxRounds: Math.min(50, Math.max(1, num("AGENT_MAX_ROUNDS", 12))),
   agentConfirmMode: oneOf("AGENT_CONFIRM_MODE", ["ask", "scope", "safe-only"] as const, "ask"),
   agentTriage: bool("AGENT_TRIAGE", true),
