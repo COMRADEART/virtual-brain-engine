@@ -146,7 +146,16 @@ swapped-in `ShaderMaterial` rendered nothing (the reason the spiking path was
   `node.regionIndex`, and global `REGION_INDEX` all derive from
   `REGION_DEFINITIONS` in the same order.
 
-### 🔲 1B. Stop rewriting the full instance buffers every frame *(the 20k unlock)*
+### ✅ 1B. Stop rewriting the full instance buffers every frame *(the 20k unlock)*
+
+**Landed.** The shader `colorMode` + per-instance `aScale` attribute short-circuit
+both allocating passes in spiking mode (`NeuralGraphRenderer` builds matrices once;
+visibility/LOD ride the 1-float `aScale`). The legacy path now keeps a per-neuron
+effective-scale cache in `updateNeuronMatricesLOD`, so matrices are only rewritten
+(and the buffer only re-uploaded) when a neuron crosses one of the 4 quantised LOD
+thresholds or visibility toggles — a still camera costs zero writes.
+`updateMembranePotential`/`burstStatus`/`memoryTrace` use the typed-array `set()`
+fast path. The original plan follows for context:
 `src/components/NeuralGraph.tsx` `update()` runs two `O(N)` allocating passes
 every frame, both **wasted in spiking mode** (the ShaderMaterial reads custom
 attributes, not `instanceColor`):
@@ -259,9 +268,9 @@ open], `VisionCortexPanel`, `PipelineOverlay`, `LogicalRegionIndicator`,
 - Make the spiking engine default once 1A–1C land; keep `SignalSimulation` as the
   auto-tier low-end fallback (wire to `performancePresets`/`useAutoQuality`)
   instead of a `?useSpiking=true` URL flag.
-- `highlightRichClubHubs` runs every frame (`BrainScene.tsx:635`) allocating a
-  `THREE.Color` per hub and fighting `updateRegionBreathing` over `uRegionColor`.
-  Set once / on change.
+- ✅ `highlightRichClubHubs` is now a state setter called once at scene setup;
+  `updateRegionBreathing` is the single per-frame writer of the breathing
+  uniforms and applies the theta-pulsed gold hub tint with zero allocations.
 - Stretch: move Izhikevich integration + propagation to a Web Worker over
   `SharedArrayBuffer` (data is already flat typed arrays) → path to 50k+.
 - New feature: **Snapshot/Replay timeline** built on Priority 3's `serialize()`.
