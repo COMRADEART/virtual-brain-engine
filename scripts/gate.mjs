@@ -102,6 +102,7 @@ const steps = [
   { label: "energybudget selfcheck", args: ["--prefix", "server", "run", "energybudget:selfcheck"] },
   { label: "maturation selfcheck", args: ["--prefix", "server", "run", "maturation:selfcheck"] },
   { label: "eventworkspace selfcheck", args: ["--prefix", "server", "run", "eventworkspace:selfcheck"] },
+  { label: "imaginativeplanning selfcheck", args: ["--prefix", "server", "run", "imaginativeplanning:selfcheck"] },
   { label: "frontend unit tests",  args: ["run", "test:unit"] },
   // Server unit tests (tsx --test "src/**/*.test.ts" — memory + route tests).
   // Hermetic: each test points openDb() at its own temp BRAIN_DB_PATH; no LLM,

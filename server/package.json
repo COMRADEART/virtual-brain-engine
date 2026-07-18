@@ -70,6 +70,7 @@
     "energybudget:selfcheck": "tsx scripts/energybudget-selfcheck.ts",
     "maturation:selfcheck": "tsx scripts/maturation-selfcheck.ts",
     "eventworkspace:selfcheck": "tsx scripts/eventworkspace-selfcheck.ts",
+    "imaginativeplanning:selfcheck": "tsx scripts/imaginativeplanning-selfcheck.ts",
     "mind:selfcheck": "tsx scripts/mind-selfcheck.ts",
     "usermodel:selfcheck": "tsx scripts/usermodel-selfcheck.ts",
     "memorydna:selfcheck": "tsx scripts/memorydna-selfcheck.ts",

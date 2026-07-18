@@ -33,6 +33,7 @@ import { executeAction, type ExecuteInput } from "../actions/executor.js";
 import { mintConfirmToken } from "../actions/confirmTokens.js";
 import { keywordSearch, upsertMemoryPoint } from "../db/repositories/memory.js";
 import { creditMatchingProcedures, proceduresFor, proceduresPromptBlock } from "../memory/procedural.js";
+import { foresee, foresightActive, foresightNote } from "./imaginativePlanning.js";
 import { formatSnippetForPrompt } from "./untrusted.js";
 import { runPipeline } from "./pipeline.js";
 import { broadcast } from "../ws/brainBus.js";
@@ -109,6 +110,8 @@ interface AgentRun {
   createdAt: number;
   /** Successfully executed action ids, in order — procedural-memory credit. */
   executedOk: string[];
+  /** Action ids already foresight-deferred once this run (H3 — advisory is one-shot). */
+  foresightWarned: Set<string>;
   /** Ordered code-edit / verify trail — drives the verify-until-correct honesty gate. */
   codingTrail: CodingTrailEntry[];
   /** "Known procedures" hint block computed once at run start ("" = none). */
@@ -585,6 +588,7 @@ export function startAgentRun(input: StartAgentInput): AgentRun {
     forceAnswer: false,
     createdAt: now,
     executedOk: [],
+    foresightWarned: new Set(),
     codingTrail: [],
     // Procedural memory: known tool sequences that worked for similar tasks
     // ride into every round's prompt as hints. Failure-isolated — an empty
@@ -749,6 +753,31 @@ async function runTool(
     emit(agentEvent(run, "tool-result", { round: run.round, tool: tEvt }));
     pushResult(run, action, args, false, `unknown tool "${action}" — not in the allowlist; pick a listed tool or finish.`);
     return "continued";
+  }
+
+  // ── H3 — imaginative planning (advisory foresight) ─────────────────────
+  // Consult the learned causal world model before running the tool: a high,
+  // well-observed failure rate defers the call ONE round with a foresight note
+  // so the model can revise its plan. Advisory only — an immediate repeat
+  // proceeds (the warned set is per-action, per-run), still through the
+  // executor trust boundary; failure-isolated so a foresight fault never
+  // costs the run.
+  try {
+    if (foresightActive() && !run.foresightWarned.has(action)) {
+      const foresight = foresee(action);
+      if (foresight?.warn) {
+        run.foresightWarned.add(action);
+        const note = foresightNote(foresight);
+        emit(agentEvent(run, "thought", { round: run.round, text: note }));
+        emitPipe(run, emit, "error", "progress", ["error-detection-center"], {
+          detail: `foresight deferred ${action}`,
+        });
+        pushResult(run, action, args, false, note);
+        return "continued";
+      }
+    }
+  } catch (err) {
+    surfaceError("agentLoop.foresight", err);
   }
 
   const risk: ActionRiskTier = def.risk;
